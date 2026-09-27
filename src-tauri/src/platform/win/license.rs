@@ -238,8 +238,10 @@ pub fn os_version() -> String {
     // type is the classic OSVERSIONINFOW.
     use windows::Wdk::System::SystemServices::RtlGetVersion;
     use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
-    let mut info = OSVERSIONINFOW::default();
-    info.dwOSVersionInfoSize = u32::try_from(std::mem::size_of::<OSVERSIONINFOW>()).unwrap_or(0);
+    let mut info = OSVERSIONINFOW {
+        dwOSVersionInfoSize: u32::try_from(std::mem::size_of::<OSVERSIONINFOW>()).unwrap_or(0),
+        ..OSVERSIONINFOW::default()
+    };
     // SAFETY: properly sized out-struct per the API contract.
     let status = unsafe { RtlGetVersion(&mut info) };
     if status.is_ok() {

@@ -380,8 +380,11 @@ fn validate_and_apply(
         );
     }
     match result {
-        Ok(dto) => match verify_entitlement(&dto, &state.license_key, &hw, now) {
-            Ok(claims) => {
+        Ok(dto) => {
+            // Spoofed/rotation-mismatch (the Err arm) is deliberately
+            // soft — grace continues; the token's own `exp` is the hard
+            // stop (the honest choice during key rotation).
+            if let Ok(claims) = verify_entitlement(&dto, &state.license_key, &hw, now) {
                 // Refresh in place (activation identity stays). All
                 // display data comes from the VERIFIED claims.
                 state.tier.clone_from(&claims.tier);
@@ -393,9 +396,7 @@ fn validate_and_apply(
                 state.last_validated_at = now;
                 state.last_known_good = state.last_known_good.max(now);
             }
-            // Spoofed/rotation-mismatch: soft — grace continues.
-            Err(_) => {}
-        },
+        }
         Err(e) if e.is_hard() => {
             // Revoked / expired / device-mismatch: hard → local clear.
             license::dpapi::clear();

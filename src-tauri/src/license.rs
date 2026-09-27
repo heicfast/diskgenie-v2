@@ -1079,7 +1079,7 @@ mod tests {
         let http = FakeHttp::with(vec![Ok((200, body.to_string()))]);
         let api = LicenseApi::with_secret(http, "a".repeat(64));
         let dto = api.activate("DBK", &f).unwrap();
-        assert_eq!(dto.license.tier, "lifetime");
+        assert_eq!(dto.token, token);
         let headers = api.http.headers.borrow();
         let last = headers.last().unwrap();
         assert!(last.iter().any(|(k, _)| k == "x-db-signature"));
