@@ -8,7 +8,7 @@
 //! Best-effort by design: failures log and wait for the next cycle —
 //! an update check must never disturb the user's session.
 
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 /// The auto-check interval (24 h, per the owner decision).
 const STORE_UPDATE_INTERVAL_S: u64 = 24 * 60 * 60;
@@ -17,6 +17,7 @@ const STORE_UPDATE_INTERVAL_S: u64 = 24 * 60 * 60;
 /// the macOS Store distribution isn't in scope yet).
 #[cfg(windows)]
 pub fn start_store_update_scheduler(app: &AppHandle) {
+    use tauri::Manager;
     let handle = std::sync::Arc::new(app.clone());
     std::thread::Builder::new()
         .name("db-store-update".into())

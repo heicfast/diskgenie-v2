@@ -24,10 +24,8 @@ pub fn is_store_signed() -> bool {
     let Ok(package) = windows::ApplicationModel::Package::Current() else {
         return false;
     };
-    let Ok(id) = package.Id() else {
-        return false;
-    };
-    id.SignatureKind()
+    package
+        .SignatureKind()
         .is_ok_and(|kind| kind == windows::ApplicationModel::PackageSignatureKind::Store)
 }
 
@@ -39,8 +37,6 @@ pub fn is_store_signed() -> bool {
 /// String error carrying the Store API failure text (logged by the
 /// scheduler; auto-update is best-effort, never a user-facing error).
 pub fn check_and_install_updates() -> Result<bool, String> {
-    use windows::Foundation::Collections::IIterable;
-    use windows::Foundation::IAsyncOperation;
     use windows::Services::Store::StorePackageUpdate;
 
     if !is_store_signed() {
@@ -55,7 +51,7 @@ pub fn check_and_install_updates() -> Result<bool, String> {
     let updates_op = context
         .GetAppAndOptionalStorePackageUpdatesAsync()
         .map_err(|e| format!("GetAppAndOptionalStorePackageUpdatesAsync: {e}"))?;
-    let updates = wait(&updates_op)?;
+    let updates = wait_updates(&updates_op)?;
 
     let count = updates.Size().map_err(|e| format!("Size: {e}"))?;
     if count == 0 {
@@ -65,24 +61,22 @@ pub fn check_and_install_updates() -> Result<bool, String> {
     // IVectorView<T> is an IIterable<T> in the WinRT type system; the
     // cast is a hierarchy QueryInterface (always succeeds).
     let iterable = updates
-        .cast::<IIterable<StorePackageUpdate>>()
+        .cast::<windows_collections::IIterable<StorePackageUpdate>>()
         .map_err(|e| format!("IIterable cast: {e}"))?;
     let install_op = context
         .RequestDownloadAndInstallStorePackageUpdatesAsync(&iterable)
         .map_err(|e| format!("RequestDownloadAndInstallStorePackageUpdatesAsync: {e}"))?;
-    // The install op is IAsyncOperationWithProgress — poll it through
-    // the plain-operation view (Status/GetResults are shared).
-    let install_op_view = install_op
-        .cast::<IAsyncOperation<windows::Services::Store::StorePackageUpdateResult>>()
-        .map_err(|e| format!("install op cast: {e}"))?;
-    wait(&install_op_view)?;
+    wait_install(&install_op)?;
     Ok(true)
 }
 
-/// Poll a WinRT async operation to completion (the established
-/// windows-future 0.3 pattern — no blocking get exists). Returns the
-/// operation's result.
-fn wait<T: Interface>(op: &windows::Foundation::IAsyncOperation<T>) -> Result<T, String> {
+/// Poll the updates query (plain operation) to completion.
+fn wait_updates(
+    op: &windows_future::IAsyncOperation<
+        windows_collections::IVectorView<windows::Services::Store::StorePackageUpdate>,
+    >,
+) -> Result<windows_collections::IVectorView<windows::Services::Store::StorePackageUpdate>, String>
+{
     loop {
         let status = op.Status().map_err(|e| format!("Status: {e}"))?;
         match status {
@@ -95,6 +89,28 @@ fn wait<T: Interface>(op: &windows::Foundation::IAsyncOperation<T>) -> Result<T,
     }
     op.GetResults()
         .map_err(|e| format!("store operation failed: {e}"))
+}
+
+/// Poll the download+install operation (with progress) to completion.
+fn wait_install(
+    op: &windows_future::IAsyncOperationWithProgress<
+        windows::Services::Store::StorePackageUpdateResult,
+        windows::Services::Store::StorePackageUpdateStatus,
+    >,
+) -> Result<(), String> {
+    loop {
+        let status = op.Status().map_err(|e| format!("Status: {e}"))?;
+        match status {
+            windows_future::AsyncStatus::Completed => break,
+            windows_future::AsyncStatus::Started => {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            other => return Err(format!("store install failed (status {other:?})")),
+        }
+    }
+    op.GetResults()
+        .map_err(|e| format!("store install failed: {e}"))
+        .map(|_| ())
 }
 
 /// COM MTA initialization guard (the apps.rs `ComGuard` pattern —

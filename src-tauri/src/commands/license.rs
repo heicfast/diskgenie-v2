@@ -14,8 +14,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::license::{
-    self, EntitlementDto, LicenseApi, LicenseError, LicensePosture, LicenseState, ReqwestLicense,
-    TokenClaims, DeviceFacts, GRACE_DAYS, LICENSE_PUBLIC_KEY_HEX, LICENSE_PURCHASE_URL,
+    self, DeviceFacts, EntitlementDto, LicenseApi, LicenseError, LicensePosture, LicenseState,
+    ReqwestLicense, TokenClaims, GRACE_DAYS, LICENSE_PUBLIC_KEY_HEX, LICENSE_PURCHASE_URL,
     VALIDATION_INTERVAL_S,
 };
 
@@ -40,6 +40,9 @@ pub struct LicenseManager {
 /// full app tour can run; `license_sim_set` flips it at runtime.
 #[must_use]
 pub fn license_manager() -> LicenseManager {
+    // `mut` only for the feature-gated sim seeding below (the allow
+    // keeps non-sim production builds warning-clean).
+    #[allow(unused_mut)]
     let mut state = license::dpapi::load().unwrap_or_default();
     #[cfg(feature = "ci-license-sim")]
     if std::env::var("DISKBYTES_LICENSE_SIM").as_deref() == Ok("1") {
@@ -192,22 +195,18 @@ pub fn activate_license(
     // retries with backoff when the edge blips — doc §4 "error
     // management").
     let mut attempt = 0u32;
-    let mut outcome = Err(LicenseError::Network);
-    loop {
+    let mut outcome = api.activate(&normalized, &facts);
+    while matches!(&outcome, Err(e) if !e.is_hard() && attempt < 2) {
+        attempt += 1;
+        std::thread::sleep(std::time::Duration::from_millis(250 * u64::from(attempt)));
         outcome = api.activate(&normalized, &facts);
-        match &outcome {
-            Ok(_) => break,
-            Err(e) if e.is_hard() => break,
-            Err(_) if attempt >= 2 => break,
-            Err(_) => {
-                attempt += 1;
-                std::thread::sleep(std::time::Duration::from_millis(250 * u64::from(attempt)));
-            }
-        }
     }
     let dto = outcome.map_err(|e| {
         if let Some(an) = app.try_state::<crate::analytics::Analytics>() {
-            an.capture("license_activate_failed", &[("retry", serde_json::json!(attempt))]);
+            an.capture(
+                "license_activate_failed",
+                &[("retry", serde_json::json!(attempt))],
+            );
         }
         e.to_string()
     })?;
@@ -216,13 +215,12 @@ pub fn activate_license(
     // the embedded public key + this machine's fingerprint before
     // trusting ANYTHING in the response.
     let now = now_unix();
-    let claims = verify_entitlement(&dto, &normalized, &hw, now)
-        .map_err(|e| {
-            if let Some(an) = app.try_state::<crate::analytics::Analytics>() {
-                an.capture("license_activate_spoofed", &[]);
-            }
-            e.to_string()
-        })?;
+    let claims = verify_entitlement(&dto, &normalized, &hw, now).map_err(|e| {
+        if let Some(an) = app.try_state::<crate::analytics::Analytics>() {
+            an.capture("license_activate_spoofed", &[]);
+        }
+        e.to_string()
+    })?;
 
     let mut state = state_from_entitlement(&dto, &claims, &normalized, &hw, now);
     state.last_known_good = now;
@@ -350,7 +348,10 @@ pub fn validate_now(
 ///   where a stale app build would otherwise mass-deactivate)
 /// * explicit hard errors (revoked / expired / device mismatch) →
 ///   local deactivate
-fn validate_and_apply(app: &AppHandle, mgr: &LicenseManager) -> (LicenseStatusView, Option<String>) {
+fn validate_and_apply(
+    app: &AppHandle,
+    mgr: &LicenseManager,
+) -> (LicenseStatusView, Option<String>) {
     let mut state = mgr.state.lock().clone();
     let now = now_unix();
     if state.license_key.is_empty() || state.simulated {
@@ -380,7 +381,10 @@ fn validate_and_apply(app: &AppHandle, mgr: &LicenseManager) -> (LicenseStatusVi
             "license_validate_result",
             &[
                 ("valid", serde_json::json!(result.is_ok())),
-                ("network", serde_json::json!(matches!(result, Err(LicenseError::Network)))),
+                (
+                    "network",
+                    serde_json::json!(matches!(result, Err(LicenseError::Network))),
+                ),
             ],
         );
     }
@@ -540,8 +544,8 @@ mod tests {
     fn key_normalization_rejects_wrong_shapes() {
         // Wrong length / prefix / confusable letters.
         assert!(normalize_key("DB-XK2M9-QF3P8").is_none());
-        assert!(normalize_key("AB" + &"X".repeat(20)).is_none());
-        assert!(normalize_key("DB" + &"ILOU".repeat(5)).is_none());
+        assert!(normalize_key(&format!("AB{}", "X".repeat(20))).is_none());
+        assert!(normalize_key(&format!("DB{}", "ILOU".repeat(5))).is_none());
         assert!(normalize_key("").is_none());
     }
 

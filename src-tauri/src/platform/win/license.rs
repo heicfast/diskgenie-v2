@@ -233,10 +233,13 @@ pub fn hardlink_identity(path: &std::path::Path) -> Option<(u64, u64)> {
 /// manifest-lie-proof source (GetVersionEx lies without a shim).
 #[must_use]
 pub fn os_version() -> String {
-    use windows::Win32::System::SystemInformation::{RtlGetVersion, OSVERSIONINFOW};
+    // RtlGetVersion lives in the WDK projection (Wdk_System_SystemServices
+    // feature — already enabled for the turbo engine); the out-struct
+    // type is the classic OSVERSIONINFOW.
+    use windows::Wdk::System::SystemServices::RtlGetVersion;
+    use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
     let mut info = OSVERSIONINFOW::default();
-    info.dwOSVersionInfoSize =
-        u32::try_from(std::mem::size_of::<OSVERSIONINFOW>()).unwrap_or(0);
+    info.dwOSVersionInfoSize = u32::try_from(std::mem::size_of::<OSVERSIONINFOW>()).unwrap_or(0);
     // SAFETY: properly sized out-struct per the API contract.
     let status = unsafe { RtlGetVersion(&mut info) };
     if status.is_ok() {

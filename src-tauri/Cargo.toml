@@ -61,11 +61,16 @@ objc2 = "0.5"
 # macro emits windows_core:: paths that need a direct import).
 windows-core = "0.62"
 # windows-future: version-locked companion of the windows crate (async op
-# types for MSIX RemovePackageAsync) — same family rule as windows-core.
+# types for MSIX RemovePackageAsync + the Store update flow) — same
+# family rule as windows-core.
 windows-future = "0.3.2"
+# windows-collections: version-locked companion (IVectorView/IIterable for
+# the Store update flow) — same family rule as windows-core.
+windows-collections = "0.3.2"
 windows = { version = "0.62", features = [
     "Wdk_Storage_FileSystem",
     "Wdk_System_SystemInformation",
+    "Wdk_System_SystemServices",
     "ApplicationModel",
     "Services_Store",
     "Foundation",

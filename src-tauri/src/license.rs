@@ -26,6 +26,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Default production license-server base (change per deployment; the
@@ -324,7 +325,8 @@ pub fn verify_token(
         .verify(&payload, &sig)
         .map_err(|_| LicenseError::Spoofed)?;
 
-    let claims: TokenClaims = serde_json::from_slice(&payload).map_err(|_| LicenseError::Spoofed)?;
+    let claims: TokenClaims =
+        serde_json::from_slice(&payload).map_err(|_| LicenseError::Spoofed)?;
     if claims.iss != "db-license"
         || claims.ver != 1
         || claims.plat != platform
@@ -515,7 +517,10 @@ impl<H: LicenseHttp> LicenseApi<H> {
         let sig = hmac_hex(&self.secret_hex, &message);
         let headers = vec![
             ("x-db-app".to_string(), "diskbytes".to_string()),
-            ("x-db-version".to_string(), env!("CARGO_PKG_VERSION").to_string()),
+            (
+                "x-db-version".to_string(),
+                env!("CARGO_PKG_VERSION").to_string(),
+            ),
             ("x-db-timestamp".to_string(), timestamp.to_string()),
             ("x-db-nonce".to_string(), nonce),
             ("x-db-signature".to_string(), sig),
@@ -726,17 +731,17 @@ fn hmac_hex(key_hex: &str, message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
     use std::cell::RefCell;
 
     /// Fixture keypair: the RFC 8032 test-vector #1 seed (matches the
     /// license-server repo's TEST_SIGNING_SEED — both sides of the token
     /// contract are pinned by the same fixture).
-    const TEST_SEED_HEX: &str =
-        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+    const TEST_SEED_HEX: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 
     fn b64url(bytes: &[u8]) -> String {
-        const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        const CHARS: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         let mut s = String::new();
         let mut acc: u32 = 0;
         let mut bits: u32 = 0;
@@ -769,7 +774,13 @@ mod tests {
         format!("{}.{}", b64url(&payload), b64url(&sig.to_bytes()))
     }
 
-    fn claims_json(hw: &str, key_hash: &str, iat: i64, exp: i64, lexp: Option<i64>) -> serde_json::Value {
+    fn claims_json(
+        hw: &str,
+        key_hash: &str,
+        iat: i64,
+        exp: i64,
+        lexp: Option<i64>,
+    ) -> serde_json::Value {
         let mut v = serde_json::json!({
             "iss": "db-license",
             "ver": 1,
@@ -796,7 +807,10 @@ mod tests {
         let key_hash = "a".repeat(64);
         let hw = "b".repeat(64);
         let now = 1_790_000_000;
-        let token = sign_fixture(&claims_json(&hw, &key_hash, now - 60, now + 86_400, None), TEST_SEED_HEX);
+        let token = sign_fixture(
+            &claims_json(&hw, &key_hash, now - 60, now + 86_400, None),
+            TEST_SEED_HEX,
+        );
         let pub_hex = test_public_key_hex();
         let claims = verify_token(&token, &pub_hex, &key_hash, &hw, "windows", now).unwrap();
         assert_eq!(claims.tier, "lifetime");
@@ -810,11 +824,17 @@ mod tests {
         let hw = "b".repeat(64);
         let now = 1_790_000_000;
         let pub_hex = test_public_key_hex();
-        let token = sign_fixture(&claims_json(&hw, &key_hash, now - 60, now + 86_400, None), TEST_SEED_HEX);
+        let token = sign_fixture(
+            &claims_json(&hw, &key_hash, now - 60, now + 86_400, None),
+            TEST_SEED_HEX,
+        );
 
         // Wrong verifying key (a different server / rotation mismatch).
         let other_seed = "4".repeat(64);
-        let forged = sign_fixture(&claims_json(&hw, &key_hash, now - 60, now + 86_400, None), &other_seed);
+        let forged = sign_fixture(
+            &claims_json(&hw, &key_hash, now - 60, now + 86_400, None),
+            &other_seed,
+        );
         assert_eq!(
             verify_token(&forged, &pub_hex, &key_hash, &hw, "windows", now).unwrap_err(),
             LicenseError::Spoofed
@@ -823,7 +843,15 @@ mod tests {
         // fixture key must reject production-signed tokens — key
         // rotation mismatch is a hard failure, never a maybe).
         assert_eq!(
-            verify_token(&token, LICENSE_PUBLIC_KEY_HEX, &key_hash, &hw, "windows", now).unwrap_err(),
+            verify_token(
+                &token,
+                LICENSE_PUBLIC_KEY_HEX,
+                &key_hash,
+                &hw,
+                "windows",
+                now
+            )
+            .unwrap_err(),
             LicenseError::Spoofed
         );
 
@@ -859,19 +887,33 @@ mod tests {
 
         // Expired token window.
         assert_eq!(
-            verify_token(&token, &pub_hex, &key_hash, &hw, "windows", now + 86_400 + 1).unwrap_err(),
+            verify_token(
+                &token,
+                &pub_hex,
+                &key_hash,
+                &hw,
+                "windows",
+                now + 86_400 + 1
+            )
+            .unwrap_err(),
             LicenseError::Spoofed
         );
 
         // Issued in the future (beyond skew).
-        let future = sign_fixture(&claims_json(&hw, &key_hash, now + 400, now + 86_400, None), TEST_SEED_HEX);
+        let future = sign_fixture(
+            &claims_json(&hw, &key_hash, now + 400, now + 86_400, None),
+            TEST_SEED_HEX,
+        );
         assert_eq!(
             verify_token(&future, &pub_hex, &key_hash, &hw, "windows", now).unwrap_err(),
             LicenseError::Spoofed
         );
 
         // Yearly license itself expired.
-        let lexp = sign_fixture(&claims_json(&hw, &key_hash, now - 60, now + 86_400, Some(now - 1)), TEST_SEED_HEX);
+        let lexp = sign_fixture(
+            &claims_json(&hw, &key_hash, now - 60, now + 86_400, Some(now - 1)),
+            TEST_SEED_HEX,
+        );
         assert_eq!(
             verify_token(&lexp, &pub_hex, &key_hash, &hw, "windows", now).unwrap_err(),
             LicenseError::Spoofed
@@ -1038,7 +1080,10 @@ mod tests {
     }
 
     fn fixture_token(hw: &str, key_hash: &str, now: i64) -> String {
-        sign_fixture(&claims_json(hw, key_hash, now - 60, now + 14 * 86_400, None), TEST_SEED_HEX)
+        sign_fixture(
+            &claims_json(hw, key_hash, now - 60, now + 14 * 86_400, None),
+            TEST_SEED_HEX,
+        )
     }
 
     #[test]
@@ -1120,10 +1165,7 @@ mod tests {
             assert_eq!(&b64url(plain.as_bytes()), encoded);
         }
         // url-safe alphabet + padded input accepted.
-        assert_eq!(
-            b64url_decode("Zm9vYg==").unwrap(),
-            b"foob".to_vec()
-        );
+        assert_eq!(b64url_decode("Zm9vYg==").unwrap(), b"foob".to_vec());
         // Invalid characters + non-canonical lengths rejected.
         assert!(b64url_decode("a+bc").is_none());
         assert!(b64url_decode("abcde").is_none());
