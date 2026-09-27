@@ -79,12 +79,13 @@
   cursor: default;
 }
 .db-brand-mark {
-  /* The product mark (Icon Pack v3) ships its own squircle + gradient
-   * with BAKED transparent corners — the container is a plain frame:
-   * no fill, no glow, radius only as clip insurance. Frame height
-   * matches .db-tabcaps button / .db-tab-pill exactly (31px): the
-   * logo sits in SYMMETRY with the tab strip — same visual height as
-   * the orange pill that highlights the open page (the 26px frame
+  /* The product mark (Icon Pack redesign) is a flat coral circle with
+   * the white spiral mark on TRANSPARENT margins — the container is a
+   * plain frame: no fill, no glow, radius only as clip insurance. The
+   * circle spans the full asset, so the frame height IS the circle's
+   * height, matching .db-tabcaps button / .db-tab-pill exactly (31px):
+   * the logo sits in SYMMETRY with the tab strip — same visual height
+   * as the orange pill that highlights the open page (the 26px frame
    * read undersized next to it; the 62px asset is 2x for crisp
    * 1x/2x rendering). */
   display: grid;

@@ -1,13 +1,14 @@
-# DiskBytes icon fan-out (doc 03 M11.1, updated for Icon Pack v3 / kit):
-# the brand source is a COMMITTED design asset
-# (packaging/icon/icon-source.png — the 2048x2048 3D HDD + broom on the
-# orange-red gradient squircle from the DiskBytes Icon Pack v3 kit;
-# supersedes the programmatic ink-square generator, which was retired
-# with its example). This script only fans the source out to every
-# platform size via `npx tauri icon`.
+# DiskBytes icon fan-out (doc 03 M11.1, updated for the DiskBytes Icon Pack
+# redesign): the brand source is a COMMITTED design asset
+# (packaging/icon/icon-source.png — the pack's transparent 1024 master:
+# a flat coral-orange circle with the white DiskBytes spiral mark,
+# floating with transparent margins; macOS additionally ships the pack's
+# own DiskBytes.icns verbatim). Supersedes the v3 3D HDD+broom squircle.
+# This script only fans the source out to every platform size via
+# `npx tauri icon`.
 #
 # To update the brand: replace packaging/icon/icon-source.png with the
-# new square RGBA source (>=1024px, baked rounded corners), then run
+# new square RGBA source (>=1024px, transparent corners OK), then run
 # this script (or push — CI runs it on every Windows build).
 param(
     [string]$AppRoot = (Split-Path $PSScriptRoot -Parent)
