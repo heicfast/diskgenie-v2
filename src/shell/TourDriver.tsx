@@ -136,7 +136,7 @@ export function TourDriver() {
           }, 150);
           // flip to unlicensed for the entry state
           void import("../lib/ipc").then(({ invoke }) =>
-            invoke("license_sim_set", { state: "unlicensed" }).catch(() => undefined),
+            invoke("license_sim_set", { mode: "unlicensed" }).catch(() => undefined),
           );
         },
       });
@@ -172,7 +172,7 @@ export function TourDriver() {
         name: "license-restore-pro",
         apply: () => {
           void import("../lib/ipc").then(({ invoke }) =>
-            invoke("license_sim_set", { state: "pro" }).catch(() => undefined),
+            invoke("license_sim_set", { mode: "pro" }).catch(() => undefined),
           );
         },
       });

@@ -1070,7 +1070,7 @@ const commands: Record<string, Cmd> = {
   // CI tour hook (browser-mock mirror of the Rust ci-license-sim
   // feature): flips the simulated license state.
   license_sim_set: (a) => {
-    const mode = String(a?.state ?? a?.mode ?? "unlicensed");
+    const mode = String(a?.mode ?? a?.state ?? "unlicensed");
     license = mode === "pro" ? { ...PRO_SIM } : {
       posture: "unlicensed", isPro: false, tier: "",
       customerName: "", customerEmail: "", licenseExpiresAt: 0,
