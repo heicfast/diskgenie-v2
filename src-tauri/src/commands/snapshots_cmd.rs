@@ -169,6 +169,7 @@ pub struct DiffView {
 /// # Errors
 /// String error when a snapshot file cannot be read.
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
 pub fn diff_snapshots(
     before_id: &str,
     after_id: &str,
@@ -216,6 +217,7 @@ pub fn diff_snapshots(
 /// String error when the file exists but cannot be removed, or the
 /// index rewrite fails.
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
 pub fn delete_snapshot(
     id: &str,
     license: State<'_, crate::commands::license::LicenseManager>,

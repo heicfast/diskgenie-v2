@@ -129,11 +129,6 @@ impl LicenseHttp for ReqwestLicense {
 // Errors (typed UX copy + machine markers)
 // ============================================================================
 
-/// Error marker prefix the command layer appends so the WebView can
-/// detect gate refusals and open the activation flow (defense in depth
-/// behind the UI lock).
-pub const GATE_ACTIVATION_REQUIRED: &str = "ACTIVATION_REQUIRED";
-
 /// Typed license errors with the user-facing copy (mirrors the server's
 /// error-code contract; docs §4).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,7 +177,7 @@ impl LicenseError {
     fn from_response(status: u16, code: &str) -> Self {
         match (status, code) {
             (404, _) | (_, "KEY_NOT_FOUND") => Self::InvalidKey,
-            (403, "KEY_REVOKED") | (403, "KEY_REFUNDED") | (403, "KEY_PENDING") => Self::Inactive,
+            (403, "KEY_REVOKED" | "KEY_REFUNDED" | "KEY_PENDING") => Self::Inactive,
             (403, "LICENSE_EXPIRED") => Self::Expired,
             (403, "DEVICE_MISMATCH") => Self::DeviceMismatch,
             (409, _) | (_, "DEVICE_SLOT_TAKEN") => Self::DeviceSlotTaken,
@@ -222,38 +217,19 @@ pub struct DeviceFacts {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntitlementDto {
-    /// The signed compact token (verified before anything is trusted).
+    /// The signed compact token — the ONLY field the client trusts;
+    /// every display datum (name/email/tier/expiry) is read from the
+    /// VERIFIED claims inside it, never from the unsigned envelope.
     pub token: String,
-    /// The display fields.
-    pub license: LicenseDto,
 }
 
-/// The license display fields inside the envelope.
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct LicenseDto {
-    /// "yearly" | "lifetime".
-    #[serde(default)]
-    pub tier: String,
-    /// Customer display name.
-    #[serde(default)]
-    pub name: String,
-    /// Customer email.
-    #[serde(default)]
-    pub email: String,
-    /// unix seconds; `None` for lifetime.
-    #[serde(default)]
-    pub expires_at: Option<i64>,
-}
-
-/// The error envelope.
+/// The error envelope (the `code` field drives every decision; the
+/// human copy is regenerated client-side from the typed mapping).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorDto {
     #[serde(default)]
     code: String,
-    #[serde(default)]
-    message: String,
 }
 
 // ============================================================================
@@ -269,7 +245,10 @@ pub struct TokenClaims {
     pub iss: String,
     /// Format version (1).
     pub ver: u32,
-    /// Unique token id (hex).
+    /// Unique token id (hex) — part of the signed wire format; the
+    /// client does not branch on it (single-use issuance is
+    /// server-side policy).
+    #[allow(dead_code)]
     pub jti: String,
     /// Issued-at (unix seconds).
     pub iat: i64,
@@ -479,6 +458,7 @@ impl<H: LicenseHttp> LicenseApi<H> {
     }
 
     /// Build with an explicit secret override (tests only).
+    #[cfg(test)]
     #[must_use]
     pub fn with_secret(http: H, secret_hex: String) -> Self {
         Self {

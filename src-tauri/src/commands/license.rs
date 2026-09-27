@@ -109,7 +109,7 @@ pub fn normalize_key(raw: &str) -> Option<String> {
         .trim()
         .to_uppercase()
         .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
+        .filter(char::is_ascii_alphanumeric)
         .collect();
     let ok = normalized.len() == 22
         && normalized.starts_with("DB")
@@ -123,26 +123,23 @@ pub fn normalize_key(raw: &str) -> Option<String> {
 /// Collect the device facts for activation (doc §6: exactly what the
 /// server stores — platform + fingerprint + audit strings, nothing
 /// else; no telemetry beyond the license layer's own events).
-///
-/// # Errors
-/// String error when the hardware fingerprint is unreadable.
-fn device_facts(hardware_hash: String) -> Result<DeviceFacts, String> {
+fn device_facts(hardware_hash: String) -> DeviceFacts {
     let hostname = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| {
             if cfg!(target_os = "macos") {
-                "Mac".into()
+                "Mac".to_string()
             } else {
-                "PC".into()
+                "PC".to_string()
             }
         });
-    Ok(DeviceFacts {
+    DeviceFacts {
         platform: platform_string().to_string(),
         hardware_hash,
         hostname,
         os_version: crate::platform::os::os_version(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-    })
+    }
 }
 
 /// The platform identifier the server binds slots by.
@@ -187,7 +184,7 @@ pub fn activate_license(
         return Err(LicenseError::InvalidKey.to_string());
     };
     let hw = license::hardware_id()?;
-    let facts = device_facts(hw.clone())?;
+    let facts = device_facts(hw.clone());
     let http = ReqwestLicense::new()?;
     let api = LicenseApi::new(http);
 
@@ -263,8 +260,8 @@ fn state_from_entitlement(
         hardware_id: hw.to_string(),
         platform: platform_string().to_string(),
         tier: claims.tier.clone(),
-        customer_name: dto.license.name.clone(),
-        customer_email: dto.license.email.clone(),
+        customer_name: claims.name.clone(),
+        customer_email: claims.email.clone(),
         license_expires_at: claims.lexp.unwrap_or(0),
         token: dto.token.clone(),
         token_exp: claims.exp,
@@ -298,14 +295,11 @@ pub fn deactivate_license(mgr: State<'_, LicenseManager>, app: AppHandle) -> Res
     }
     if !state.simulated {
         if let (Ok(hw), Ok(http)) = (license::hardware_id(), ReqwestLicense::new()) {
-            let facts = device_facts(hw.clone()).ok();
-            if let Some(facts) = facts {
-                let api = LicenseApi::new(http);
-                let result = api.deactivate(&state.license_key, &facts);
-                if let Err(e) = result {
-                    if e.is_hard() {
-                        return Err(e.to_string());
-                    }
+            let facts = device_facts(hw);
+            let api = LicenseApi::new(http);
+            if let Err(e) = api.deactivate(&state.license_key, &facts) {
+                if e.is_hard() {
+                    return Err(e.to_string());
                 }
             }
         }
@@ -367,10 +361,7 @@ fn validate_and_apply(
             return (view(&state, now), None);
         }
     };
-    let facts = match device_facts(hw.clone()) {
-        Ok(f) => f,
-        Err(_) => return (view(&state, now), None),
-    };
+    let facts = device_facts(hw.clone());
     let result = match ReqwestLicense::new() {
         Ok(http) => LicenseApi::new(http).validate(&state.license_key, &facts),
         Err(_) => Err(LicenseError::Network),
@@ -391,12 +382,13 @@ fn validate_and_apply(
     match result {
         Ok(dto) => match verify_entitlement(&dto, &state.license_key, &hw, now) {
             Ok(claims) => {
-                // Refresh in place (activation identity stays).
-                state.tier = claims.tier.clone();
-                state.customer_name = dto.license.name.clone();
-                state.customer_email = dto.license.email.clone();
+                // Refresh in place (activation identity stays). All
+                // display data comes from the VERIFIED claims.
+                state.tier.clone_from(&claims.tier);
+                state.customer_name.clone_from(&claims.name);
+                state.customer_email.clone_from(&claims.email);
                 state.license_expires_at = claims.lexp.unwrap_or(0);
-                state.token = dto.token.clone();
+                state.token.clone_from(&dto.token);
                 state.token_exp = claims.exp;
                 state.last_validated_at = now;
                 state.last_known_good = state.last_known_good.max(now);
@@ -624,12 +616,6 @@ mod tests {
     fn state_from_entitlement_maps_fields() {
         let dto = EntitlementDto {
             token: "tok".into(),
-            license: crate::license::LicenseDto {
-                tier: "yearly".into(),
-                name: "Renee Okafor".into(),
-                email: "renee@example.com".into(),
-                expires_at: Some(1_800_000_000),
-            },
         };
         let claims = TokenClaims {
             iss: "db-license".into(),
