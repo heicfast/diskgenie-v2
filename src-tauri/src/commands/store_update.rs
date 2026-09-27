@@ -10,14 +10,13 @@
 
 use tauri::AppHandle;
 
-/// The auto-check interval (24 h, per the owner decision).
-const STORE_UPDATE_INTERVAL_S: u64 = 24 * 60 * 60;
-
 /// Start the scheduler thread (called from `setup`; Windows only —
 /// the macOS Store distribution isn't in scope yet).
 #[cfg(windows)]
 pub fn start_store_update_scheduler(app: &AppHandle) {
     use tauri::Manager;
+    /// The auto-check interval (24 h, per the owner decision).
+    const STORE_UPDATE_INTERVAL_S: u64 = 24 * 60 * 60;
     let handle = std::sync::Arc::new(app.clone());
     std::thread::Builder::new()
         .name("db-store-update".into())

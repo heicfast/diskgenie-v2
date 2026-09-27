@@ -75,7 +75,7 @@ jobs:
           $version = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
           # MSIX versions are 4-part and must increase per submission:
           # app version + the run number as revision.
-          "$version.${{ github.run_number }}" | Set-Content -NoNewline $env:GITHUB_OUTPUT
+          "version=$version.${{ github.run_number }}" | Set-Content $env:GITHUB_OUTPUT
 
       - name: Generate the MSIX layout (exe + assets + manifest)
         shell: pwsh
