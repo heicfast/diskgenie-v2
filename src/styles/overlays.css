@@ -143,7 +143,50 @@
   background: var(--background);
   box-shadow: var(--shadow-pop);
   overflow: hidden;
-  transform-origin: top right; /* the framer spring scales from the anchor */
+  transform-origin: top right; /* the entrance scales from the anchor */
+  /* Session-7 settle-in (same fix as .db-tab-swap, shell.css): the
+   * enter is a CSS keyframe — NO fill (the default): the moment it
+   * ends, the browser reverts to the underlying value (1 / none) in
+   * the SAME style recalc, so no cleanup gap can exist, and the
+   * finished animation is auto-REMOVED (a fill: both/forwards keeps
+   * it alive, and Chrome refuses to start a transition from a value
+   * change that lands in the same style recalc as an animation
+   * CANCEL — DOM-probed: the exit snapped instead of fading. With
+   * fill: none there is nothing to cancel at exit). The framer WAAPI
+   * route parked the inline style at opacity:0 and cleaned up
+   * asynchronously — DOM-probed, the whole popover blinked OFF for
+   * one painted frame ~250 ms after the spring finished (and on
+   * close it flashed back ON before the unmount). The exit is a
+   * data-closing TRANSITION, which interpolates from the live
+   * computed value — interrupt-safe even mid-entrance (the component
+   * strips a still-running entrance in its own recalc first — see
+   * CleanupQueuePopover.tsx). */
+  animation: db-pop-in 200ms cubic-bezier(0.3, 1.2, 0.45, 1);
+  transition: opacity 140ms ease-in, transform 140ms ease-in;
+}
+@keyframes db-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.db-pop[data-closing="true"] {
+  /* The exit state — opacity/transform only, and it must NEVER touch
+   * the `animation` property: suppressing it here means the reopen
+   * (toggle race: outside-close pointerdown → button click re-opens)
+   * would RESTORE the animation property on a still-mounted element
+   * and REPLAY the entrance from 0 — the panel blanked and re-entered
+   * (the session-5 inspector-replay lesson, on this popover's own
+   * toggle path). A running entrance that needs canceling at close
+   * time is canceled INLINE by the component (its own recalc + a
+   * frozen mid-flight bridge — see CleanupQueuePopover.tsx). */
+  opacity: 0;
+  transform: translateY(-6px) scale(0.98);
+  pointer-events: none; /* a fading surface must not take hover/clicks */
 }
 .db-pop-head {
   flex: none;
@@ -686,9 +729,11 @@
   color: var(--ink);
 }
 
-/* Toast (bottom-center, transient feedback) — motion handled by
- * framer-motion in App.tsx (spring in, slide-fade out). Centering uses
- * margin auto (NOT translateX) so the transform channel stays free. */
+/* Toast (bottom-center, transient feedback) — session-7 settle-in:
+ * enter is the `db-toast-in` keyframe, exit is a data-closing
+ * transition (App.tsx keeps the DOM one fade longer than the text).
+ * Centering uses margin auto (NOT translateX) so the transform
+ * channel stays free. */
 .db-toast {
   position: fixed;
   left: 0;
@@ -708,6 +753,34 @@
   padding: 10px 16px;
   font-size: 12px;
   font-weight: 620;
+  /* Same settle-in contract as .db-pop (see the full story there):
+   * keyframe enter with NO fill (auto-removed at the end — a filling
+   * animation blocks the exit transition, Chrome quirk; and the
+   * framer WAAPI enter blanked the toast for one frame ~300 ms in),
+   * data-closing transition exit (interpolates from the live value;
+   * the framer exit flashed it back to full opacity before the
+   * unmount). */
+  animation: db-toast-in 200ms cubic-bezier(0.3, 1.2, 0.45, 1);
+  transition: opacity 140ms ease-in, transform 140ms ease-in;
+}
+@keyframes db-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.db-toast[data-closing="true"] {
+  /* opacity/transform only — no `animation: none` here: a replacement
+   * toast arriving mid-fade lifts data-closing, and restoring the
+   * animation property would REPLAY the entrance (blank + re-enter)
+   * instead of smoothly reverting the fade. */
+  opacity: 0;
+  transform: translateY(10px) scale(0.97);
+  pointer-events: none;
 }
 .db-toast svg {
   color: var(--ink);

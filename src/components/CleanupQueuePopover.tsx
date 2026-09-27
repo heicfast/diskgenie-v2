@@ -4,9 +4,19 @@
  * Bin), rows with reason + ✕, tray empty state, confirmation dialog
  * ("Items go to the Recycle Bin. Space is only freed when you empty
  * it." + Open Recycle Bin link) and a per-item failure alert.
+ *
+ * Motion (session-7): the enter/exit are CSS keyframe + transition —
+ * NOT framer-motion. The old `motion.div` + `AnimatePresence` drove
+ * the same ramp via WAAPI with the inline style parked at
+ * `opacity: 0`, and framer's post-animation cleanup is asynchronous:
+ * DOM-probed, one FULL painted frame ~250 ms after the spring
+ * finished fell back to that inline 0 — the whole 460×520 popover
+ * blinked OFF, then back ON (and on close it faded to 0, flashed
+ * back to full opacity for a frame, then unmounted). Same class of
+ * bug as the session-5 tab swap; same fix (see overlays.css
+ * `db-pop-in` / `[data-closing]`).
  */
 import { useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import { CheckIcon, Trash2Icon, XIcon } from "./Icon";
 import { TailPath } from "./TailPath";
 import { useCleanupStore } from "../state/cleanup";
@@ -16,7 +26,10 @@ import { useFocusTrap } from "../lib/useFocusTrap";
 import { bytes } from "../lib/format";
 import { BIN_NAME, IS_MAC } from "../lib/platform";
 import { invoke } from "../lib/ipc";
-import { SPRING_POP, EXIT_FAST } from "../lib/motion";
+
+/** Unmount delay: the CSS `[data-closing]` exit transition runs 140 ms
+ * (overlays.css); the actual unmount waits it out + a small margin. */
+const EXIT_UNMOUNT_MS = 170;
 
 export interface CommitFailure {
   path: string;
@@ -48,11 +61,77 @@ export function CleanupQueuePopover({
   // hardcoded top:96 — the degrade banner shifts the topbar down and a
   // fixed offset leaves the popover floating detached from its button.
   const [anchorPos, setAnchorPos] = useState<{ right: number; top: number } | null>(null);
+  // The popover DOM outlives `open` by one 140 ms exit fade: `mounted`
+  // is the real presence flag, `closing` drives the exit transition,
+  // and anchorPos is kept (NOT nulled) while fading so the exiting
+  // panel holds its anchored position instead of jumping.
+  const [mounted, setMounted] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const fadeFrame = useRef(0);
+  const unmountTimer = useRef(0);
   useEffect(() => {
-    if (!open) {
-      setAnchorPos(null);
+    if (open) {
+      setMounted(true);
+      setClosing(false);
+      // Re-open during an interrupted close: drop the frozen bridge
+      // values (see the close path below) so the panel settles back
+      // to base styles — the base transition ramps it to full. The
+      // inline animation:none STAYS (replaying the entrance keyframe
+      // on a half-visible panel would flash; it clears on the next
+      // fresh mount).
+      popRef.current?.style.removeProperty("opacity");
+      popRef.current?.style.removeProperty("transform");
       return;
     }
+    if (!mounted) return;
+    // open flipped false while on screen: fade, then unmount.
+    // (A re-open during the fade cancels this — the run above resets
+    // closing and the base transition ramps the panel back.)
+    const startFade = () => {
+      setClosing(true);
+      unmountTimer.current = window.setTimeout(() => {
+        setMounted(false);
+        setClosing(false);
+        setAnchorPos(null);
+      }, EXIT_UNMOUNT_MS);
+    };
+    const el = popRef.current;
+    if (el && el.getAnimations().length > 0) {
+      // Interrupted close (entrance keyframe still running): Chrome
+      // won't start a transition from a value change that lands in
+      // the SAME style recalc as an animation CANCEL (DOM-probed: the
+      // exit snapped). Freeze the mid-flight values inline FIRST —
+      // so the cancel's own recalc cannot flash the panel to its
+      // underlying full opacity — then cancel the entrance, and flip
+      // data-closing two paints later: the transition interpolates
+      // from the frozen value to the exit state.
+      const cs = getComputedStyle(el);
+      // Snapshot BEFORE any mutation: getComputedStyle returns a LIVE
+      // declaration — reading after the animation cancel re-computes
+      // to the underlying value (1) and the freeze would hold full
+      // opacity instead of the mid-flight one.
+      const op = cs.opacity;
+      const tr = cs.transform;
+      el.style.animation = "none";
+      el.style.opacity = op;
+      el.style.transform = tr;
+      fadeFrame.current = requestAnimationFrame(() => {
+        fadeFrame.current = requestAnimationFrame(() => {
+          el.style.removeProperty("opacity");
+          el.style.removeProperty("transform");
+          startFade();
+        });
+      });
+    } else {
+      startFade();
+    }
+    return () => {
+      if (fadeFrame.current) cancelAnimationFrame(fadeFrame.current);
+      if (unmountTimer.current) window.clearTimeout(unmountTimer.current);
+    };
+  }, [open, mounted]);
+  useEffect(() => {
+    if (!open) return;
     const measure = () => {
       const btn = document.querySelector<HTMLButtonElement>(".db-queue-button");
       if (!btn) return;
@@ -156,20 +235,16 @@ export function CleanupQueuePopover({
 
   return (
     <>
-      <AnimatePresence>
-        {open && anchorPos && (
-          <motion.div
+      {mounted && anchorPos && (
+          <div
             ref={popRef}
             className="db-pop"
+            data-closing={closing ? "true" : undefined}
             style={anchor === "topbar" ? { right: anchorPos.right, top: anchorPos.top } : undefined}
             role="dialog"
             aria-modal="false"
             aria-label="Cleanup Queue"
             tabIndex={-1}
-            initial={{ opacity: 0, y: -8, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -6, scale: 0.98, transition: EXIT_FAST }}
-            transition={SPRING_POP}
           >
             <div className="db-pop-head">
               <div>
@@ -253,9 +328,8 @@ export function CleanupQueuePopover({
                 ))}
               </div>
             )}
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
 
       {open && confirming && (
         <div className="db-scrim" role="dialog" aria-modal="true">

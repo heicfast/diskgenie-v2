@@ -7,7 +7,7 @@
  * hook §15 — CI screenshot tours).
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { AnimatePresence, MotionConfig, motion } from "framer-motion";
+import { MotionConfig } from "framer-motion";
 
 import { TopBar } from "./shell/TopBar";
 import { Sidebar } from "./sidebar";
@@ -33,7 +33,6 @@ import { pushRecent } from "./sidebar/RecentSection";
 import { TourDriver } from "./shell/TourDriver";
 import { AppErrorBoundary } from "./shell/AppErrorBoundary";
 import { CheckIcon, Trash2Icon, UacShieldIcon } from "./components/Icon";
-import { SPRING_TOAST } from "./lib/motion";
 import { listen } from "./lib/ipc";
 import "./theme/tokens.css";
 import "./styles/base.css";
@@ -94,6 +93,12 @@ function AppShell() {
   const [licenseOpen, setLicenseOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [toastIcon, setToastIcon] = useState<"shield" | "trash" | "check">("shield");
+  // The exit fade flag (session-7 settle-out): the toast DOM outlives
+  // its text by one 140ms data-closing transition so it never pops
+  // (see overlays.css .db-toast; the old framer exit tween flashed
+  // the toast back to full opacity for a frame before unmounting,
+  // and its WAAPI enter left the same one-frame blank ~300ms in).
+  const [toastClosing, setToastClosing] = useState(false);
 
   useEffect(() => {
     attachLicenseEvents();
@@ -144,12 +149,18 @@ function AppShell() {
   // decline listener below and the cleanup commit both use it.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let hideTimer: ReturnType<typeof setTimeout> | null = null;
     const showToast = (text: string, icon?: string) => {
       setToast(text);
+      setToastClosing(false); // a replacement toast cancels any fade-out
       if (icon === "shield" || icon === "trash" || icon === "check") setToastIcon(icon);
       else setToastIcon("check");
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => setToast(null), 5200);
+      if (hideTimer) clearTimeout(hideTimer);
+      timer = setTimeout(() => {
+        setToastClosing(true); // start the CSS exit fade...
+        hideTimer = setTimeout(() => setToast(null), 170); // ...then unmount
+      }, 5200);
     };
     const onToast = (e: Event) => {
       const detail = (e as CustomEvent<{ text: string; icon?: string }>).detail;
@@ -159,6 +170,7 @@ function AppShell() {
     return () => {
       window.removeEventListener("db-toast", onToast);
       if (timer) clearTimeout(timer);
+      if (hideTimer) clearTimeout(hideTimer);
     };
   }, []);
 
@@ -307,22 +319,15 @@ function AppShell() {
 
       <CleanupQueuePopover open={queueOpen} onClose={() => setQueueOpen(false)} anchor="topbar" />
       <LicenseDialog open={licenseOpen} onClose={() => setLicenseOpen(false)} />
-      <AnimatePresence>
-        {toast && (
-          <motion.div
-            key="toast"
-            className="db-toast"
-            role="status"
-            initial={{ opacity: 0, y: 18, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 10, scale: 0.97 }}
-            transition={SPRING_TOAST}
-          >
-            {toastIcon === "trash" ? <Trash2Icon size={15} /> : toastIcon === "shield" ? <UacShieldIcon size={15} /> : <CheckIcon size={15} />}
-            {toast}
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Toast (settle-in CSS motion — see overlays.css .db-toast): a
+       * plain div with a keyframe entrance and a data-closing exit;
+       * no AnimatePresence, no WAAPI cleanup gap. */}
+      {toast && (
+        <div className="db-toast" role="status" data-closing={toastClosing || undefined}>
+          {toastIcon === "trash" ? <Trash2Icon size={15} /> : toastIcon === "shield" ? <UacShieldIcon size={15} /> : <CheckIcon size={15} />}
+          {toast}
+        </div>
+      )}
       <TourDriver />
     </div>
   );

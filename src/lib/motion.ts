@@ -1,45 +1,41 @@
 /**
  * Motion presets (design system v2) — the ONE source for every
- * framer-motion spring/duration in the app.
+ * framer-motion spring in the app.
  *
- * Before this module five unrelated springs (480/38, 500/40, 520/34,
- * 500/26, 420/32) animated the same "element pops in" role and none
- * respected prefers-reduced-motion. These presets give each ROLE a
- * tuning, all members of one family:
- *
- *   spring.ui       — general UI elements (pills, badges, chips)
- *   spring.pop      — floating surfaces (popovers, anchored panels)
- *   spring.toast    — bottom toast (slightly softer, longer travel)
- *   fade.swap       — content/stage swaps (non-spring, eased)
+ * framer-motion's remaining footprint (session-7) is deliberately
+ * narrow: the two LAYOUT pills (tab pill in TopBar, mode pill in
+ * ExploreHeader — `layoutId` sliding, no opacity ramp) and the scan
+ * live-counter value tween in ExploreView. Every mount/unmount
+ * surface — tab swap, stage swap, cleanup popover, toast, queue
+ * badge — is CSS now (see the session-5/-7 notes below): WAAPI-driven
+ * enter/exit tweens parked the inline style at the initial value and
+ * framer cleaned them up asynchronously, leaving one painted frame
+ * where the finished animation was gone but the final style hadn't
+ * landed (element blanked, or flashed back before unmount).
  *
  * CSS-side motion tokens (--dur-*, --ease-*, see tokens.css) cover
  * stylesheet animations; the two systems share the same tempo ladder.
  */
 import type { Transition } from "framer-motion";
 
-/** Small UI elements: fast settle, no visible overshoot. */
+/** Small UI elements: fast settle, no visible overshoot. Used by the
+ * sliding layout pills (tab strip, mode picker). */
 export const SPRING_UI: Transition = { type: "spring", stiffness: 480, damping: 38 };
 
-/** Floating surfaces entering from an anchor: slightly softer, tiny
- * overshoot reads as physical at popover scale. */
-export const SPRING_POP: Transition = { type: "spring", stiffness: 480, damping: 34 };
-
-/** Toast: softest member (longer travel distance needs it). */
-export const SPRING_TOAST: Transition = { type: "spring", stiffness: 420, damping: 32 };
-
-/** Stage/content swap: 150 ms easeOut — duration-based so it never
- * overshoots layout content. */
-export const FADE_SWAP: Transition = { duration: 0.15, ease: "easeOut" };
-
-/** Overlay exit: quick, no spring (springs on exit feel sticky). */
-export const EXIT_FAST: Transition = { duration: 0.14, ease: "easeIn" };
-
-/* Tab/stage swaps are NOT framer anymore (session-5 "settle-in"):
- * they are CSS keyframe animations — `db-settle-in` in shell.css,
- * applied by .db-tab-swap / .db-stage-swap. Framer's WAAPI tween for
- * the same 130 ms easeOut opacity ramp left one painted frame at the
- * ramp's end where the finished animation was already removed but the
- * final inline style hadn't landed (element fell back to its initial
- * opacity 0 — a blank flash after every switch). The CSS route
- * reverts to the underlying value in the same style recalc, so the
- * gap cannot exist; see TabSwap in App.tsx for the full story. */
+/* Retired presets (session-7): SPRING_POP / SPRING_TOAST / EXIT_FAST /
+ * FADE_SWAP belonged to the popover, toast, badge, and swap surfaces —
+ * all now CSS keyframe + transition:
+ *
+ *   .db-tab-swap / .db-stage-swap  db-settle-in          (shell/explore.css)
+ *   .db-pop                        db-pop-in + [data-closing] (overlays.css)
+ *   .db-toast                      db-toast-in + [data-closing]
+ *   .db-queue-button b             db-badge-in + [data-closing] (shell.css)
+ *
+ * The CSS route reverts to the underlying value in the same style
+ * recalc the moment an animation ends, so the cleanup gap cannot
+ * exist; data-closing exits transition FROM the live computed value
+ * (interrupt-safe even mid-entrance). The exit fades are 120–140 ms
+ * (ease-in) and entrances 160–200 ms with a soft overshoot bezier —
+ * the same feel as the old springs. prefers-reduced-motion is
+ * honored twice: the base.css kill switch flattens durations, and
+ * App.tsx keeps MotionConfig reducedMotion="user" for the pills. */

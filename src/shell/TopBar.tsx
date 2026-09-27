@@ -6,7 +6,7 @@
  * buttons. The whole bar doubles as the window drag region (Windows 11
  * app convention — one chrome row instead of a separate title bar).
  */
-import { AnimatePresence, motion } from "framer-motion";
+import { motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import {
   AppWindowIcon, ChevronLeftIcon, ChevronRightIcon, Clock3Icon, CopyIcon, GaugeIcon,
@@ -101,9 +101,10 @@ export function TopBar(props: TopBarProps) {
     >
       <div className="db-brand" data-tauri-drag-region>
         <span className="db-brand-mark">
-          {/* The DiskBytes product mark (Icon Pack v2 — HDD + broom on the
-           * orange squircle; matches the window/taskbar/installer icon
-           * everywhere the product appears). */}
+          {/* The DiskBytes product mark (Icon Pack v3 — 3D HDD + broom on
+           * the orange-red gradient squircle; same design as the
+           * window/taskbar/installer icon everywhere the product
+           * appears. 31px frame = the tab-pill height for symmetry. */}
           <img src={brandMark} alt="" draggable={false} />
         </span>
         <strong data-tauri-drag-region>DiskBytes</strong>
@@ -201,19 +202,7 @@ export function TopBar(props: TopBarProps) {
       >
         <Trash2Icon size={15} />
         <span className="db-queue-label">Cleanup</span>
-        <AnimatePresence>
-          {itemCount > 0 && (
-            <motion.b
-              key="badge"
-              initial={{ scale: 0.4, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.4, opacity: 0 }}
-              transition={SPRING_UI}
-            >
-              {itemCount}
-            </motion.b>
-          )}
-        </AnimatePresence>
+        <QueueBadge count={itemCount} />
       </button>
 
       <LicenseChip onClick={props.onOpenLicense} />
@@ -242,6 +231,33 @@ export function TopBar(props: TopBarProps) {
       <CaptionButtons />
     </header>
   );
+}
+
+/** Queue count badge (session-7 settle-in, CSS-only — same contract as
+ * .db-pop / .db-toast): the number pops via the `db-badge-in` keyframe
+ * (fill both) and shrinks out via a data-closing transition; the DOM
+ * outlives `count` by one 120ms fade. The framer AnimatePresence
+ * version carried the WAAPI cleanup gap (one blank frame after the
+ * spring settled, one flash-back before the unmount). */
+function QueueBadge({ count }: { count: number }) {
+  const [mounted, setMounted] = useState(false);
+  const [closing, setClosing] = useState(false);
+  useEffect(() => {
+    if (count > 0) {
+      setMounted(true);
+      setClosing(false);
+      return;
+    }
+    if (!mounted) return;
+    setClosing(true);
+    const t = window.setTimeout(() => {
+      setMounted(false);
+      setClosing(false);
+    }, 150);
+    return () => window.clearTimeout(t);
+  }, [count, mounted]);
+  if (!mounted) return null;
+  return <b data-closing={closing || undefined}>{count}</b>;
 }
 
 function LicenseChip({ onClick }: { onClick: () => void }) {

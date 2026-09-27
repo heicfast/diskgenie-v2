@@ -79,14 +79,19 @@
   cursor: default;
 }
 .db-brand-mark {
-  /* The product mark (Icon Pack v2) ships its own squircle + gradient —
-   * the container is a plain 26px frame: no fill, no glow, and the
-   * radius smaller than the PNG's baked corners so nothing clips. */
+  /* The product mark (Icon Pack v3) ships its own squircle + gradient
+   * with BAKED transparent corners — the container is a plain frame:
+   * no fill, no glow, radius only as clip insurance. Frame height
+   * matches .db-tabcaps button / .db-tab-pill exactly (31px): the
+   * logo sits in SYMMETRY with the tab strip — same visual height as
+   * the orange pill that highlights the open page (the 26px frame
+   * read undersized next to it; the 62px asset is 2x for crisp
+   * 1x/2x rendering). */
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
+  width: 31px;
+  height: 31px;
+  border-radius: 7px;
   overflow: hidden;
   flex: none;
   -webkit-user-drag: none;
@@ -306,6 +311,29 @@
   font-size: 9.5px;
   font-weight: 700;
   box-shadow: 0 1px 3px rgba(255, 59, 48, 0.4);
+  /* Session-7 settle-in (QueueBadge in TopBar.tsx): keyframe pop-in
+   * with NO fill (finished animations auto-remove — a filling one
+   * blocks the exit transition; see .db-pop in overlays.css for the
+   * full story) + data-closing transition out. The framer version
+   * carried the WAAPI cleanup gap (blank frame after settle, flash
+   * before unmount). */
+  animation: db-badge-in 160ms cubic-bezier(0.3, 1.2, 0.4, 1);
+  transition: opacity 120ms ease-in, transform 120ms ease-in;
+}
+@keyframes db-badge-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.db-queue-button b[data-closing="true"] {
+  animation: none;
+  opacity: 0;
+  transform: scale(0.4);
 }
 .db-queue-button.has-items {
   border-color: transparent;

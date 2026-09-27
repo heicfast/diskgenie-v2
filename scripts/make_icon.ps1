@@ -1,13 +1,14 @@
-# DiskBytes icon fan-out (doc 03 M11.1, updated for Icon Pack v2): the
-# 1024x1024 brand source is a COMMITTED design asset
-# (packaging/icon/icon-source.png — the orange squircle HDD + broom from
-# DiskBytes-Icon-Pack-v2; superseded the programmatic ink-square
-# generator, which was retired with its example). This script only fans
-# the source out to every platform size via `npx tauri icon`.
+# DiskBytes icon fan-out (doc 03 M11.1, updated for Icon Pack v3 / kit):
+# the brand source is a COMMITTED design asset
+# (packaging/icon/icon-source.png — the 2048x2048 3D HDD + broom on the
+# orange-red gradient squircle from the DiskBytes Icon Pack v3 kit;
+# supersedes the programmatic ink-square generator, which was retired
+# with its example). This script only fans the source out to every
+# platform size via `npx tauri icon`.
 #
 # To update the brand: replace packaging/icon/icon-source.png with the
-# new 1024x1024 RGBA source, then run this script (or push — CI runs it
-# on every Windows build).
+# new square RGBA source (>=1024px, baked rounded corners), then run
+# this script (or push — CI runs it on every Windows build).
 param(
     [string]$AppRoot = (Split-Path $PSScriptRoot -Parent)
 )
