@@ -524,12 +524,12 @@ mod tests {
     #[test]
     fn key_normalization_accepts_messy_input() {
         assert_eq!(
-            normalize_key(" db-xk2m9-qf3p8-nr4t-2vw6y ").as_deref(),
-            Some("DBXK2M9QF3P8NR4T2VW6Y")
+            normalize_key(" db-xk2m9-qf3p8nr4t-2vw6y4 ").as_deref(),
+            Some("DBXK2M9QF3P8NR4T2VW6Y4")
         );
         assert_eq!(
-            normalize_key("DB.XK2M9 qf3p8nr4t2vw6y").as_deref(),
-            Some("DBXK2M9QF3P8NR4T2VW6Y")
+            normalize_key("DB.XK2M9 qf3p8nr4t2vw6y4").as_deref(),
+            Some("DBXK2M9QF3P8NR4T2VW6Y4")
         );
     }
 
@@ -551,7 +551,7 @@ mod tests {
             customer_name: "Alex Morgan".into(),
             customer_email: "alex@example.com".into(),
             last_validated_at: now,
-            token_exp: now + 86_400,
+            token_exp: now + 14 * 86_400,
             ..Default::default()
         };
         let v = view(&s, now);
@@ -560,8 +560,10 @@ mod tests {
         assert_eq!(v.customer_name, "Alex Morgan");
         assert_eq!(v.license_expires_at, 0);
         assert_eq!(v.purchase_url, LICENSE_PURCHASE_URL);
-        // 10 days stale → grace 4.
+        // 10 days stale with a token issued 10 days ago (14-day window,
+        // 4 left) → grace 4.
         s.last_validated_at = now - 10 * 86_400;
+        s.token_exp = now + 4 * 86_400;
         let v = view(&s, now);
         assert_eq!(v.posture, "grace");
         assert_eq!(v.grace_days_left, 4);

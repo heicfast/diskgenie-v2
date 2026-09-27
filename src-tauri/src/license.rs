@@ -920,6 +920,9 @@ mod tests {
 
     const NOW: i64 = 1_790_000_000;
 
+    /// A pro state whose token was last refreshed at `last_validated`
+    /// (the 14-day window counts from there — the server mints
+    /// `exp = issued + 14d`, so the fixture models it the same way).
     fn pro_state(last_validated: i64) -> LicenseState {
         LicenseState {
             license_key: "DB".to_string() + &"1".repeat(20),
@@ -930,7 +933,7 @@ mod tests {
             customer_email: "a@b.c".into(),
             license_expires_at: 0,
             token: "t".into(),
-            token_exp: NOW + 14 * 86_400,
+            token_exp: last_validated + 14 * 86_400,
             activated_at: NOW - 100,
             last_validated_at: last_validated,
             last_known_good: last_validated,
@@ -945,7 +948,7 @@ mod tests {
 
     #[test]
     fn posture_grace_counts_days() {
-        // 10 days stale, token has 14 → grace 4.
+        // Token issued 10 days ago (14-day window) → 4 days left.
         let s = pro_state(NOW - 10 * 86_400);
         assert_eq!(posture(&s, NOW), LicensePosture::Grace { days_left: 4 });
     }
