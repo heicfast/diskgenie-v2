@@ -2,11 +2,11 @@ name: MSIX Build (Microsoft Store)
 
 # The Microsoft Store distribution pipeline (docs/LICENSING-ARCHITECTURE
 # §9 / docs/DISTRIBUTION.md):
-#   release exe + generated logo assets + AppxManifest → MakeAppx pack
-#   → unsigned MSIX artifact (Partner Center validates + SIGNS on
-#   submission — that is why we do not sign in CI; the Store's
-#   signature is also the tamper-evident distribution layer of the
-#   licensing architecture).
+#   release exe + generated logo assets + the templated AppxManifest
+#   (packaging/msix/AppxManifest.xml) → MakeAppx pack → unsigned MSIX
+#   artifact. Partner Center validates + SIGNS on submission — that is
+#   why we do not sign in CI (the Store's signature is the
+#   tamper-evident distribution layer of the licensing architecture).
 #
 # Identity inputs (workflow_dispatch): set Name = the RESERVED APP NAME
 # in Partner Center and Publisher = the package identity Publisher
@@ -51,7 +51,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-        workspaces: src-tauri
+        with:
+          workspaces: src-tauri
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -84,17 +85,17 @@ jobs:
           $publisher = "${{ github.event.inputs.store_publisher || 'CN=DiskBytes' }}"
           $version = "${{ steps.ver.outputs.version }}"
 
-          # ── Layout: app files ───────────────────────────────────────
+          # -- Layout: app files -----------------------------------------
           $root = "msix-layout"
           Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path "$root" | Out-Null
           $exe = "src-tauri\target\release\diskbytes.exe"
           if (-not (Test-Path $exe)) { throw "exe not found: $exe" }
           Copy-Item $exe "$root\DiskBytes.exe"
-          # Tauri 2 embeds the frontend + needs no side-by-side DLLs;
-          # anything else the build emits would be listed here.
+          # Tauri 2 embeds the frontend; the release build emits no
+          # side-by-side DLLs (anything new would be copied here).
 
-          # ── Logo assets from the committed icon source ───────────────
+          # -- Logo assets from the committed icon source ---------------
           Add-Type -AssemblyName System.Drawing
           $assets = "$root\Assets"
           New-Item -ItemType Directory -Force -Path $assets | Out-Null
@@ -118,67 +119,31 @@ jobs:
           Save-Png 150 "Square150x150Logo.png"
           Save-Png 310 "Square310x310Logo.png"
           Save-Png 50 "StoreLogo.png"
-          # Wide tile (310x150) + Store hero (620x300) — letterboxed on
+          # Wide tile (310x150) + Store hero (620x300): letterboxed on
           # the brand orange so the package carries the full asset set.
-          foreach ($pair in @(@('Wide310x150Logo.png', 310, 150), @('ScreenCapture620x300.png', 620, 300))) {
-            $bmp = New-Object System.Drawing.Bitmap $pair[1], $pair[2]
+          foreach ($tile in @(
+              @{ name = 'Wide310x150Logo.png'; w = 310; h = 150 },
+              @{ name = 'ScreenCapture620x300.png'; w = 620; h = 300 }
+            )) {
+            $bmp = New-Object System.Drawing.Bitmap $tile.w, $tile.h
             $g = [System.Drawing.Graphics]::FromImage($bmp)
             $g.Clear([System.Drawing.Color]::FromArgb(255, 240, 90, 40))
-            $side = [Math]::Min($pair[2], 300)
+            $side = [Math]::Min($tile.h, 300)
             $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-            $g.DrawImage($src, [int](($pair[1] - $side) / 2), [int](($pair[2] - $side) / 2), $side, $side)
-            $bmp.Save("$assets\$($pair[0])", [System.Drawing.Imaging.ImageFormat]::Png)
+            $g.DrawImage($src, [int](($tile.w - $side) / 2), [int](($tile.h - $side) / 2), $side, $side)
+            $bmp.Save("$assets\$($tile.name)", [System.Drawing.Imaging.ImageFormat]::Png)
             $g.Dispose(); $bmp.Dispose()
           }
           $src.Dispose()
 
-          # ── AppxManifest ─────────────────────────────────────────────
-          # runFullTrust: the standard restricted capability for packaged
-          # desktop (Win32) apps — auto-granted for the desktop bridge.
-          # internetClient: license validation + store services.
-          # MinVersion 10.0.19041.0: the WebView2 Runtime is inbox there.
-          $manifest = @"
-<?xml version="1.0" encoding="utf-8"?>
-<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
-         xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest"
-         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
-         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-         IgnorableNamespaces="mp uap rescap">
-  <Identity Name="$identityName"
-            Publisher="$publisher"
-            Version="$version"
-            ProcessorArchitecture="x64" />
-  <Properties>
-    <DisplayName>DiskBytes</DisplayName>
-    <PublisherDisplayName>DiskBytes</PublisherDisplayName>
-    <Logo>Assets\StoreLogo.png</Logo>
-    <Description>DiskBytes — see exactly what fills your disk. Full-disk map, safe cleanup, duplicates, snapshots and a live monitor.</Description>
-  </Properties>
-  <Resources>
-    <Resource Language="en-US" />
-  </Resources>
-  <Dependencies>
-    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
-  </Dependencies>
-  <Capabilities>
-    <rescap:Capability Name="runFullTrust" />
-    <Capability Name="internetClient" />
-  </Capabilities>
-  <Applications>
-    <Application Id="DiskBytes"
-                 Executable="DiskBytes.exe"
-                 EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="DiskBytes"
-                          Description="See exactly what fills your disk"
-                          BackgroundColor="#F05A28"
-                          Square44x44Logo="Assets\Square44x44Logo.targetsize-44.png"
-                          Square150x150Logo="Assets\Square150x150Logo.png" />
-    </Application>
-  </Applications>
-</Package>
-"@
+          # -- Manifest: template + placeholder substitution -------------
+          $manifest = (Get-Content -Raw "packaging\msix\AppxManifest.xml") `
+            -replace '__IDENTITY_NAME__', $identityName `
+            -replace '__PUBLISHER__', $publisher `
+            -replace '__VERSION__', $version
           $manifest | Set-Content -Encoding UTF8 "$root\AppxManifest.xml"
-          Get-ChildItem $root -Recurse | ForEach-Object { "layout: $($_.FullName.Replace((Get-Location).Path, ''))" }
+          "identity: $identityName / $publisher / $version"
+          Get-ChildItem $root -Recurse -File | ForEach-Object { "layout: $($_.FullName)" }
 
       - name: Pack the MSIX (MakeAppx)
         shell: pwsh
@@ -191,13 +156,12 @@ jobs:
           $version = "${{ steps.ver.outputs.version }}"
           $out = "dist-msix"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          # Pack by directory (layout dir + manifest inside it).
           & $makeappx.FullName pack /o /v /d msix-layout /p "$out\DiskBytes-$version-x64.msix"
           if ($LASTEXITCODE -ne 0) { throw "MakeAppx failed ($LASTEXITCODE)" }
           $hash = (Get-FileHash "$out\DiskBytes-$version-x64.msix" -Algorithm SHA256).Hash.ToLower()
           "$hash  DiskBytes-$version-x64.msix" | Set-Content "$out\SHA256SUMS.txt"
           Get-Content "$out\SHA256SUMS.txt"
-          Get-Item "$out\*.msix" | ForEach-Object { "msix: $($_.Name) — $([Math]::Round($_.Length / 1MB, 2)) MB" }
+          Get-Item "$out\*.msix" | ForEach-Object { "msix: $($_.Name) - $([Math]::Round($_.Length / 1MB, 2)) MB" }
 
       - name: "Optional: Windows App Cert Kit (best-effort pre-validation)"
         shell: pwsh
@@ -205,17 +169,17 @@ jobs:
         run: |
           # Partner Center runs its own validation on submission; WACK
           # here is an early warning only (unsigned Store packages may
-          # not be WACK-able locally — failures never block this job).
+          # not be WACK-able locally - failures never block this job).
           $wack = "C:\Program Files (x86)\Windows Kits\10\App Certification Kit\appcert.exe"
           if (Test-Path $wack) {
-            "WACK present — running reset + package test (non-fatal)"
+            "WACK present - running reset + package test (non-fatal)"
             & $wack reset | Out-Null
             & $wack test -appx (Resolve-Path "dist-msix\*.msix") | Out-Null
             if (Test-Path "$env:LOCALAPPDATA\Microsoft\appcertkit") {
               Copy-Item "$env:LOCALAPPDATA\Microsoft\appcertkit" -Destination "wack-report" -Recurse -ErrorAction SilentlyContinue
             }
           } else {
-            "WACK not installed on this runner — skipping (Partner Center validates on submission)."
+            "WACK not installed on this runner - skipping (Partner Center validates on submission)."
           }
 
       - name: Upload the MSIX artifact

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DiskBytes MSIX manifest TEMPLATE (packaged by .github/workflows/msix-build.yml).
+
+  Placeholders (substituted in CI):
+    __IDENTITY_NAME__  Partner Center package identity Name (the reserved
+                       app name) — workflow input store_identity_name.
+    __PUBLISHER__      Partner Center package identity Publisher (CN=…) —
+                       workflow input store_publisher.
+    __VERSION__        App version + CI run number (4-part, monotonic).
+
+  Capabilities:
+    runFullTrust  the standard restricted capability for packaged desktop
+                  (Win32) apps — auto-granted for the desktop bridge.
+    internetClient  license validation (the Cloudflare Worker) + Store
+                  services.
+
+  MinVersion 10.0.19041.0: the WebView2 Runtime is inbox/preinstalled there
+  (MSIX cannot embed the NSIS bootstrapper — docs/DISTRIBUTION.md §Store).
+-->
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+         IgnorableNamespaces="mp uap rescap">
+  <Identity Name="__IDENTITY_NAME__"
+            Publisher="__PUBLISHER__"
+            Version="__VERSION__"
+            ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>DiskBytes</DisplayName>
+    <PublisherDisplayName>DiskBytes</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>DiskBytes — see exactly what fills your disk. Full-disk map, safe cleanup, duplicates, snapshots and a live monitor.</Description>
+  </Properties>
+  <Resources>
+    <Resource Language="en-US" />
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <Capability Name="internetClient" />
+  </Capabilities>
+  <Applications>
+    <Application Id="DiskBytes"
+                 Executable="DiskBytes.exe"
+                 EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="DiskBytes"
+                          Description="See exactly what fills your disk"
+                          BackgroundColor="#F05A28"
+                          Square44x44Logo="Assets\Square44x44Logo.targetsize-44.png"
+                          Square150x150Logo="Assets\Square150x150Logo.png" />
+    </Application>
+  </Applications>
+</Package>
