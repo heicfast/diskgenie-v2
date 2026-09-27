@@ -1114,3 +1114,18 @@ Stage Summary:
 - The brand mark is height-symmetric with the tab pill (31px = 31px, top-aligned) — probe-measured and VLM-audited in both themes
 - The Cleanup Queue popover (plus toast and badge) now runs the blink-free settle-in architecture: CSS keyframe enter / transition exit / never replaying entrances / interrupt-safe freezes — all four motion paths DOM-probed flawless
 - Next: push -> 4 workflows (Windows CI regenerates icons from the committed v3 source; UI screenshots tour should show the new brand) -> pull production screenshots -> VLM-verify -> report
+
+---
+Task ID: uiux-12 (session 7, cont.) — CI convergence + production verification
+Agent: main (Super Z)
+Task: Close the CI loop and verify the production Windows build
+
+Work Log:
+- ALL 4 WORKFLOWS GREEN on 792dd41 (first run, no fixes needed): CI (static gates + core tests + Windows dupes E2E + NSIS bundle), Test Matrix (all platforms), macOS Build, UI Screenshots.
+- The icon-regen step ran from the committed Icon-Pack-v3 source ("fanning out sizes" — icns/ico/png regenerated in the NSIS job log); the diskbytes-windows-release artifact built (14.6 MB).
+- PRODUCTION VERIFICATION (Windows runner, 42 tour screenshots): contact-sheet VLM audit x2 — the NEW logo (orange-red rounded square, 3D HDD+broom) visible, crisp, and consistent across EVERY shot; no old logo, no broken/missing images, no layout defects. Full-size audit of the cleanup-queue step (step-40): header "Cleanup Queue · 39.0 GB staged" + X legible; Clear / Move to Recycle Bin... buttons styled un-clipped; staged row aligned + properly ellipsized; popover anchored precisely below the Cleanup button; red count badge "1" visible; logo crisp; "Defects: None detected."
+- The tour's per-step closeOverlays cycle (db-tour-step fires BEFORE each step's apply) exercises the new popover fade/reopen path 42 times in production — no artifacts in any capture.
+
+Stage Summary:
+- Session 7 complete: Icon Pack v3 (the 3D HDD+broom redesign) on every surface — installer/window/taskbar/dmg/favicons/top-bar brand — with the brand mark now in exact 31px symmetry with the tab-pill strip; the Cleanup Queue popover (plus the toast and the queue badge) converted to the blink-free settle-in architecture with all four motion paths frame-probe-verified (open, close, interrupted close, toggle race); production-verified on the real Windows build with zero defects.
+- Next: pull the new DiskBytes_0.1.0_x64-setup.exe from the CI artifact — the taskbar, installer, and in-app branding all carry the new design; the Queue popup should feel glass-smooth on open/close/toggle.
