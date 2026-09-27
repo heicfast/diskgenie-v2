@@ -88,7 +88,15 @@ pub fn list_snapshots() -> Vec<SnapshotView> {
 pub fn take_snapshot(
     generation: u64,
     state: State<'_, crate::state::AppState>,
+    license: State<'_, crate::commands::license::LicenseManager>,
 ) -> Result<SnapshotView, String> {
+    // The hard license gate (docs §2 L6).
+    crate::commands::license::require_licensed(
+        &license,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0)),
+    )?;
     let guard = state.tree.read();
     let Some(tree) = guard.as_ref() else {
         return Err("no scan yet".into());
@@ -161,7 +169,18 @@ pub struct DiffView {
 /// # Errors
 /// String error when a snapshot file cannot be read.
 #[tauri::command]
-pub fn diff_snapshots(before_id: &str, after_id: &str) -> Result<DiffView, String> {
+pub fn diff_snapshots(
+    before_id: &str,
+    after_id: &str,
+    license: State<'_, crate::commands::license::LicenseManager>,
+) -> Result<DiffView, String> {
+    // The hard license gate (docs §2 L6).
+    crate::commands::license::require_licensed(
+        &license,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0)),
+    )?;
     ensure_safe_id(before_id)?;
     ensure_safe_id(after_id)?;
     let load = |id: &str| -> Result<Snapshot, String> {
@@ -197,7 +216,17 @@ pub fn diff_snapshots(before_id: &str, after_id: &str) -> Result<DiffView, Strin
 /// String error when the file exists but cannot be removed, or the
 /// index rewrite fails.
 #[tauri::command]
-pub fn delete_snapshot(id: &str) -> Result<(), String> {
+pub fn delete_snapshot(
+    id: &str,
+    license: State<'_, crate::commands::license::LicenseManager>,
+) -> Result<(), String> {
+    // The hard license gate (docs §2 L6).
+    crate::commands::license::require_licensed(
+        &license,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0)),
+    )?;
     ensure_safe_id(id)?;
     snapshots::delete_snapshot(&snapshots_dir(), id)
         .map_err(|e| format!("Couldn't delete the snapshot: {e:?}"))

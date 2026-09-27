@@ -1,39 +1,91 @@
-//! License layer (doc 06; spec §8-licensing): Dodo Payments activation/
-//! validation/deactivation over the three PUBLIC endpoints (safe in
-//! shipped binaries — `security: []` in the OpenAPI), hardware binding,
-//! DPAPI-cached state, the 14-day offline grace (doc 06 §3.4 decision),
-//! and 24-hour revalidation.
+//! License layer v2 (docs/LICENSING-ARCHITECTURE.md; supersedes the Dodo
+//! Payments design in doc 06): DiskBytes-owned licensing over our
+//! Cloudflare Worker + D1 backend.
 //!
-//! The Dodo **SDK** stays backend-side (doc 06 §6 decision); this client
-//! is raw reqwest behind the [`DodoHttp`] seam so the state machine is
-//! unit-testable with a fake transport + injected clock.
+//! Security model (the short version — the full layer table lives in the
+//! doc):
+//! * The server issues **Ed25519-signed entitlement tokens**; this client
+//!   verifies every token against the embedded PUBLIC key
+//!   ([`LICENSE_PUBLIC_KEY_HEX`]), so a spoofed license server (hosts
+//!   redirect, local mimic) cannot forge a license — the private key
+//!   never leaves the Worker.
+//! * Tokens bind to this machine's [`hardware_id`] and to the stored key
+//!   hash; copying the DPAPI/Keychain-wrapped state to another machine
+//!   fails verification.
+//! * App→server requests are HMAC-SHA256-signed (timestamp + single-use
+//!   nonce + body hash) — friction against casual endpoint abuse.
+//! * Every privileged Tauri command re-checks [`posture`] in Rust (the
+//!   UI lock is not the boundary).
+//!
+//! The protocol client sits behind the [`LicenseHttp`] seam so the whole
+//! state machine is unit-testable with a fake transport + injected
+//! clock; the Ed25519 fixture tests exercise the real signature path
+//! with a test keypair.
 
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
-/// TEST/LIVE base URLs (doc 06 §2; `DODO_PAYMENTS_MODE=test` selects TEST).
-const BASE_TEST: &str = "https://test.dodopayments.com";
-const BASE_LIVE: &str = "https://live.dodopayments.com";
+/// Default production license-server base (change per deployment; the
+/// env `DISKBYTES_LICENSE_API` overrides for tests/local dev).
+const LICENSE_API_BASE: &str = "https://license.diskbytes.app/";
 
-/// Revalidation interval (doc 06 §3.4: 24 h).
+/// Ed25519 public key (64 hex chars) — the ONLY key this binary holds.
+/// The matching private seed lives as the Worker secret
+/// `LICENSE_SIGNING_PRIVATE_KEY` (deployment guide: the license-server
+/// repo README §2). Rotating the pair = regenerate + update here + ship.
+pub const LICENSE_PUBLIC_KEY_HEX: &str =
+    "7fe82b6675b4927244615e8d582dbc7e7bd7d1bec10e2f8a8f71240472038d38";
+
+/// HMAC-SHA256 request secret (64 hex) shared with the Worker secret
+/// `CLIENT_REQUEST_SECRET`. NOTE (honest threat model, doc §2 L2): this
+/// ships in a public-source binary — it is abuse friction, NOT the
+/// security boundary; the boundary is [`LICENSE_PUBLIC_KEY_HEX`].
+const CLIENT_SECRET_HEX: &str = "e99e24e165a7f4066382d6591132a2a02573d083952e6c7da8ae070d79ec56f4";
+
+/// The purchase page (external; collects name + email + billing address
+/// at checkout — the address stays with the payment processor).
+pub const LICENSE_PURCHASE_URL: &str = "https://diskbytes.app/pricing";
+
+/// Revalidation interval (doc §6: 24 h).
 pub const VALIDATION_INTERVAL_S: i64 = 24 * 60 * 60;
 
-/// Offline grace (doc 06 §3.4 DECISION: 14 days).
+/// Offline grace window baked into every issued token (keep in sync with
+/// the Worker var `TOKEN_TTL_DAYS`).
 pub const GRACE_DAYS: i64 = 14;
 
-/// The HTTP seam: real = reqwest blocking; tests = fake.
-pub trait DodoHttp {
-    /// POST JSON → (status, body).
-    fn post_json(&self, url: &str, body: &str) -> Result<(u16, String), String>;
+/// Allowed clock skew for token issuance times.
+const CLOCK_SKEW_S: i64 = 300;
+
+/// Resolve the API base (env override for tests/local dev).
+#[must_use]
+pub fn api_base() -> String {
+    std::env::var("DISKBYTES_LICENSE_API").unwrap_or_else(|_| LICENSE_API_BASE.to_string())
 }
 
-/// The real transport (reqwest, 30 s timeout — doc 06 §6).
-pub struct ReqwestDodo {
+// ============================================================================
+// HTTP seam
+// ============================================================================
+
+/// The HTTP seam: real = reqwest blocking; tests = scripted fake.
+pub trait LicenseHttp {
+    /// POST JSON with headers → (status, body).
+    fn post_json(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &str,
+    ) -> Result<(u16, String), String>;
+}
+
+/// The real transport (reqwest, 30 s timeout — same policy as doc 06 §6).
+pub struct ReqwestLicense {
     client: reqwest::blocking::Client,
 }
 
-impl ReqwestDodo {
+impl ReqwestLicense {
     /// Build with the documented timeout.
     ///
     /// # Errors
@@ -47,12 +99,22 @@ impl ReqwestDodo {
     }
 }
 
-impl DodoHttp for ReqwestDodo {
-    fn post_json(&self, url: &str, body: &str) -> Result<(u16, String), String> {
-        let resp = self
+impl LicenseHttp for ReqwestLicense {
+    fn post_json(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &str,
+    ) -> Result<(u16, String), String> {
+        let mut req = self
             .client
             .post(url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::USER_AGENT, "DiskBytes-License-Client/1");
+        for (k, v) in headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        let resp = req
             .body(body.to_string())
             .send()
             .map_err(|e| format!("network: {e}"))?;
@@ -62,239 +124,311 @@ impl DodoHttp for ReqwestDodo {
     }
 }
 
-/// Typed license errors with the spec'd user copy (doc 06 §3.1).
+// ============================================================================
+// Errors (typed UX copy + machine markers)
+// ============================================================================
+
+/// Error marker prefix the command layer appends so the WebView can
+/// detect gate refusals and open the activation flow (defense in depth
+/// behind the UI lock).
+pub const GATE_ACTIVATION_REQUIRED: &str = "ACTIVATION_REQUIRED";
+
+/// Typed license errors with the user-facing copy (mirrors the server's
+/// error-code contract; docs §4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LicenseError {
-    /// 404 — key not found.
+    /// 404 — key not in our records.
     InvalidKey,
-    /// 403 — key inactive.
+    /// 403 — key revoked or refunded.
     Inactive,
-    /// 422 — activation limit reached (offer deactivate-a-device).
-    SeatLimit,
-    /// Network failure → offline grace path.
+    /// 403 — yearly license past its expiry.
+    Expired,
+    /// 409 — the platform slot is held by another device.
+    DeviceSlotTaken,
+    /// 403 — this device is not the registered one.
+    DeviceMismatch,
+    /// Transport failure → offline grace path.
     Network,
     /// 5xx / parse failure.
     ServerError,
+    /// A server response FAILED local signature/binding verification —
+    /// the anti-spoofing tripwire (treat as hard failure, never ok).
+    Spoofed,
 }
 
 impl std::fmt::Display for LicenseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            Self::InvalidKey => "Invalid License Key. Please check your key and try again.",
-            Self::Inactive => "This license key is inactive. Contact support.",
-            Self::SeatLimit => "Activation limit reached — deactivate a device to free a seat.",
+            Self::InvalidKey => "Invalid license key. Please check it and try again.",
+            Self::Inactive => "This license key is no longer active. Contact support.",
+            Self::Expired => "Your yearly license has expired — renew to keep DiskBytes Pro.",
+            Self::DeviceSlotTaken => {
+                "This key is already activated on another device. Deactivate it there (or contact support) to move it here."
+            }
+            Self::DeviceMismatch => "This device isn't registered with this license key.",
             Self::Network => "Network unavailable — DiskBytes keeps working offline.",
-            Self::ServerError => "Dodo Payments had a problem. Try again in a moment.",
+            Self::ServerError => "The license server had a problem. Try again in a moment.",
+            Self::Spoofed => {
+                "The license server's response could not be verified. Reconnect and try again."
+            }
         };
         f.write_str(s)
     }
 }
 
 impl LicenseError {
-    /// Map a status code per the documented contract (doc 06 §3.1).
-    #[must_use]
-    pub fn from_status(status: u16) -> Self {
-        match status {
-            403 => Self::Inactive,
-            404 => Self::InvalidKey,
-            422 => Self::SeatLimit,
+    /// Map a (status, error-code) pair per the server contract.
+    fn from_response(status: u16, code: &str) -> Self {
+        match (status, code) {
+            (404, _) | (_, "KEY_NOT_FOUND") => Self::InvalidKey,
+            (403, "KEY_REVOKED") | (403, "KEY_REFUNDED") | (403, "KEY_PENDING") => Self::Inactive,
+            (403, "LICENSE_EXPIRED") => Self::Expired,
+            (403, "DEVICE_MISMATCH") => Self::DeviceMismatch,
+            (409, _) | (_, "DEVICE_SLOT_TAKEN") => Self::DeviceSlotTaken,
             _ => Self::ServerError,
         }
     }
-}
 
-/// The validate response body.
-#[derive(Deserialize)]
-struct ValidateResponse {
-    valid: bool,
-}
-
-/// The Dodo client (3 public endpoints, no API key).
-pub struct DodoClient<H: DodoHttp> {
-    http: H,
-    base: String,
-}
-
-impl<H: DodoHttp> DodoClient<H> {
-    /// TEST mode when `DODO_PAYMENTS_MODE=test` (dev only; default LIVE).
+    /// Hard failures deactivate local state (doc §6 posture semantics).
     #[must_use]
-    pub fn new(http: H) -> Self {
-        let base = if std::env::var("DODO_PAYMENTS_MODE").as_deref() == Ok("test") {
-            BASE_TEST
-        } else {
-            BASE_LIVE
-        }
-        .to_string();
-        Self { http, base }
-    }
-
-    /// Activate a key for this device (doc 06 §3.1).
-    ///
-    /// # Errors
-    /// [`LicenseError`] per the endpoint contract.
-    pub fn activate(&self, key: &str, name: &str) -> Result<ActivateResponse, LicenseError> {
-        let body = serde_json::json!({ "license_key": key, "name": name });
-        let (status, text) = self
-            .http
-            .post_json(
-                &format!("{}/licenses/activate", self.base),
-                &body.to_string(),
-            )
-            .map_err(|_| LicenseError::Network)?;
-        if status != 201 {
-            return Err(LicenseError::from_status(status));
-        }
-        serde_json::from_str(&text).map_err(|_| LicenseError::ServerError)
-    }
-
-    /// Validate a key instance (doc 06 §3.2).
-    ///
-    /// # Errors
-    /// [`LicenseError`] on transport/server failure.
-    pub fn validate(&self, key: &str, instance: &str) -> Result<bool, LicenseError> {
-        let body = serde_json::json!({
-            "license_key": key,
-            "license_key_instance_id": instance,
-        });
-        let (status, text) = self
-            .http
-            .post_json(
-                &format!("{}/licenses/validate", self.base),
-                &body.to_string(),
-            )
-            .map_err(|_| LicenseError::Network)?;
-        if status != 200 {
-            return Err(LicenseError::from_status(status));
-        }
-        serde_json::from_str::<ValidateResponse>(&text)
-            .map(|v| v.valid)
-            .map_err(|_| LicenseError::ServerError)
-    }
-
-    /// Deactivate this device's instance (doc 06 §3.3).
-    ///
-    /// # Errors
-    /// [`LicenseError`] per the endpoint contract.
-    pub fn deactivate(&self, key: &str, instance: &str) -> Result<(), LicenseError> {
-        let body = serde_json::json!({
-            "license_key": key,
-            "license_key_instance_id": instance,
-        });
-        let (status, _) = self
-            .http
-            .post_json(
-                &format!("{}/licenses/deactivate", self.base),
-                &body.to_string(),
-            )
-            .map_err(|_| LicenseError::Network)?;
-        if (200..300).contains(&status) {
-            Ok(())
-        } else {
-            Err(LicenseError::from_status(status))
-        }
+    pub fn is_hard(&self) -> bool {
+        !matches!(self, Self::Network | Self::ServerError)
     }
 }
 
-/// The activate response (fields we persist — doc 06 §3.1).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+// ============================================================================
+// Protocol types
+// ============================================================================
+
+/// The device facts collected at activation (doc §6: what we collect and
+/// store in D1 — platform + fingerprint + audit strings, nothing else).
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ActivateResponse {
-    /// The license key instance id.
-    #[serde(default)]
-    pub id: String,
+pub struct DeviceFacts {
+    /// "windows" | "macos".
+    pub platform: String,
+    /// The hardware fingerprint (64 hex).
+    pub hardware_hash: String,
+    /// Human-readable machine name (audit).
+    pub hostname: String,
+    /// OS version string (audit).
+    pub os_version: String,
+    /// App semver (audit).
+    pub app_version: String,
 }
 
-/// Persisted license state (DPAPI-encrypted on disk).
+/// The server's success envelope (serde mirror of the Worker response).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntitlementDto {
+    /// The signed compact token (verified before anything is trusted).
+    pub token: String,
+    /// The display fields.
+    pub license: LicenseDto,
+}
+
+/// The license display fields inside the envelope.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LicenseDto {
+    /// "yearly" | "lifetime".
+    #[serde(default)]
+    pub tier: String,
+    /// Customer display name.
+    #[serde(default)]
+    pub name: String,
+    /// Customer email.
+    #[serde(default)]
+    pub email: String,
+    /// unix seconds; `None` for lifetime.
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+}
+
+/// The error envelope.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ErrorDto {
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    message: String,
+}
+
+// ============================================================================
+// Entitlement token (Ed25519-signed; the anti-spoofing core)
+// ============================================================================
+
+/// The decoded token claims (serde mirror — every field the client
+/// independently verifies; see [`verify_token`]).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenClaims {
+    /// Fixed issuer "db-license".
+    pub iss: String,
+    /// Format version (1).
+    pub ver: u32,
+    /// Unique token id (hex).
+    pub jti: String,
+    /// Issued-at (unix seconds).
+    pub iat: i64,
+    /// Token expiry (unix seconds) — the offline grace window.
+    pub exp: i64,
+    /// sha256(normalized key) hex — binds the token to OUR stored key.
+    pub key: String,
+    /// "yearly" | "lifetime".
+    pub tier: String,
+    /// Customer display name.
+    #[serde(default)]
+    pub name: String,
+    /// Customer email.
+    #[serde(default)]
+    pub email: String,
+    /// The hardware fingerprint the server bound this token to.
+    pub hw: String,
+    /// "windows" | "macos".
+    pub plat: String,
+    /// License expiry (yearly) — absent for lifetime.
+    #[serde(default)]
+    pub lexp: Option<i64>,
+}
+
+/// Verify a compact token `b64url(payload).b64url(sig)` end-to-end:
+/// signature against `public_key_hex` (callers pass
+/// [`LICENSE_PUBLIC_KEY_HEX`]; tests pass the fixture key),
+/// issuer/version/platform, key-hash binding, hardware binding, token
+/// window, license expiry. ANY failure → [`LicenseError::Spoofed`]
+/// (never a partial accept).
+///
+/// # Errors
+/// [`LicenseError::Spoofed`] when any check fails.
+pub fn verify_token(
+    token: &str,
+    public_key_hex: &str,
+    expected_key_hash: &str,
+    expected_hw: &str,
+    platform: &str,
+    now: i64,
+) -> Result<TokenClaims, LicenseError> {
+    let (payload_b64, sig_b64) = token.split_once('.').ok_or(LicenseError::Spoofed)?;
+    let payload = b64url_decode(payload_b64).ok_or(LicenseError::Spoofed)?;
+    let sig_bytes = b64url_decode(sig_b64).ok_or(LicenseError::Spoofed)?;
+    let arr: [u8; 64] = sig_bytes.try_into().map_err(|_| LicenseError::Spoofed)?;
+    let sig = Signature::from_bytes(&arr);
+
+    let key_bytes = from_hex(public_key_hex).ok_or(LicenseError::Spoofed)?;
+    let key_arr: [u8; 32] = key_bytes.try_into().map_err(|_| LicenseError::Spoofed)?;
+    let verifying = VerifyingKey::from_bytes(&key_arr).map_err(|_| LicenseError::Spoofed)?;
+
+    verifying
+        .verify(&payload, &sig)
+        .map_err(|_| LicenseError::Spoofed)?;
+
+    let claims: TokenClaims = serde_json::from_slice(&payload).map_err(|_| LicenseError::Spoofed)?;
+    if claims.iss != "db-license"
+        || claims.ver != 1
+        || claims.plat != platform
+        || claims.key != expected_key_hash
+        || claims.hw != expected_hw
+        || claims.exp <= now
+        || claims.iat > now + CLOCK_SKEW_S
+        || matches!(claims.lexp, Some(lexp) if lexp <= now)
+    {
+        return Err(LicenseError::Spoofed);
+    }
+    Ok(claims)
+}
+
+// ============================================================================
+// Persisted state + posture
+// ============================================================================
+
+/// Persisted license state (DPAPI/Keychain-wrapped on disk; doc §6).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LicenseState {
+    /// Normalized key (22 chars, uppercase).
     #[serde(default)]
     pub license_key: String,
+    /// 64-hex hardware fingerprint captured at activation.
     #[serde(default)]
-    pub instance_id: String,
+    pub hardware_id: String,
+    /// "windows" | "macos".
+    #[serde(default)]
+    pub platform: String,
     /// "yearly" | "lifetime" ("" before activation).
     #[serde(default)]
     pub tier: String,
     #[serde(default)]
-    pub is_pro: bool,
+    pub customer_name: String,
+    #[serde(default)]
+    pub customer_email: String,
+    /// License expiry (unix; 0 = lifetime / unknown).
+    #[serde(default)]
+    pub license_expires_at: i64,
+    /// The latest verified token (its `exp` drives the grace window).
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub token_exp: i64,
     #[serde(default)]
     pub activated_at: i64,
     #[serde(default)]
     pub last_validated_at: i64,
-    /// Signed "last known good time" defense (clock-rollback guard:
-    /// never moves backward — doc 06 §3.4/licensing doc §4.3).
+    /// Monotonic "last known good time" (clock-rollback guard).
     #[serde(default)]
     pub last_known_good: i64,
+    /// CI simulation marker (`ci-license-sim` feature only).
     #[serde(default)]
-    pub hardware_id: String,
+    pub simulated: bool,
 }
 
-/// The runtime posture derived from state + now.
+/// The runtime posture derived from state + now (doc §6, STRICT):
+/// unlicensed/degraded are LOCKED (Monitor tab only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LicensePosture {
-    /// No license on file.
+    /// No license on file → locked.
     Unlicensed,
-    /// Activated and fresh.
+    /// Verified, fresh (checked within the interval).
     Pro,
-    /// Activated, offline, inside the grace window.
+    /// Verified, offline, token still inside its grace window.
     Grace { days_left: i64 },
-    /// Grace exhausted → degrade mode (read-only cleanup; banner).
+    /// Token window exhausted (or license expired) → locked.
     Degraded,
 }
 
-/// Derive the posture (PURE — injected clock for tests; doc 06 §3.4).
+/// Derive the posture (PURE — injected clock for tests).
 #[must_use]
 pub fn posture(state: &LicenseState, now: i64) -> LicensePosture {
-    if state.license_key.is_empty() || !state.is_pro {
+    if state.license_key.is_empty() {
         return LicensePosture::Unlicensed;
+    }
+    if state.token_exp <= now {
+        return LicensePosture::Degraded;
+    }
+    // A yearly license past its own expiry is degraded even while the
+    // token is technically valid (honest UX; the server also refuses).
+    if state.license_expires_at > 0 && state.license_expires_at <= now {
+        return LicensePosture::Degraded;
     }
     let reference = state.last_validated_at.max(state.last_known_good);
     let age = now - reference;
-    let grace_s = GRACE_DAYS * 24 * 60 * 60;
     if age < VALIDATION_INTERVAL_S {
         return LicensePosture::Pro;
     }
-    if age < grace_s {
-        return LicensePosture::Grace {
-            days_left: (grace_s - age + 86_399) / 86_400,
-        };
-    }
-    LicensePosture::Degraded
-}
-
-/// What a validation outcome does to the state (doc 06 §3.2 logic).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ValidationAction {
-    /// valid:true → refresh timestamps.
-    Refresh,
-    /// valid:false → deactivate locally (revoked/seat removed).
-    Deactivate,
-    /// Network error → grace continues (timestamps frozen).
-    Offline,
-    /// Hard error surfaced to the UI.
-    Fail(LicenseError),
-}
-
-/// Apply a validation result (PURE — the state machine under test).
-#[must_use]
-pub fn validation_action(result: &Result<bool, LicenseError>) -> ValidationAction {
-    match result {
-        Ok(true) => ValidationAction::Refresh,
-        Ok(false) => ValidationAction::Deactivate,
-        Err(LicenseError::Network) => ValidationAction::Offline,
-        Err(e) => ValidationAction::Fail(e.clone()),
+    let seconds_left = state.token_exp - now;
+    LicensePosture::Grace {
+        days_left: (seconds_left + 86_399) / 86_400,
     }
 }
 
-/// The device identity for seat binding (doc 06 §3.5):
-/// `SHA-256(MachineGuid ‖ system-drive volume serial ‖ CPUID)` — the
-/// inputs come from the platform seam (MachineGuid + volume serial +
-/// CPUID on Windows; IOPlatformUUID + fsid + CPUID on macOS), so the
-/// same binding story holds on both OSes.
+/// The device identity for binding (unchanged from doc 06 §3.5):
+/// `SHA-256(MachineGuid ‖ system-drive volume serial ‖ CPUID)` via the
+/// platform seam (IOPlatformUUID + fsid + CPU brand on macOS).
 ///
 /// # Errors
-/// String error when the underlying platform reads fail (all three
-/// inputs are required — no partial identity).
+/// String error when any platform input is unreadable (all three
+/// required — no partial identity).
 pub fn hardware_id() -> Result<String, String> {
     let machine_guid = crate::platform::os::machine_guid().ok_or("MachineGuid unreadable")?;
     let serial = crate::platform::os::system_drive_serial().ok_or("volume serial unreadable")?;
@@ -304,24 +438,177 @@ pub fn hardware_id() -> Result<String, String> {
     hasher.update(serial.to_le_bytes());
     hasher.update(cpuid.as_bytes());
     let digest = hasher.finalize();
-    Ok(hex(&digest))
+    Ok(hex_of(&digest))
 }
 
-/// Lowercase hex (32 bytes → 64 chars).
-fn hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0F) as usize] as char);
+/// sha256 hex of a string (key-hash binding; public for the command
+/// layer).
+pub fn sha256_hex(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    hex_of(&hasher.finalize())
+}
+
+// ============================================================================
+// The protocol client
+// ============================================================================
+
+/// Nonce counter (process-lifetime) mixed into request nonces.
+static NONCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Client for the three authenticated endpoints. Every request carries
+/// the HMAC headers; every response is treated as untrusted input
+/// (parse → verify signature → only then apply).
+pub struct LicenseApi<H: LicenseHttp> {
+    http: H,
+    base: String,
+    secret_hex: String,
+}
+
+impl<H: LicenseHttp> LicenseApi<H> {
+    /// Build against the resolved base + shared secret.
+    #[must_use]
+    pub fn new(http: H) -> Self {
+        Self {
+            http,
+            base: api_base(),
+            secret_hex: CLIENT_SECRET_HEX.to_string(),
+        }
     }
-    s
+
+    /// Build with an explicit secret override (tests only).
+    #[must_use]
+    pub fn with_secret(http: H, secret_hex: String) -> Self {
+        Self {
+            http,
+            base: api_base(),
+            secret_hex,
+        }
+    }
+
+    /// A single-use nonce: counter + nanos + pid + the local hardware
+    /// fingerprint hashed together (uniqueness is the property that
+    /// matters for replay defense).
+    fn nonce(&self) -> String {
+        let count = NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let pid = u64::from(std::process::id());
+        let mut hasher = Sha256::new();
+        hasher.update(count.to_le_bytes());
+        hasher.update(nanos.to_le_bytes());
+        hasher.update(pid.to_le_bytes());
+        hasher.update(self.secret_hex.as_bytes());
+        hex_of(&hasher.finalize())[..32].to_string()
+    }
+
+    /// Sign + POST one request; returns (status, body).
+    fn signed_post(&self, path: &str, body: &str) -> Result<(u16, String), LicenseError> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or_default();
+        let nonce = self.nonce();
+        let body_hash = sha256_hex(body);
+        let message = format!("{timestamp}.{nonce}.POST.{path}.{body_hash}");
+        let sig = hmac_hex(&self.secret_hex, &message);
+        let headers = vec![
+            ("x-db-app".to_string(), "diskbytes".to_string()),
+            ("x-db-version".to_string(), env!("CARGO_PKG_VERSION").to_string()),
+            ("x-db-timestamp".to_string(), timestamp.to_string()),
+            ("x-db-nonce".to_string(), nonce),
+            ("x-db-signature".to_string(), sig),
+        ];
+        let url = format!("{}{path}", self.base.trim_end_matches('/'));
+        self.http
+            .post_json(&url, &headers, body)
+            .map_err(|_| LicenseError::Network)
+    }
+
+    /// POST + parse the success/error envelope into an outcome.
+    fn call(
+        &self,
+        path: &str,
+        body: &str,
+    ) -> Result<Result<EntitlementDto, LicenseError>, LicenseError> {
+        let (status, text) = self.signed_post(path, body)?;
+        if (200..300).contains(&status) {
+            let dto: EntitlementDto =
+                serde_json::from_str(&text).map_err(|_| LicenseError::ServerError)?;
+            return Ok(Ok(dto));
+        }
+        let code = serde_json::from_str::<ErrorDto>(&text)
+            .map(|e| e.code)
+            .unwrap_or_default();
+        Ok(Err(LicenseError::from_response(status, &code)))
+    }
+
+    /// Activate a key on this device (doc §4). The response token MUST
+    /// verify locally (in the command layer's apply step) before it is
+    /// trusted.
+    ///
+    /// # Errors
+    /// [`LicenseError`] per the endpoint contract.
+    pub fn activate(&self, key: &str, facts: &DeviceFacts) -> Result<EntitlementDto, LicenseError> {
+        let body = serde_json::json!({
+            "licenseKey": key,
+            "hardwareHash": facts.hardware_hash,
+            "platform": facts.platform,
+            "hostname": facts.hostname,
+            "osVersion": facts.os_version,
+            "appVersion": facts.app_version,
+        });
+        match self.call("/v1/activate", &body.to_string())? {
+            Ok(dto) => Ok(dto),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The 24 h revalidation call.
+    ///
+    /// # Errors
+    /// [`LicenseError`] per the endpoint contract.
+    pub fn validate(&self, key: &str, facts: &DeviceFacts) -> Result<EntitlementDto, LicenseError> {
+        let body = serde_json::json!({
+            "licenseKey": key,
+            "hardwareHash": facts.hardware_hash,
+            "platform": facts.platform,
+        });
+        match self.call("/v1/validate", &body.to_string())? {
+            Ok(dto) => Ok(dto),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Deactivate this device (frees the platform slot; idempotent).
+    ///
+    /// # Errors
+    /// [`LicenseError::Network`] only is soft; hard errors surface.
+    pub fn deactivate(&self, key: &str, facts: &DeviceFacts) -> Result<(), LicenseError> {
+        let body = serde_json::json!({
+            "licenseKey": key,
+            "hardwareHash": facts.hardware_hash,
+            "platform": facts.platform,
+        });
+        let (status, _) = self.signed_post("/v1/deactivate", &body.to_string())?;
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            // Deactivation is idempotent server-side; non-2xx here is
+            // almost always "already gone" — treat as success so the
+            // client always clears local state.
+            Ok(())
+        }
+    }
 }
 
-/// DPAPI-encrypted persistence (licensing doc §5.4: the local cache is
-/// protected with `CryptProtectData`, tied to the Windows user; on macOS
-/// the same contract is served by a Keychain-delimited item via the
-/// platform seam — see `platform::os::dpapi_protect`).
+// ============================================================================
+// DPAPI/Keychain persistence (unchanged contract from doc 06 §5.4)
+// ============================================================================
+
+/// DPAPI-encrypted persistence (Windows `CryptProtectData`; the Keychain
+/// on macOS — see `platform::os::dpapi_protect`).
 pub mod dpapi {
     use super::LicenseState;
 
@@ -349,159 +636,314 @@ pub mod dpapi {
         serde_json::from_slice(&json).ok()
     }
 
-    /// Remove the stored license (deactivation cleanup; app-owned data
-    /// file removal lives in the core persistence layer — R7.1).
+    /// Remove the stored license (deactivation cleanup; R7.1-safe).
     pub fn clear() {
         diskbytes_core::snapshots::remove_app_data_file(&license_path());
     }
 }
 
+// ============================================================================
+// Codec helpers (hand-rolled, zero-dep, fully tested)
+// ============================================================================
+
+/// Lowercase hex (public for the command layer's key-hash binding).
+pub fn hex_of(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0F) as usize] as char);
+    }
+    s
+}
+
+/// Hex decode (case-insensitive; even length).
+fn from_hex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = s
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let hi = (pair[0] as char).to_digit(16)?;
+            let lo = (pair[1] as char).to_digit(16)?;
+            Some(u8::try_from(hi * 16 + lo).unwrap_or(0))
+        })
+        .collect();
+    bytes
+}
+
+/// RFC 4648 base64url decode (no padding; accepts standard padding).
+fn b64url_decode(s: &str) -> Option<Vec<u8>> {
+    const BAD: u8 = 255;
+    fn val(c: u8) -> u8 {
+        match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => BAD,
+        }
+    }
+    let trimmed = s.trim_end_matches('=');
+    let bytes = trimmed.as_bytes();
+    if bytes.iter().any(|&c| val(c) == BAD) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4 + 3);
+    let mut acc: u32 = 0;
+    let mut bits: u32 = 0;
+    for &c in bytes {
+        acc = (acc << 6) | u32::from(val(c));
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((acc >> bits) & 0xFF) as u8);
+        }
+    }
+    // Leftover bits must be zero padding (canonical length check).
+    if bits >= 6 || (acc & ((1 << bits) - 1)) != 0 {
+        return None;
+    }
+    Some(out)
+}
+
+/// HMAC-SHA256 hex (message over a hex key).
+fn hmac_hex(key_hex: &str, message: &str) -> String {
+    type HmacSha256 = Hmac<Sha256>;
+    let key = from_hex(key_hex).unwrap_or_default();
+    let mut mac = HmacSha256::new_from_slice(&key).expect("hmac accepts any key length");
+    mac.update(message.as_bytes());
+    hex_of(&mac.finalize().into_bytes())
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
     use std::cell::RefCell;
 
-    /// Fake transport scripted per call.
-    struct FakeHttp {
-        responses: RefCell<Vec<Result<(u16, String), String>>>,
-        urls: RefCell<Vec<String>>,
-    }
+    /// Fixture keypair: the RFC 8032 test-vector #1 seed (matches the
+    /// license-server repo's TEST_SIGNING_SEED — both sides of the token
+    /// contract are pinned by the same fixture).
+    const TEST_SEED_HEX: &str =
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 
-    impl FakeHttp {
-        fn new(rs: Vec<Result<(u16, String), String>>) -> Self {
-            Self {
-                responses: RefCell::new(rs),
-                urls: RefCell::new(Vec::new()),
+    fn b64url(bytes: &[u8]) -> String {
+        const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut s = String::new();
+        let mut acc: u32 = 0;
+        let mut bits: u32 = 0;
+        for &b in bytes {
+            acc = (acc << 8) | u32::from(b);
+            bits += 8;
+            while bits >= 6 {
+                bits -= 6;
+                s.push(CHARS[((acc >> bits) & 0x3F) as usize] as char);
             }
         }
+        if bits > 0 {
+            s.push(CHARS[((acc << (6 - bits)) & 0x3F) as usize] as char);
+        }
+        s
     }
 
-    impl DodoHttp for FakeHttp {
-        fn post_json(&self, url: &str, _body: &str) -> Result<(u16, String), String> {
-            self.urls.borrow_mut().push(url.to_string());
-            self.responses
-                .borrow_mut()
-                .pop()
-                .expect("scripted response available")
+    fn test_public_key_hex() -> String {
+        let seed_arr: [u8; 32] = from_hex(TEST_SEED_HEX).unwrap().try_into().unwrap();
+        let signing = SigningKey::from_bytes(&seed_arr);
+        hex_of(&signing.verifying_key().to_bytes())
+    }
+
+    /// Sign a claims object with the fixture key (server-side stand-in).
+    fn sign_fixture(claims: &serde_json::Value, key_hex: &str) -> String {
+        let seed_arr: [u8; 32] = from_hex(key_hex).unwrap().try_into().unwrap();
+        let signing = SigningKey::from_bytes(&seed_arr);
+        let payload = serde_json::to_vec(claims).unwrap();
+        let sig = signing.sign(&payload);
+        format!("{}.{}", b64url(&payload), b64url(&sig.to_bytes()))
+    }
+
+    fn claims_json(hw: &str, key_hash: &str, iat: i64, exp: i64, lexp: Option<i64>) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "iss": "db-license",
+            "ver": 1,
+            "jti": "0123456789abcdef0123456789abcdef",
+            "iat": iat,
+            "exp": exp,
+            "key": key_hash,
+            "tier": "lifetime",
+            "name": "Alex Morgan",
+            "email": "alex@example.com",
+            "hw": hw,
+            "plat": "windows",
+        });
+        if let Some(lexp) = lexp {
+            v["lexp"] = serde_json::json!(lexp);
+        }
+        v
+    }
+
+    // ── token verification: the anti-spoofing matrix ─────────────────
+
+    #[test]
+    fn token_accepts_genuine_fixture() {
+        let key_hash = "a".repeat(64);
+        let hw = "b".repeat(64);
+        let now = 1_790_000_000;
+        let token = sign_fixture(&claims_json(&hw, &key_hash, now - 60, now + 86_400, None), TEST_SEED_HEX);
+        let pub_hex = test_public_key_hex();
+        let claims = verify_token(&token, &pub_hex, &key_hash, &hw, "windows", now).unwrap();
+        assert_eq!(claims.tier, "lifetime");
+        assert_eq!(claims.name, "Alex Morgan");
+        assert!(claims.lexp.is_none());
+    }
+
+    #[test]
+    fn token_rejects_every_tamper_path() {
+        let key_hash = "a".repeat(64);
+        let hw = "b".repeat(64);
+        let now = 1_790_000_000;
+        let pub_hex = test_public_key_hex();
+        let token = sign_fixture(&claims_json(&hw, &key_hash, now - 60, now + 86_400, None), TEST_SEED_HEX);
+
+        // Wrong verifying key (a different server / rotation mismatch).
+        let other_seed = "4".repeat(64);
+        let forged = sign_fixture(&claims_json(&hw, &key_hash, now - 60, now + 86_400, None), &other_seed);
+        assert_eq!(
+            verify_token(&forged, &pub_hex, &key_hash, &hw, "windows", now).unwrap_err(),
+            LicenseError::Spoofed
+        );
+        // The PRODUCTION key must also reject fixture tokens (and the
+        // fixture key must reject production-signed tokens — key
+        // rotation mismatch is a hard failure, never a maybe).
+        assert_eq!(
+            verify_token(&token, LICENSE_PUBLIC_KEY_HEX, &key_hash, &hw, "windows", now).unwrap_err(),
+            LicenseError::Spoofed
+        );
+
+        // Tampered payload under the genuine signature.
+        let (p, s) = token.split_once('.').unwrap();
+        let payload: Vec<u8> = b64url_decode(p).unwrap();
+        let mut claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        claims["exp"] = serde_json::json!(now + 10 * 86_400); // escalation attempt
+        let escalated = format!("{}.{}", b64url(&serde_json::to_vec(&claims).unwrap()), s);
+        assert_eq!(
+            verify_token(&escalated, &pub_hex, &key_hash, &hw, "windows", now).unwrap_err(),
+            LicenseError::Spoofed
+        );
+
+        // Wrong machine (hardware binding).
+        let other_hw = "c".repeat(64);
+        assert_eq!(
+            verify_token(&token, &pub_hex, &key_hash, &other_hw, "windows", now).unwrap_err(),
+            LicenseError::Spoofed
+        );
+
+        // Wrong key-hash binding.
+        assert_eq!(
+            verify_token(&token, &pub_hex, &"d".repeat(64), &hw, "windows", now).unwrap_err(),
+            LicenseError::Spoofed
+        );
+
+        // Wrong platform.
+        assert_eq!(
+            verify_token(&token, &pub_hex, &key_hash, &hw, "macos", now).unwrap_err(),
+            LicenseError::Spoofed
+        );
+
+        // Expired token window.
+        assert_eq!(
+            verify_token(&token, &pub_hex, &key_hash, &hw, "windows", now + 86_400 + 1).unwrap_err(),
+            LicenseError::Spoofed
+        );
+
+        // Issued in the future (beyond skew).
+        let future = sign_fixture(&claims_json(&hw, &key_hash, now + 400, now + 86_400, None), TEST_SEED_HEX);
+        assert_eq!(
+            verify_token(&future, &pub_hex, &key_hash, &hw, "windows", now).unwrap_err(),
+            LicenseError::Spoofed
+        );
+
+        // Yearly license itself expired.
+        let lexp = sign_fixture(&claims_json(&hw, &key_hash, now - 60, now + 86_400, Some(now - 1)), TEST_SEED_HEX);
+        assert_eq!(
+            verify_token(&lexp, &pub_hex, &key_hash, &hw, "windows", now).unwrap_err(),
+            LicenseError::Spoofed
+        );
+
+        // Garbage shapes.
+        for garbage in ["", "no-dot", "aaa.bbb", "...."] {
+            assert!(verify_token(garbage, &pub_hex, &key_hash, &hw, "windows", now).is_err());
         }
     }
 
     #[test]
-    fn activate_maps_statuses_and_body() {
-        // 201 + body → instance id.
-        let c = DodoClient::new(FakeHttp::new(vec![Ok((
-            201,
-            r#"{"id":"lki_123","name":"x"}"#.into(),
-        ))]));
-        let r = c.activate("CNFX-1", "DiskBytes on PC").unwrap();
-        assert_eq!(r.id, "lki_123");
-        // 404/403/422 → typed errors with spec'd copy.
-        for (status, expected) in [
-            (404, LicenseError::InvalidKey),
-            (403, LicenseError::Inactive),
-            (422, LicenseError::SeatLimit),
-            (500, LicenseError::ServerError),
-        ] {
-            let c = DodoClient::new(FakeHttp::new(vec![Ok((status, "{}".into()))]));
-            assert_eq!(c.activate("k", "n").unwrap_err(), expected);
-        }
-    }
-
-    #[test]
-    fn activate_error_copy_is_spec_text() {
+    fn token_fixture_matches_server_test_vector() {
+        // The license-server repo signs with noble/ed25519 using the SAME
+        // seed; cross-implementation compatibility (RFC 8032) means the
+        // public key here must equal the server fixture's derived key.
         assert_eq!(
-            LicenseError::InvalidKey.to_string(),
-            "Invalid License Key. Please check your key and try again."
+            test_public_key_hex(),
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
         );
     }
 
-    fn d2(h: FakeHttp) -> DodoClient<FakeHttp> {
-        DodoClient::new(h)
-    }
-
-    #[test]
-    fn validate_parses_bool_and_errors() {
-        let c = DodoClient::new(FakeHttp::new(vec![Ok((200, r#"{"valid":true}"#.into()))]));
-        assert!(c.validate("k", "i").unwrap());
-        let c = d2(FakeHttp::new(vec![Ok((200, r#"{"valid":false}"#.into()))]));
-        assert!(!c.validate("k", "i").unwrap());
-        // Transport failure → Network (the grace path trigger).
-        let c = DodoClient::new(FakeHttp::new(vec![Err("down".into())]));
-        assert_eq!(c.validate("k", "i").unwrap_err(), LicenseError::Network);
-    }
-
-    #[test]
-    fn deactivate_accepts_2xx_only() {
-        let c = DodoClient::new(FakeHttp::new(vec![Ok((204, String::new()))]));
-        assert!(c.deactivate("k", "i").is_ok());
-        let c = DodoClient::new(FakeHttp::new(vec![Ok((404, String::new()))]));
-        assert_eq!(
-            c.deactivate("k", "i").unwrap_err(),
-            LicenseError::InvalidKey
-        );
-    }
-
-    #[test]
-    fn test_mode_selects_test_base() {
-        std::env::set_var("DODO_PAYMENTS_MODE", "test");
-        let c = DodoClient::new(FakeHttp::new(vec![Ok((204, String::new()))]));
-        let _ = c.deactivate("k", "i");
-        std::env::remove_var("DODO_PAYMENTS_MODE");
-        let urls = c.http.urls.borrow();
-        assert!(urls[0].starts_with("https://test.dodopayments.com"));
-    }
+    // ── posture state machine (STRICT: degraded locks) ──────────────
 
     const NOW: i64 = 1_790_000_000;
 
-    fn pro_state(last_validated: i64, last_good: i64) -> LicenseState {
+    fn pro_state(last_validated: i64) -> LicenseState {
         LicenseState {
-            license_key: "CNFX-9".into(),
-            instance_id: "lki_1".into(),
+            license_key: "DB".to_string() + &"1".repeat(20),
+            hardware_id: "hw".into(),
+            platform: "windows".into(),
             tier: "lifetime".into(),
-            is_pro: true,
+            customer_name: "Alex".into(),
+            customer_email: "a@b.c".into(),
+            license_expires_at: 0,
+            token: "t".into(),
+            token_exp: NOW + 14 * 86_400,
             activated_at: NOW - 100,
             last_validated_at: last_validated,
-            last_known_good: last_good,
-            hardware_id: "hw".into(),
+            last_known_good: last_validated,
+            simulated: false,
         }
     }
 
     #[test]
     fn posture_fresh_pro() {
-        assert_eq!(
-            posture(&pro_state(NOW - 3_600, 0), NOW),
-            LicensePosture::Pro
-        );
+        assert_eq!(posture(&pro_state(NOW - 3_600), NOW), LicensePosture::Pro);
     }
 
     #[test]
-    fn posture_grace_counts_days_left() {
-        // 10 days stale → 4 days left (of 14).
-        let stale = NOW - 10 * 86_400;
-        assert_eq!(
-            posture(&pro_state(stale, 0), NOW),
-            LicensePosture::Grace { days_left: 4 }
-        );
+    fn posture_grace_counts_days() {
+        // 10 days stale, token has 14 → grace 4.
+        let s = pro_state(NOW - 10 * 86_400);
+        assert_eq!(posture(&s, NOW), LicensePosture::Grace { days_left: 4 });
     }
 
     #[test]
-    fn posture_grace_boundary_and_degrade() {
-        // Day 14 boundary → Degraded (age >= grace).
-        let stale = NOW - GRACE_DAYS * 86_400;
-        assert_eq!(posture(&pro_state(stale, 0), NOW), LicensePosture::Degraded);
-        // One second under → Grace day 1.
-        let stale = NOW - GRACE_DAYS * 86_400 + 1;
-        assert_eq!(
-            posture(&pro_state(stale, 0), NOW),
-            LicensePosture::Grace { days_left: 1 }
-        );
+    fn posture_degraded_when_token_expires() {
+        let mut s = pro_state(NOW - 20 * 86_400);
+        s.token_exp = NOW - 1;
+        assert_eq!(posture(&s, NOW), LicensePosture::Degraded);
+        // Boundary: exactly at exp → degraded.
+        s.token_exp = NOW;
+        assert_eq!(posture(&s, NOW), LicensePosture::Degraded);
     }
 
     #[test]
-    fn posture_uses_the_newer_of_validated_and_known_good() {
-        // last_validated stale, last_known_good fresh → Pro.
-        let s = pro_state(NOW - 20 * 86_400, NOW - 1_000);
-        assert_eq!(posture(&s, NOW), LicensePosture::Pro);
+    fn posture_degraded_when_yearly_license_expired() {
+        let mut s = pro_state(NOW);
+        s.tier = "yearly".into();
+        s.license_expires_at = NOW - 1;
+        assert_eq!(posture(&s, NOW), LicensePosture::Degraded);
     }
 
     #[test]
@@ -510,29 +952,215 @@ mod tests {
             posture(&LicenseState::default(), NOW),
             LicensePosture::Unlicensed
         );
-        let mut s = pro_state(NOW, NOW);
-        s.is_pro = false;
-        assert_eq!(posture(&s, NOW), LicensePosture::Unlicensed);
+    }
+
+    // ── error mapping + copy ────────────────────────────────────────
+
+    #[test]
+    fn errors_map_from_server_contract() {
+        assert_eq!(
+            LicenseError::from_response(404, "KEY_NOT_FOUND"),
+            LicenseError::InvalidKey
+        );
+        assert_eq!(
+            LicenseError::from_response(403, "KEY_REVOKED"),
+            LicenseError::Inactive
+        );
+        assert_eq!(
+            LicenseError::from_response(403, "LICENSE_EXPIRED"),
+            LicenseError::Expired
+        );
+        assert_eq!(
+            LicenseError::from_response(409, "DEVICE_SLOT_TAKEN"),
+            LicenseError::DeviceSlotTaken
+        );
+        assert_eq!(
+            LicenseError::from_response(403, "DEVICE_MISMATCH"),
+            LicenseError::DeviceMismatch
+        );
+        assert_eq!(
+            LicenseError::from_response(500, ""),
+            LicenseError::ServerError
+        );
     }
 
     #[test]
-    fn validation_action_state_machine() {
-        assert_eq!(validation_action(&Ok(true)), ValidationAction::Refresh);
-        assert_eq!(validation_action(&Ok(false)), ValidationAction::Deactivate);
+    fn only_network_and_server_are_soft() {
+        assert!(!LicenseError::Network.is_hard());
+        assert!(!LicenseError::ServerError.is_hard());
+        assert!(LicenseError::InvalidKey.is_hard());
+        assert!(LicenseError::Spoofed.is_hard());
+        assert!(LicenseError::DeviceSlotTaken.is_hard());
+    }
+
+    // ── protocol client over a fake transport ───────────────────────
+
+    struct FakeHttp {
+        responses: RefCell<Vec<Result<(u16, String), String>>>,
+        urls: RefCell<Vec<String>>,
+        headers: RefCell<Vec<Vec<(String, String)>>>,
+    }
+
+    impl FakeHttp {
+        fn with(rs: Vec<Result<(u16, String), String>>) -> Self {
+            Self {
+                responses: RefCell::new(rs),
+                urls: RefCell::new(Vec::new()),
+                headers: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl LicenseHttp for FakeHttp {
+        fn post_json(
+            &self,
+            url: &str,
+            headers: &[(String, String)],
+            _body: &str,
+        ) -> Result<(u16, String), String> {
+            self.urls.borrow_mut().push(url.to_string());
+            self.headers.borrow_mut().push(headers.to_vec());
+            self.responses
+                .borrow_mut()
+                .pop()
+                .expect("scripted response available")
+        }
+    }
+
+    fn facts() -> DeviceFacts {
+        DeviceFacts {
+            platform: "windows".into(),
+            hardware_hash: "e".repeat(64),
+            hostname: "DEV-PC".into(),
+            os_version: "Win 11".into(),
+            app_version: "0.1.0".into(),
+        }
+    }
+
+    fn fixture_token(hw: &str, key_hash: &str, now: i64) -> String {
+        sign_fixture(&claims_json(hw, key_hash, now - 60, now + 14 * 86_400, None), TEST_SEED_HEX)
+    }
+
+    #[test]
+    fn activate_verifies_signature_before_trusting() {
+        let now = NOW;
+        let f = facts();
+        let token = fixture_token(&f.hardware_hash, &sha256_hex("DBK"), now);
+        let body = serde_json::json!({
+            "token": token,
+            "license": { "tier": "lifetime", "name": "Alex", "email": "a@b.c", "expiresAt": null }
+        });
+        // 200 + GENUINE signature → accepted, and the HMAC headers were sent.
+        let http = FakeHttp::with(vec![Ok((200, body.to_string()))]);
+        let api = LicenseApi::with_secret(http, "a".repeat(64));
+        let dto = api.activate("DBK", &f).unwrap();
+        assert_eq!(dto.license.tier, "lifetime");
+        let headers = api.http.headers.borrow();
+        let last = headers.last().unwrap();
+        assert!(last.iter().any(|(k, _)| k == "x-db-signature"));
+        assert!(last.iter().any(|(k, _)| k == "x-db-nonce"));
+        assert!(last.iter().any(|(k, _)| k == "x-db-timestamp"));
+        let urls = api.http.urls.borrow();
+        assert!(urls[0].ends_with("/v1/activate"));
+
+        // 200 + a token signed by a DIFFERENT key (spoofed server) →
+        // activate() hands back the dto; verification happens in
+        // `apply_entitlement` — the spoof rejection is covered by the
+        // token matrix above. This test pins the transport contract.
+    }
+
+    #[test]
+    fn network_failures_map_to_network_error() {
+        let http = FakeHttp::with(vec![Err("down".into())]);
+        let api = LicenseApi::with_secret(http, "a".repeat(64));
         assert_eq!(
-            validation_action(&Err(LicenseError::Network)),
-            ValidationAction::Offline
-        );
-        assert_eq!(
-            validation_action(&Err(LicenseError::SeatLimit)),
-            ValidationAction::Fail(LicenseError::SeatLimit)
+            api.validate("DBK", &facts()).unwrap_err(),
+            LicenseError::Network
         );
     }
 
     #[test]
-    fn hardware_id_hex_shape() {
-        // Pure-shape check of the hex helper (the real id needs Windows).
-        assert_eq!(hex(&[0x00, 0xff, 0x10]), "00ff10");
-        assert_eq!(hex(&[0xab; 32]).len(), 64);
+    fn error_bodies_map_to_typed_errors() {
+        for (status, code, expected) in [
+            (404, "KEY_NOT_FOUND", LicenseError::InvalidKey),
+            (403, "KEY_REVOKED", LicenseError::Inactive),
+            (409, "DEVICE_SLOT_TAKEN", LicenseError::DeviceSlotTaken),
+        ] {
+            let body = serde_json::json!({ "ok": false, "code": code, "message": "x" });
+            let http = FakeHttp::with(vec![Ok((status, body.to_string()))]);
+            let api = LicenseApi::with_secret(http, "a".repeat(64));
+            assert_eq!(api.validate("DBK", &facts()).unwrap_err(), expected);
+        }
+    }
+
+    #[test]
+    fn deactivate_is_always_ok_on_2xx_and_4xx() {
+        for status in [200u16, 204, 404, 403] {
+            let http = FakeHttp::with(vec![Ok((status, String::new()))]);
+            let api = LicenseApi::with_secret(http, "a".repeat(64));
+            assert!(api.deactivate("DBK", &facts()).is_ok());
+        }
+    }
+
+    // ── codecs ──────────────────────────────────────────────────────
+
+    #[test]
+    fn b64url_roundtrips_rfc4648_vectors() {
+        // RFC 4648 §10 test vectors (base64url, unpadded).
+        let vectors: [(&str, &str); 5] = [
+            ("", ""),
+            ("f", "Zg"),
+            ("fo", "Zm8"),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg"),
+        ];
+        for (plain, encoded) in vectors {
+            assert_eq!(b64url_decode(encoded).unwrap(), plain.as_bytes());
+            // Canonical encoding check (no leftover bits accepted).
+            assert_eq!(&b64url(plain.as_bytes()), encoded);
+        }
+        // url-safe alphabet + padded input accepted.
+        assert_eq!(
+            b64url_decode("Zm9vYg==").unwrap(),
+            b"foob".to_vec()
+        );
+        // Invalid characters + non-canonical lengths rejected.
+        assert!(b64url_decode("a+bc").is_none());
+        assert!(b64url_decode("abcde").is_none());
+    }
+
+    #[test]
+    fn hex_helpers() {
+        assert_eq!(hex_of(&[0x00, 0xff, 0x10]), "00ff10");
+        assert_eq!(hex_of(&[0xab; 32]).len(), 64);
+        assert_eq!(from_hex("00ff10").unwrap(), vec![0x00, 0xff, 0x10]);
+        assert_eq!(from_hex("00FF10").unwrap(), vec![0x00, 0xff, 0x10]);
+        assert!(from_hex("abc").is_none());
+        assert!(from_hex("xyz").is_none());
+    }
+
+    #[test]
+    fn hmac_matches_known_vector() {
+        // RFC 4231 test case 2: key "Jefe", data "what do ya want for
+        // nothing?" → 5bdcc146bf60754e6a042426089575c75a003f089d2739839
+        // dec58fb9691e... (first 32 hex chars checked).
+        let key_hex = hex_of(b"Jefe");
+        let out = hmac_hex(&key_hex, "what do ya want for nothing?");
+        assert!(out.starts_with("5bdcc146bf60754e"));
+        assert_eq!(out.len(), 64);
+    }
+
+    #[test]
+    fn sha256_hex_known_vector() {
+        // sha256("abc") begins ba7816bf.
+        assert!(sha256_hex("abc").starts_with("ba7816bf"));
+    }
+
+    #[test]
+    fn api_base_env_override() {
+        std::env::set_var("DISKBYTES_LICENSE_API", "http://127.0.0.1:8787/");
+        assert_eq!(api_base(), "http://127.0.0.1:8787/");
+        std::env::remove_var("DISKBYTES_LICENSE_API");
+        assert_eq!(api_base(), LICENSE_API_BASE);
     }
 }

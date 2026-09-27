@@ -370,7 +370,15 @@ pub async fn uninstall_app(
     id: &str,
     platform: State<'_, Arc<HostPlatform>>,
     _state: State<'_, AppState>,
+    license: State<'_, crate::commands::license::LicenseManager>,
 ) -> Result<UninstallResult, String> {
+    // The hard license gate (docs §2 L6).
+    crate::commands::license::require_licensed(
+        &license,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0)),
+    )?;
     let platform = Arc::clone(&platform);
     let id = id.to_string();
     tauri::async_runtime::spawn_blocking(move || run_uninstall(*platform, &id))

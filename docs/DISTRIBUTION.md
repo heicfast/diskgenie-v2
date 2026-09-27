@@ -72,3 +72,60 @@ runtime (present on every current Windows 10/11 by default).
   the repo or binaries (CI greps for the patterns).
 - No session recording, no autocapture, no file paths in analytics.
 - No direct-delete code paths (R7.1 grep is a release gate).
+
+## Microsoft Store (MSIX) — the primary channel
+
+DiskBytes' primary distribution is the **Microsoft Store**: the `msix-build`
+workflow (`.github/workflows/msix-build.yml`) packages the release exe into
+an unsigned MSIX, and **Partner Center validates + signs it on submission**
+— the Store signature replaces a purchased code-signing certificate and is
+the tamper-evident distribution layer of the licensing architecture
+(docs/LICENSING-ARCHITECTURE.md §2 L7).
+
+### Building the package
+
+- CI produces `DiskBytes-<version>.<run-number>-x64.msix` + `SHA256SUMS.txt`
+  (artifact `diskbytes-msix-store`) via `MakeAppx pack` over a layout of
+  `DiskBytes.exe`, generated logo assets (44/48/88/176/150/310/Store/wide
+  tiles from `packaging/icon/icon-source.png`), and the committed
+  `AppxManifest` (runFullTrust + internetClient; MinVersion 10.0.19041.0).
+- The manifest is generated in-workflow; identity values come from the
+  workflow inputs (defaults are dev placeholders).
+
+### Submitting to the Store (one-time + per-release)
+
+1. **Reserve the app name** in Partner Center (Apps and Games → New app →
+   "DiskBytes").
+2. **Copy the package identity** (App management → Product identity): the
+   **Package/Identity/Name** and **Publisher** values.
+3. Run the `MSIX Build` workflow (or a release) with inputs
+   `store_identity_name` = the reserved name and `store_publisher` = the
+   copied Publisher (must match EXACTLY or submission is rejected).
+4. Download the `diskbytes-msix-store` artifact and upload the `.msix` in
+   Partner Center under Packages (the Store signs it — do not sign
+   yourself).
+5. Listing requirements to prepare before first submission:
+   - Screenshots (at least one per device family: 1920×1080-class desktop
+     captures — the `diskbytes-ui-screenshots` artifact is a ready source),
+     app description, category (Utilities), privacy policy URL
+     (REQUIRED — the app has telemetry + licensing server data: name,
+     email, device fingerprint; see docs/LICENSING-ARCHITECTURE.md),
+     support contact, age questionnaire (utilities = straightforward).
+6. Certify: Partner Center runs the full Windows App Certification
+   validation (CI runs WACK best-effort as an early warning).
+
+### WebView2 inside the Store package
+
+MSIX cannot run the WebView2 bootstrapper; the manifest targets
+**Windows 10 19041 (2004)+ where the WebView2 Runtime is preinstalled**
+(and every Windows 11). This is the standard packaged-WebView2
+distribution: no embedded runtime, no extra download.
+
+### Store auto-update (shipped in the app)
+
+Store builds self-update: a 24-hour scheduler calls
+`StoreContext::GetAppAndOptionalStorePackageUpdatesAsync()` and, when
+updates exist, `RequestDownloadAndInstallStorePackageUpdatesAsync()` (the
+WinRT contract — the OS shows consent UI when its policy requires it).
+Non-Store builds (NSIS/portable) keep the manual channel above; the
+scheduler no-ops when the package isn't Store-signed.

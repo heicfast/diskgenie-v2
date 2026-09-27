@@ -108,17 +108,20 @@ pub fn run() {
             app.manage(Arc::new(HostPlatform) as Arc<HostPlatform>);
             // Dev hooks (spec §15): auto-start a scan when requested.
             commands::license::start_scheduler(&app.handle().clone());
+            commands::store_update::start_store_update_scheduler(&app.handle().clone());
             let hooks = commands::scan::read_dev_hooks();
             if let Some(target) = hooks.scan {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     let state = handle.state::<state::AppState>();
                     let platform = handle.state::<Arc<HostPlatform>>();
+                    let license = handle.state::<commands::license::LicenseManager>();
                     let _ = tauri::async_runtime::block_on(commands::scan::start_scan(
                         target,
                         handle.clone(),
                         state,
                         platform,
+                        license,
                     ));
                 });
             }
@@ -167,6 +170,7 @@ pub fn run() {
             commands::license::activate_license,
             commands::license::deactivate_license,
             commands::license::validate_now,
+            commands::license::license_sim_set,
             commands::analytics_cmd::analytics_opt_out,
             commands::analytics_cmd::set_analytics_opt_out,
             commands::snapshots_cmd::list_snapshots,

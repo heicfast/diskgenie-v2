@@ -68,13 +68,14 @@ pub async fn commit_cleanup(
     license: State<'_, crate::commands::license::LicenseManager>,
     analytics: State<'_, crate::analytics::Analytics>,
 ) -> Result<CleanupCommitted, String> {
-    // The isPro gate (doc 06; spec licensing): free tier caps queue
-    // bytes, degraded blocks, PRO/grace unlimited.
-    let queue_total: u64 = items.iter().map(|i| i.size).sum();
+    // The hard license gate (docs §2 L6; no free tier — owner decision,
+    // session 10): unlicensed/degraded refuse, PRO/grace commit.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-    crate::commands::license::check_commit_gate(&license, queue_total, now)?;
+    crate::commands::license::require_licensed(&license, now)?;
+    // Queue total (telemetry only — the cap itself is gone).
+    let queue_total: u64 = items.iter().map(|i| i.size).sum();
 
     // Resolve the tree + protected flags under a short lock, then work
     // on the snapshot.

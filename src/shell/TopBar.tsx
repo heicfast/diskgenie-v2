@@ -46,6 +46,10 @@ export interface TopBarProps {
 export function TopBar(props: TopBarProps) {
   const tab = useViewStore((s) => s.tab);
   const setTab = useViewStore((s) => s.setTab);
+  // The license lock (docs §7): a dot marks the four gated tabs while
+  // unlicensed/degraded; the pill/tour geometry is untouched.
+  const licensePosture = useLicenseStore((s) => s.status?.posture ?? null);
+  const locked = licensePosture !== null && licensePosture !== "pro" && licensePosture !== "grace";
   const inspectorVisible = useViewStore((s) => s.inspectorVisible);
   const toggleInspector = useViewStore((s) => s.toggleInspector);
   const itemCount = useCleanupStore((s) => s.items.length);
@@ -116,6 +120,7 @@ export function TopBar(props: TopBarProps) {
             key={id}
             type="button"
             data-active={tab === id}
+            data-locked={locked && id !== "monitor" ? "" : undefined}
             onClick={() => setTab(id)}
             aria-current={tab === id ? "page" : undefined}
             /* Below 1500px the visible label span is display:none (icon-only
@@ -263,7 +268,7 @@ function QueueBadge({ count }: { count: number }) {
 function LicenseChip({ onClick }: { onClick: () => void }) {
   const posture = useLicenseStore((s) => s.status?.posture ?? "unlicensed");
   const label =
-    posture === "pro" ? "Pro" : posture === "grace" ? "Pro · offline" : posture === "degraded" ? "Reconnect" : "Free";
+    posture === "pro" ? "Pro" : posture === "grace" ? "Pro · offline" : posture === "degraded" ? "Reconnect" : "Activate";
   return (
     <button
       type="button"

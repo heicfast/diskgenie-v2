@@ -577,3 +577,23 @@
    * dot-only chip at the most common non-maximized size. The flexible
    * breadcrumb (flex:1, min-width:0) absorbs the ~35px the text needs. */
 }
+
+/* Locked-tab marker (session-10 licensing): a small dot under the
+ * label marks the gated tabs while unlicensed/degraded — the pill
+ * geometry is untouched (tour/CI captures stay stable). */
+.db-tabcaps button[data-locked] {
+  position: relative;
+}
+
+.db-tabcaps button[data-locked]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ink);
+  opacity: 0.55;
+}

@@ -1,7 +1,11 @@
-//! License commands (doc 06 §6; spec licensing layer): thin IPC over
+//! License commands (docs/LICENSING-ARCHITECTURE.md §6): thin IPC over
 //! [`crate::license`], the 24-hour revalidation scheduler, and the
-//! isPro gate for cleanup commits (free tier: ≤ 1 GB per queue —
-//! decision-logged; PRO: unlimited).
+//! hard command-layer gate every privileged operation re-checks.
+//!
+//! STRICT posture semantics (owner decision, session 10): there is no
+//! free tier — unlicensed/degraded users keep the Monitor tab ONLY;
+//! `require_licensed` refuses everything else at the Rust boundary
+//! (the UI lock is a convenience, this is the gate).
 
 use std::sync::Arc;
 
@@ -10,39 +14,61 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::license::{
-    self, validation_action, DodoClient, LicenseError, LicensePosture, LicenseState, ReqwestDodo,
-    ValidationAction, GRACE_DAYS,
+    self, EntitlementDto, LicenseApi, LicenseError, LicensePosture, LicenseState, ReqwestLicense,
+    TokenClaims, DeviceFacts, GRACE_DAYS, LICENSE_PUBLIC_KEY_HEX, LICENSE_PURCHASE_URL,
+    VALIDATION_INTERVAL_S,
 };
 
-/// Free-tier cleanup-commit cap (bytes). Decision: free = analysis +
-/// small cleanups; PRO unlocks unlimited commits.
-const FREE_TIER_COMMIT_CAP: u64 = 1024 * 1024 * 1024;
+/// Error marker prefix the command layer appends so the WebView can
+/// detect gate refusals and open the activation flow (defense in depth
+/// behind the UI lock). The frontend (state/license.ts) greps the same
+/// prefixes.
+pub const GATE_ACTIVATION_REQUIRED: &str = "ACTIVATION_REQUIRED";
 
-/// The managed license manager (state + client + scheduler control).
+/// The stale-license marker (grace window exhausted).
+pub const GATE_STALE: &str = "LICENSE_STALE";
+
+/// The managed license manager (state + scheduler control).
 pub struct LicenseManager {
     state: Mutex<LicenseState>,
 }
 
-/// Managed state constructor: restores the DPAPI-cached state.
+/// Managed state constructor: restores the DPAPI/Keychain-cached state.
+/// Under the `ci-license-sim` feature (screenshots workflow ONLY —
+/// never enabled in NSIS/MSIX production builds) the env
+/// `DISKBYTES_LICENSE_SIM=1` seeds a simulated activated state so the
+/// full app tour can run; `license_sim_set` flips it at runtime.
 #[must_use]
 pub fn license_manager() -> LicenseManager {
-    let state = license::dpapi::load().unwrap_or_default();
+    let mut state = license::dpapi::load().unwrap_or_default();
+    #[cfg(feature = "ci-license-sim")]
+    if std::env::var("DISKBYTES_LICENSE_SIM").as_deref() == Ok("1") {
+        let now = now_unix();
+        state = sim_state(now);
+    }
     LicenseManager {
         state: Mutex::new(state),
     }
 }
 
-/// The status payload (`license_status` + license-changed events).
+/// The status payload (`license_status` + `license-changed` events).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LicenseStatusView {
     pub posture: String,
     pub is_pro: bool,
     pub tier: String,
-    /// Days left in offline grace (0 otherwise).
+    /// Display identity (empty before activation).
+    pub customer_name: String,
+    pub customer_email: String,
+    /// License expiry (unix seconds; 0 = lifetime).
+    pub license_expires_at: i64,
+    /// Days left in the offline grace window (0 otherwise).
     pub grace_days_left: i64,
-    /// Free-tier cleanup cap in bytes (the gate the UI explains).
-    pub free_commit_cap: u64,
+    /// The purchase URL (one source of truth for the UI button).
+    pub purchase_url: String,
+    /// CI simulation marker (screenshots workflow only).
+    pub simulated: bool,
 }
 
 fn view(state: &LicenseState, now: i64) -> LicenseStatusView {
@@ -56,8 +82,12 @@ fn view(state: &LicenseState, now: i64) -> LicenseStatusView {
         posture: posture.to_string(),
         is_pro: posture == "pro" || posture == "grace",
         tier: state.tier.clone(),
+        customer_name: state.customer_name.clone(),
+        customer_email: state.customer_email.clone(),
+        license_expires_at: state.license_expires_at,
         grace_days_left: days,
-        free_commit_cap: FREE_TIER_COMMIT_CAP,
+        purchase_url: LICENSE_PURCHASE_URL.to_string(),
+        simulated: state.simulated,
     }
 }
 
@@ -65,6 +95,65 @@ fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+/// Normalize + structurally validate a license key
+/// (`DB` + 20 Crockford chars; docs §3.3). Returns `None` on a bad
+/// shape (the caller surfaces the typed copy).
+#[must_use]
+pub fn normalize_key(raw: &str) -> Option<String> {
+    let normalized: String = raw
+        .trim()
+        .to_uppercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let ok = normalized.len() == 22
+        && normalized.starts_with("DB")
+        && normalized
+            .chars()
+            .skip(2)
+            .all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c));
+    ok.then_some(normalized)
+}
+
+/// Collect the device facts for activation (doc §6: exactly what the
+/// server stores — platform + fingerprint + audit strings, nothing
+/// else; no telemetry beyond the license layer's own events).
+///
+/// # Errors
+/// String error when the hardware fingerprint is unreadable.
+fn device_facts(hardware_hash: String) -> Result<DeviceFacts, String> {
+    let hostname = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| {
+            if cfg!(target_os = "macos") {
+                "Mac".into()
+            } else {
+                "PC".into()
+            }
+        });
+    Ok(DeviceFacts {
+        platform: platform_string().to_string(),
+        hardware_hash,
+        hostname,
+        os_version: crate::platform::os::os_version(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+    })
+}
+
+/// The platform identifier the server binds slots by.
+fn platform_string() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "windows"
+    }
+}
+
+/// sha256 hex over the normalized key (the token's `key` binding).
+fn key_hash_of(normalized: &str) -> String {
+    crate::license::sha256_hex(normalized)
 }
 
 /// Current license status (posture/gating data for the UI).
@@ -75,13 +164,15 @@ pub fn license_status(mgr: State<'_, LicenseManager>) -> LicenseStatusView {
     view(&state, now_unix())
 }
 
-/// Activate a license key on this device (doc 06 §3.1/§3.5: the
-/// activation `name` carries the hardware id so the Dodo dashboard
-/// stays readable AND the instance text binds to the machine).
+/// Activate a license key on this device (doc §4): collect facts →
+/// server activate → **locally verify the Ed25519-signed token** (a
+/// spoofed/mimicked server cannot pass this) → persist + notify.
+/// Transport failures retry twice with backoff before surfacing.
 ///
 /// # Errors
-/// The mapped [`LicenseError`] copy (404/403/422/5xx) or a storage
-/// failure — the user-readable reason, never a silent fallback.
+/// The typed [`LicenseError`] copy (invalid key / device slot / expired
+/// / spoofed response) — the user-readable reason, never a silent
+/// fallback.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
 pub fn activate_license(
@@ -89,36 +180,101 @@ pub fn activate_license(
     mgr: State<'_, LicenseManager>,
     app: AppHandle,
 ) -> Result<LicenseStatusView, String> {
-    let key = key.trim();
-    if key.is_empty() {
+    let Some(normalized) = normalize_key(key) else {
         return Err(LicenseError::InvalidKey.to_string());
-    }
-    let hw = license::hardware_id()?;
-    // Doc 06 §3.5: readable AND hardware-bound instance name.
-    let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into());
-    let name = format!("DiskBytes on {hostname} [{:.16}]", hw.as_str());
-    let http = ReqwestDodo::new()?;
-    let client = DodoClient::new(http);
-    let response = client.activate(key, &name).map_err(|e| e.to_string())?;
-    let now = now_unix();
-    // Tier refinement (yearly/lifetime) maps from the product payload
-    // once real product ids exist dashboard-side; until then the gate
-    // only needs is_pro (documented in the worklog).
-    let state = LicenseState {
-        license_key: key.to_string(),
-        instance_id: response.id,
-        tier: String::new(),
-        is_pro: true,
-        activated_at: now,
-        last_validated_at: now,
-        last_known_good: now,
-        hardware_id: hw,
     };
+    let hw = license::hardware_id()?;
+    let facts = device_facts(hw.clone())?;
+    let http = ReqwestLicense::new()?;
+    let api = LicenseApi::new(http);
+
+    // Retry the transport (lightning-fast when healthy; two quick
+    // retries with backoff when the edge blips — doc §4 "error
+    // management").
+    let mut attempt = 0u32;
+    let mut outcome = Err(LicenseError::Network);
+    loop {
+        outcome = api.activate(&normalized, &facts);
+        match &outcome {
+            Ok(_) => break,
+            Err(e) if e.is_hard() => break,
+            Err(_) if attempt >= 2 => break,
+            Err(_) => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(250 * u64::from(attempt)));
+            }
+        }
+    }
+    let dto = outcome.map_err(|e| {
+        if let Some(an) = app.try_state::<crate::analytics::Analytics>() {
+            an.capture("license_activate_failed", &[("retry", serde_json::json!(attempt))]);
+        }
+        e.to_string()
+    })?;
+
+    // The anti-spoofing gate: verify the server's signed token against
+    // the embedded public key + this machine's fingerprint before
+    // trusting ANYTHING in the response.
+    let now = now_unix();
+    let claims = verify_entitlement(&dto, &normalized, &hw, now)
+        .map_err(|e| {
+            if let Some(an) = app.try_state::<crate::analytics::Analytics>() {
+                an.capture("license_activate_spoofed", &[]);
+            }
+            e.to_string()
+        })?;
+
+    let mut state = state_from_entitlement(&dto, &claims, &normalized, &hw, now);
+    state.last_known_good = now;
     license::dpapi::save(&state)?;
-    identify_after_activation(&app, key);
+    identify_after_activation(&app, &normalized);
     let v = view(&state, now);
     *mgr.state.lock() = state;
+    let _ = app.emit("license-changed", &v);
     Ok(v)
+}
+
+/// Verify a fresh entitlement: signature, key binding, hardware
+/// binding, platform, windows.
+fn verify_entitlement(
+    dto: &EntitlementDto,
+    normalized_key: &str,
+    hw: &str,
+    now: i64,
+) -> Result<TokenClaims, LicenseError> {
+    license::verify_token(
+        &dto.token,
+        LICENSE_PUBLIC_KEY_HEX,
+        &key_hash_of(normalized_key),
+        hw,
+        platform_string(),
+        now,
+    )
+}
+
+/// Build the persisted state from a verified entitlement.
+fn state_from_entitlement(
+    dto: &EntitlementDto,
+    claims: &TokenClaims,
+    normalized_key: &str,
+    hw: &str,
+    now: i64,
+) -> LicenseState {
+    LicenseState {
+        license_key: normalized_key.to_string(),
+        hardware_id: hw.to_string(),
+        platform: platform_string().to_string(),
+        tier: claims.tier.clone(),
+        customer_name: dto.license.name.clone(),
+        customer_email: dto.license.email.clone(),
+        license_expires_at: claims.lexp.unwrap_or(0),
+        token: dto.token.clone(),
+        token_exp: claims.exp,
+        activated_at: now,
+        last_validated_at: now,
+        last_known_good: 0,
+        simulated: false,
+    }
 }
 
 /// Post-activation identity merge (doc 07 §3.2): the license key handle
@@ -129,35 +285,48 @@ pub fn identify_after_activation(app: &AppHandle, key: &str) {
     }
 }
 
-/// Deactivate this device (frees the seat server-side; doc 06 §3.3) and
+/// Deactivate this device (frees the platform slot server-side) and
 /// clear the local cache. Network failure still clears locally (the
-/// seat frees on the next dashboard action) — with the reason surfaced.
+/// slot frees on the next server-side housekeeping or admin reset).
 ///
 /// # Errors
 /// String error when the remote deactivate fails with a hard error.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
-pub fn deactivate_license(mgr: State<'_, LicenseManager>) -> Result<(), String> {
+pub fn deactivate_license(mgr: State<'_, LicenseManager>, app: AppHandle) -> Result<(), String> {
     let state = mgr.state.lock().clone();
     if state.license_key.is_empty() {
         return Ok(());
     }
-    let http = ReqwestDodo::new()?;
-    let client = DodoClient::new(http);
-    let result = client.deactivate(&state.license_key, &state.instance_id);
-    license::dpapi::clear();
-    *mgr.state.lock() = LicenseState::default();
-    match result {
-        Ok(()) | Err(LicenseError::Network) => Ok(()),
-        Err(e) => Err(e.to_string()),
+    if !state.simulated {
+        if let (Ok(hw), Ok(http)) = (license::hardware_id(), ReqwestLicense::new()) {
+            let facts = device_facts(hw.clone()).ok();
+            if let Some(facts) = facts {
+                let api = LicenseApi::new(http);
+                let result = api.deactivate(&state.license_key, &facts);
+                if let Err(e) = result {
+                    if e.is_hard() {
+                        return Err(e.to_string());
+                    }
+                }
+            }
+        }
     }
+    license::dpapi::clear();
+    let now = now_unix();
+    *mgr.state.lock() = LicenseState::default();
+    let v = view(&LicenseState::default(), now);
+    let _ = app.emit("license-changed", &v);
+    Ok(())
 }
 
-/// Run one validation NOW (Refresh in the license UI) and return the
-/// resulting status. Network failures leave the grace path intact.
+/// Run one validation NOW (the Pro status card's "Validate now") and
+/// return the resulting status. Network failures leave the grace path
+/// intact (doc §6 posture semantics).
 ///
 /// # Errors
-/// String error on a hard validation failure (403/404/422/5xx).
+/// String error on a hard validation failure (revoked / expired /
+/// device mismatch); soft failures keep the grace path and return Ok.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
 pub fn validate_now(
@@ -171,61 +340,84 @@ pub fn validate_now(
     Ok(v)
 }
 
-/// One validation cycle: applies the doc 06 §3.2 state machine, saves,
-/// and notifies the UI. Returns (view, hard-error).
-fn validate_and_apply(
-    app: &AppHandle,
-    mgr: &LicenseManager,
-) -> (LicenseStatusView, Option<String>) {
-    let state = mgr.state.lock().clone();
-    let mut state = state;
+/// One validation cycle (PURE state application over the verified
+/// protocol outcome — the unit-tested seam):
+/// * fresh verified token → refresh timestamps/token
+/// * transport/parse failure → grace continues (frozen)
+/// * a response that FAILS local verification (spoofed server) →
+///   grace continues (a mimic cannot extend anything; the token's own
+///   `exp` is the hard stop — the honest choice during key rotation,
+///   where a stale app build would otherwise mass-deactivate)
+/// * explicit hard errors (revoked / expired / device mismatch) →
+///   local deactivate
+fn validate_and_apply(app: &AppHandle, mgr: &LicenseManager) -> (LicenseStatusView, Option<String>) {
+    let mut state = mgr.state.lock().clone();
     let now = now_unix();
-    let mut error = None;
-    if state.license_key.is_empty() {
+    if state.license_key.is_empty() || state.simulated {
         return (view(&state, now), None);
     }
-    let http = ReqwestDodo::new().ok();
-    let result = match http {
-        Some(h) => DodoClient::new(h).validate(&state.license_key, &state.instance_id),
-        None => Err(LicenseError::Network),
+    let mut error = None;
+    let hw = match license::hardware_id() {
+        Ok(hw) => hw,
+        Err(e) => {
+            // Fingerprint unreadable (WMI-hobbled machine?): keep the
+            // grace path; the token expiry is the backstop.
+            let _ = e;
+            return (view(&state, now), None);
+        }
+    };
+    let facts = match device_facts(hw.clone()) {
+        Ok(f) => f,
+        Err(_) => return (view(&state, now), None),
+    };
+    let result = match ReqwestLicense::new() {
+        Ok(http) => LicenseApi::new(http).validate(&state.license_key, &facts),
+        Err(_) => Err(LicenseError::Network),
     };
     // Engine telemetry (doc 07 §4) — no key material.
     if let Some(an) = app.try_state::<crate::analytics::Analytics>() {
         an.capture(
             "license_validate_result",
             &[
-                ("valid", serde_json::json!(matches!(result, Ok(true)))),
-                ("network", serde_json::json!(result.is_err())),
+                ("valid", serde_json::json!(result.is_ok())),
+                ("network", serde_json::json!(matches!(result, Err(LicenseError::Network)))),
             ],
         );
     }
-    match validation_action(&result) {
-        ValidationAction::Refresh => {
-            state.last_validated_at = now;
-            state.last_known_good = state.last_known_good.max(now);
-            state.is_pro = true;
-        }
-        ValidationAction::Deactivate => {
-            // Revoked / seat removed server-side (doc 06 §3.2).
+    match result {
+        Ok(dto) => match verify_entitlement(&dto, &state.license_key, &hw, now) {
+            Ok(claims) => {
+                // Refresh in place (activation identity stays).
+                state.tier = claims.tier.clone();
+                state.customer_name = dto.license.name.clone();
+                state.customer_email = dto.license.email.clone();
+                state.license_expires_at = claims.lexp.unwrap_or(0);
+                state.token = dto.token.clone();
+                state.token_exp = claims.exp;
+                state.last_validated_at = now;
+                state.last_known_good = state.last_known_good.max(now);
+            }
+            // Spoofed/rotation-mismatch: soft — grace continues.
+            Err(_) => {}
+        },
+        Err(e) if e.is_hard() => {
+            // Revoked / expired / device-mismatch: hard → local clear.
             license::dpapi::clear();
+            error = Some(e.to_string());
             state = LicenseState::default();
         }
-        ValidationAction::Offline => {
-            // Grace continues (doc 06 §3.4): timestamps frozen.
-        }
-        ValidationAction::Fail(e) => {
-            error = Some(e.to_string());
-        }
+        // Network / server error: grace continues (timestamps frozen).
+        Err(_) => {}
     }
     let _ = license::dpapi::save(&state);
     let v = view(&state, now);
-    *mgr.state.lock() = state.clone();
+    *mgr.state.lock() = state;
     let _ = app.emit("license-changed", &v);
     (v, error)
 }
 
 /// Start the license scheduler: an immediate launch validation + the
-/// 24-hour revalidation loop (doc 06 §3.4). Called from `setup`.
+/// 24-hour revalidation loop (doc §6). Called from `setup`.
 pub fn start_scheduler(app: &AppHandle) {
     let handle = Arc::new(app.clone());
     std::thread::Builder::new()
@@ -237,7 +429,7 @@ pub fn start_scheduler(app: &AppHandle) {
                 // Sleep one validation interval; exit quietly when the
                 // app is closing (emit failures end the loop naturally).
                 std::thread::sleep(std::time::Duration::from_secs(
-                    license::VALIDATION_INTERVAL_S.try_into().unwrap_or(86_400),
+                    u64::try_from(VALIDATION_INTERVAL_S).unwrap_or(86_400),
                 ));
                 let _ = validate_and_apply(&handle, &mgr);
             }
@@ -245,29 +437,86 @@ pub fn start_scheduler(app: &AppHandle) {
         .expect("license scheduler thread");
 }
 
-/// The isPro cleanup-commit gate: PRO/grace commits anything; free/
-/// unlicensed commits up to the cap; degraded mode blocks commits
-/// entirely (read-only cleanup — doc 06 §3.4).
+// ============================================================================
+// The command-layer gate (defense in depth behind the UI lock)
+// ============================================================================
+
+/// The hard gate every privileged command re-checks (doc §2 L6):
+/// PRO/grace pass; unlicensed and degraded REFUSE. The error string
+/// carries a greppable marker the WebView uses to open the activation
+/// flow (UI lock + this gate protect each other).
 ///
 /// # Errors
-/// String error with the user-readable reason when the gate refuses.
-pub fn check_commit_gate(mgr: &LicenseManager, total_bytes: u64, now: i64) -> Result<(), String> {
-    let state = mgr.state.lock().clone();
+/// Typed user copy with the `ACTIVATION_REQUIRED` / `LICENSE_STALE`
+/// marker prefix.
+pub fn require_licensed(mgr: &LicenseManager, now: i64) -> Result<(), String> {
+    let state = mgr.state.lock();
     match license::posture(&state, now) {
         LicensePosture::Pro | LicensePosture::Grace { .. } => Ok(()),
         LicensePosture::Degraded => Err(format!(
-            "License offline for more than {GRACE_DAYS} days — cleanup is read-only until you reconnect."
+            "{GATE_STALE} — DiskBytes couldn't verify your license for over {GRACE_DAYS} days. Reconnect to restore Pro features."
         )),
-        LicensePosture::Unlicensed => {
-            if total_bytes > FREE_TIER_COMMIT_CAP {
-                Err(
-                    "The free plan moves up to 1 GB per cleanup. This queue is larger — Upgrade to Pro to commit it."
-                        .to_string(),
-                )
-            } else {
-                Ok(())
-            }
-        }
+        LicensePosture::Unlicensed => Err(format!(
+            "{GATE_ACTIVATION_REQUIRED} — Activate DiskBytes Pro to use this."
+        )),
+    }
+}
+
+// ============================================================================
+// CI simulation (screenshots workflow only; never in production builds)
+// ============================================================================
+
+/// A simulated activated state for the tour (name/email/active-till
+/// cards; marked `simulated: true` so the status view says so).
+#[cfg(feature = "ci-license-sim")]
+fn sim_state(now: i64) -> LicenseState {
+    LicenseState {
+        license_key: "DBSIM0CI0TOUR0SIM0KEY0".to_string(),
+        hardware_id: String::new(),
+        platform: platform_string().to_string(),
+        tier: "lifetime".to_string(),
+        customer_name: "Alex Morgan".to_string(),
+        customer_email: "alex@diskbytes.app".to_string(),
+        license_expires_at: 0,
+        token: "sim".to_string(),
+        token_exp: now + 365 * 86_400,
+        activated_at: now - 32 * 86_400,
+        last_validated_at: now,
+        last_known_good: now,
+        simulated: true,
+    }
+}
+
+/// Tour hook: flip the simulated license state. ALWAYS registered (a
+/// cfg-attribute inside `generate_handler!` is macro-territory we
+/// avoid), but the body is feature-gated: NSIS/MSIX production builds
+/// compile a hard refusal — the simulation cannot flip anything.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
+pub fn license_sim_set(
+    mode: &str,
+    mgr: State<'_, LicenseManager>,
+    app: AppHandle,
+) -> Result<LicenseStatusView, String> {
+    #[cfg(not(feature = "ci-license-sim"))]
+    {
+        // Production build: no simulation surface (defense in depth —
+        // the seeding in license_manager is compiled out too).
+        let _ = (mode, &mgr, &app);
+        Err("license simulation is not available in this build".to_string())
+    }
+    #[cfg(feature = "ci-license-sim")]
+    {
+        let now = now_unix();
+        let next = if mode == "pro" {
+            sim_state(now)
+        } else {
+            LicenseState::default()
+        };
+        let v = view(&next, now);
+        *mgr.state.lock() = next;
+        let _ = app.emit("license-changed", &v);
+        Ok(v)
     }
 }
 
@@ -276,8 +525,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn free_tier_cap_is_1gb() {
-        assert_eq!(FREE_TIER_COMMIT_CAP, 1_073_741_824);
+    fn key_normalization_accepts_messy_input() {
+        assert_eq!(
+            normalize_key(" db-xk2m9-qf3p8-nr4t-2vw6y ").as_deref(),
+            Some("DBXK2M9QF3P8NR4T2VW6Y")
+        );
+        assert_eq!(
+            normalize_key("DB.XK2M9 qf3p8nr4t2vw6y").as_deref(),
+            Some("DBXK2M9QF3P8NR4T2VW6Y")
+        );
+    }
+
+    #[test]
+    fn key_normalization_rejects_wrong_shapes() {
+        // Wrong length / prefix / confusable letters.
+        assert!(normalize_key("DB-XK2M9-QF3P8").is_none());
+        assert!(normalize_key("AB" + &"X".repeat(20)).is_none());
+        assert!(normalize_key("DB" + &"ILOU".repeat(5)).is_none());
+        assert!(normalize_key("").is_none());
     }
 
     #[test]
@@ -285,61 +550,109 @@ mod tests {
         let now = 1_790_000_000;
         let mut s = LicenseState {
             license_key: "K".into(),
-            is_pro: true,
             tier: "lifetime".into(),
+            customer_name: "Alex Morgan".into(),
+            customer_email: "alex@example.com".into(),
             last_validated_at: now,
+            token_exp: now + 86_400,
             ..Default::default()
         };
         let v = view(&s, now);
         assert_eq!(v.posture, "pro");
         assert!(v.is_pro);
+        assert_eq!(v.customer_name, "Alex Morgan");
+        assert_eq!(v.license_expires_at, 0);
+        assert_eq!(v.purchase_url, LICENSE_PURCHASE_URL);
         // 10 days stale → grace 4.
         s.last_validated_at = now - 10 * 86_400;
         let v = view(&s, now);
         assert_eq!(v.posture, "grace");
         assert_eq!(v.grace_days_left, 4);
-        assert!(v.is_pro, "grace keeps pro features (doc 06 §3.4)");
-        // Degraded → not pro.
-        s.last_validated_at = now - (GRACE_DAYS + 1) * 86_400;
+        assert!(v.is_pro, "grace keeps pro features (doc §6)");
+        // Token exhausted → degraded → locked.
+        s.token_exp = now - 1;
         let v = view(&s, now);
         assert_eq!(v.posture, "degraded");
         assert!(!v.is_pro);
+        // Default → unlicensed.
+        let v = view(&LicenseState::default(), now);
+        assert_eq!(v.posture, "unlicensed");
+        assert!(!v.is_pro);
+        assert_eq!(v.customer_name, "");
     }
 
     #[test]
-    fn commit_gate_rules() {
+    fn gate_rules() {
         let now = 1_790_000_000;
-        // Unlicensed: ≤ 1 GB ok, > refused with upgrade copy.
-        let free = LicenseState::default();
-        assert!(check_commit_gate(&LicenseManager::state_for(&free, now), 1024, now).is_ok());
-        let err = check_commit_gate(
-            &LicenseManager::state_for(&free, now),
-            FREE_TIER_COMMIT_CAP + 1,
-            now,
-        )
-        .unwrap_err();
-        assert!(err.contains("Upgrade"));
-        // Pro: anything.
+        // Unlicensed: refused with the activation marker.
+        let free = LicenseManager::state_for(&LicenseState::default());
+        let err = require_licensed(&free, now).unwrap_err();
+        assert!(err.starts_with("ACTIVATION_REQUIRED"));
+        // Pro: pass.
         let pro = LicenseState {
             license_key: "K".into(),
-            is_pro: true,
             last_validated_at: now,
+            token_exp: now + 86_400,
             ..Default::default()
         };
-        assert!(
-            check_commit_gate(&LicenseManager::state_for(&pro, now), u64::MAX / 2, now).is_ok()
-        );
-        // Degraded: refuse everything with reconnect copy.
-        let mut deg = pro;
-        deg.last_validated_at = now - (GRACE_DAYS + 2) * 86_400;
-        let err = check_commit_gate(&LicenseManager::state_for(&deg, now), 10, now).unwrap_err();
-        assert!(err.contains("reconnect"));
+        assert!(require_licensed(&LicenseManager::state_for(&pro), now).is_ok());
+        // Grace: pass (offline, inside the window).
+        let grace = LicenseState {
+            license_key: "K".into(),
+            last_validated_at: now - 10 * 86_400,
+            token_exp: now + 4 * 86_400,
+            ..Default::default()
+        };
+        assert!(require_licensed(&LicenseManager::state_for(&grace), now).is_ok());
+        // Degraded: refused with the stale marker.
+        let deg = LicenseState {
+            license_key: "K".into(),
+            last_validated_at: now - 20 * 86_400,
+            token_exp: now - 1,
+            ..Default::default()
+        };
+        let err = require_licensed(&LicenseManager::state_for(&deg), now).unwrap_err();
+        assert!(err.starts_with("LICENSE_STALE"));
+    }
+
+    /// State-from-entitlement carries the display identity + windows.
+    #[test]
+    fn state_from_entitlement_maps_fields() {
+        let dto = EntitlementDto {
+            token: "tok".into(),
+            license: crate::license::LicenseDto {
+                tier: "yearly".into(),
+                name: "Renee Okafor".into(),
+                email: "renee@example.com".into(),
+                expires_at: Some(1_800_000_000),
+            },
+        };
+        let claims = TokenClaims {
+            iss: "db-license".into(),
+            ver: 1,
+            jti: "j".into(),
+            iat: 1_790_000_000,
+            exp: 1_790_864_000,
+            key: "k".into(),
+            tier: "yearly".into(),
+            name: "Renee Okafor".into(),
+            email: "renee@example.com".into(),
+            hw: "h".into(),
+            plat: "windows".into(),
+            lexp: Some(1_800_000_000),
+        };
+        let s = state_from_entitlement(&dto, &claims, "DBK", "hw", 1_790_000_000);
+        assert_eq!(s.license_key, "DBK");
+        assert_eq!(s.customer_name, "Renee Okafor");
+        assert_eq!(s.license_expires_at, 1_800_000_000);
+        assert_eq!(s.token_exp, 1_790_864_000);
+        assert!(!s.simulated);
     }
 
     impl LicenseManager {
-        /// Test constructor from a frozen state + clock (the gate reads
-        /// posture through the same `view` path as production).
-        fn state_for(state: &LicenseState, _now: i64) -> Self {
+        /// Test constructor from a frozen state (the gate + view read
+        /// posture through the same path as production).
+        fn state_for(state: &LicenseState) -> Self {
             LicenseManager {
                 state: Mutex::new(state.clone()),
             }

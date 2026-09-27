@@ -18,3 +18,4 @@ pub mod scan;
 pub mod shell;
 pub mod sidebar;
 pub mod snapshots_cmd;
+pub mod store_update;

@@ -33,7 +33,7 @@ Full gate battery (fmt, clippy `-D warnings`, tests, typecheck, vitest, safety g
 
 ## Licensing
 
-Free to scan and analyze everything. **Pro** (Dodo Payments) unlocks unlimited cleanup — the free plan moves up to 1 GB per queue. Offline grace is 14 days; after that cleanup becomes read-only until you reconnect (scanning never stops).
+Paid product (yearly or lifetime — one licence covers one Windows PC and one Mac). Activation is required for Explore, Duplicates, Applications and Snapshots; the Monitor tab stays free. Activation and the 24-hour revalidation run against our Cloudflare Worker + D1 backend, which issues **Ed25519-signed entitlement tokens** — a spoofed license server cannot forge one, and revocation lands within a day. Offline grace is 14 days; after that Pro features pause until you reconnect. Full architecture: `docs/LICENSING-ARCHITECTURE.md`.
 
 ## Privacy
 

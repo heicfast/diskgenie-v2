@@ -40,6 +40,7 @@ pub mod dir;
 pub mod license;
 pub mod monitor;
 pub mod recycle;
+pub mod store_update;
 pub mod sysinfo;
 pub mod turbo;
 
@@ -49,5 +50,6 @@ pub use dir::*;
 pub use license::*;
 pub use monitor::*;
 pub use recycle::*;
+pub use store_update::*;
 pub use sysinfo::*;
 pub use turbo::*;

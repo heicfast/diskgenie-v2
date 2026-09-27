@@ -112,9 +112,72 @@ export function TourDriver() {
           window.setTimeout(waitMount, 120);
         },
       });
-      // license dialog open + pro posture
+      // LICENSE COVERAGE (session-10 licensing): the Pro status card
+      // (name/email/active-till/thank-you — on the simulated license),
+      // the activation dialog's empty state (Later + Purchase Licence
+      // buttons), its complete-key state (the Activate button), and the
+      // locked app (Activation Gate). Order: status card first (still
+      // PRO from boot), then the dialog empty/key states, then flip
+      // OFF for the locked-app capture.
       steps.push({
-        name: "license-dialog",
+        name: "license-status-card",
+        dwell: 2,
+        apply: () => {
+          useViewStore.getState().setTab("explore");
+          window.dispatchEvent(new CustomEvent("db-tour-open-license"));
+        },
+      });
+      steps.push({
+        name: "license-dialog-empty",
+        apply: () => {
+          window.dispatchEvent(new CustomEvent("db-tour-close-license"));
+          window.setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("db-tour-open-license"));
+          }, 150);
+          // flip to unlicensed for the entry state
+          void import("../lib/ipc").then(({ invoke }) =>
+            invoke("license_sim_set", { state: "unlicensed" }).catch(() => undefined),
+          );
+        },
+      });
+      steps.push({
+        name: "license-dialog-key",
+        apply: () => {
+          window.dispatchEvent(new CustomEvent("db-tour-close-license"));
+          window.setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("db-tour-open-license"));
+            window.dispatchEvent(new CustomEvent("db-tour-license-key", { detail: { key: "DB-7XK2M-9QF3P-8NR4T-2VW6Y" } }));
+          }, 150);
+        },
+      });
+      // The locked app: dialog closed, still unlicensed → the
+      // Activation Gate renders in place of every gated tab.
+      steps.push({
+        name: "license-locked-explore",
+        dwell: 2,
+        apply: () => {
+          window.dispatchEvent(new CustomEvent("db-tour-close-license"));
+          useViewStore.getState().setTab("explore");
+        },
+      });
+      steps.push({
+        name: "license-locked-duplicates",
+        apply: () => {
+          useViewStore.getState().setTab("duplicates");
+        },
+      });
+      // Restore the simulated PRO state so the remaining steps (queue)
+      // capture the working app.
+      steps.push({
+        name: "license-restore-pro",
+        apply: () => {
+          void import("../lib/ipc").then(({ invoke }) =>
+            invoke("license_sim_set", { state: "pro" }).catch(() => undefined),
+          );
+        },
+      });
+      steps.push({
+        name: "license-pro-restored",
         apply: () => {
           useViewStore.getState().setTab("explore");
           window.dispatchEvent(new CustomEvent("db-tour-open-license"));

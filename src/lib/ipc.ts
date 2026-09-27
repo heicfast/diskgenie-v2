@@ -27,10 +27,21 @@ export function setMockBackend(handler: MockCommand | null): void {
 }
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (mockCommand) {
-    return mockCommand(cmd, args) as Promise<T>;
+  try {
+    if (mockCommand) {
+      return (await mockCommand(cmd, args)) as T;
+    }
+    return await tauriInvoke<T>(cmd, args);
+  } catch (e) {
+    // License gate interception (docs §2 L6): when a command is refused
+    // by the Rust license layer (ACTIVATION_REQUIRED / LICENSE_STALE
+    // marker prefixes), raise the gate event so the App opens the
+    // activation flow. Runtime-only call — the module cycle
+    // ipc ↔ state/license is safe (no top-level execution either side).
+    const { interceptLicenseGate } = await import("../state/license");
+    interceptLicenseGate(String(e));
+    throw e;
   }
-  return tauriInvoke<T>(cmd, args);
 }
 
 /** Event subscription — routes to the local mock bus when installed. */

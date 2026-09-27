@@ -227,3 +227,24 @@ pub fn hardlink_identity(path: &std::path::Path) -> Option<(u64, u64)> {
         (hi << 32) | lo
     }))
 }
+
+/// Windows version for the license device facts (audit field; D1 stores
+/// it with the device registration). `RtlGetVersion` is the
+/// manifest-lie-proof source (GetVersionEx lies without a shim).
+#[must_use]
+pub fn os_version() -> String {
+    use windows::Win32::System::SystemInformation::{RtlGetVersion, OSVERSIONINFOW};
+    let mut info = OSVERSIONINFOW::default();
+    info.dwOSVersionInfoSize =
+        u32::try_from(std::mem::size_of::<OSVERSIONINFOW>()).unwrap_or(0);
+    // SAFETY: properly sized out-struct per the API contract.
+    let status = unsafe { RtlGetVersion(&mut info) };
+    if status.is_ok() {
+        format!(
+            "Windows {}.{}.{}",
+            info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber
+        )
+    } else {
+        "Windows".to_string()
+    }
+}

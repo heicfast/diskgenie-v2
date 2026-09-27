@@ -235,3 +235,36 @@ pub fn hardlink_identity(path: &std::path::Path) -> Option<(u64, u64)> {
     let md = std::fs::metadata(path).ok()?;
     Some((md.dev(), md.ino()))
 }
+
+/// macOS product version for the license device facts (audit field;
+/// `kern.osproductversion` via the sysctl seam — same call shape as
+/// [`cpuid_brand`]).
+#[must_use]
+pub fn os_version() -> String {
+    let Ok(name) = CString::new("kern.osproductversion") else {
+        return "macOS".to_string();
+    };
+    let mut buf = [0u8; 32];
+    let mut len = buf.len();
+    // SAFETY: sysctlbyname into a fixed buffer.
+    let rc = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 && len > 0 && len <= buf.len() {
+        let end = buf[..len].iter().position(|&b| b == 0).unwrap_or(len);
+        let version = String::from_utf8_lossy(&buf[..end]).to_string();
+        if version.is_empty() {
+            "macOS".to_string()
+        } else {
+            format!("macOS {version}")
+        }
+    } else {
+        "macOS".to_string()
+    }
+}

@@ -94,7 +94,16 @@ pub async fn start_scan(
     app: AppHandle,
     state: State<'_, AppState>,
     platform: State<'_, Arc<HostPlatform>>,
+    license: State<'_, crate::commands::license::LicenseManager>,
 ) -> Result<u64, String> {
+    // The hard license gate (docs §2 L6): the operation itself refuses —
+    // the UI lock and this gate protect each other.
+    crate::commands::license::require_licensed(
+        &license,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0)),
+    )?;
     // Cancel any running scan (cooperative; its thread exits without
     // swapping its tree — spec §4 "starting a new scan cancels the old")
     // AND any running duplicates pipeline: the tree it is hashing is
@@ -434,7 +443,14 @@ pub async fn start_scan_turbo(
     app: AppHandle,
     state: State<'_, AppState>,
     platform: State<'_, std::sync::Arc<HostPlatform>>,
+    license: State<'_, crate::commands::license::LicenseManager>,
 ) -> Result<u64, String> {
+    crate::commands::license::require_licensed(
+        &license,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0)),
+    )?;
     if !crate::platform::os::is_elevated() {
         return Err("ELEVATION_REQUIRED".into());
     }

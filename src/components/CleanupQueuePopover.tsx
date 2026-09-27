@@ -20,7 +20,6 @@ import { useEffect, useRef, useState } from "react";
 import { CheckIcon, Trash2Icon, XIcon } from "./Icon";
 import { TailPath } from "./TailPath";
 import { useCleanupStore } from "../state/cleanup";
-import { useLicenseStore } from "../state/license";
 import { useScanStore } from "../state/scan";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { bytes } from "../lib/format";
@@ -49,7 +48,6 @@ export function CleanupQueuePopover({
   const remove = useCleanupStore((s) => s.remove);
   const clear = useCleanupStore((s) => s.clear);
   const commit = useCleanupStore((s) => s.commitToRecycleBin);
-  const license = useLicenseStore((s) => s.status);
   const scanStatus = useScanStore((s) => s.status);
   const [confirming, setConfirming] = useState(false);
   const [committing, setCommitting] = useState(false);
@@ -191,8 +189,8 @@ export function CleanupQueuePopover({
   }, [open, onClose, confirming]);
 
   const total = items.reduce((a, i) => a + i.size, 0);
-  const freeCap = license?.freeCommitCap ?? 0;
-  const overFreeCap = !license?.isPro && freeCap > 0 && total > freeCap;
+  // No free tier (owner decision, session 10): the popover only renders
+  // for PRO/grace users (App gates the anchor; Rust gates the commit).
   // Committing needs a settled tree; during a rescan the generation
   // mismatches and the server would refuse. Disable with a clear
   // reason instead of surfacing a jargon error after the click.
@@ -262,13 +260,11 @@ export function CleanupQueuePopover({
               <button
                 type="button"
                 className="db-btn-commit"
-                disabled={items.length === 0 || committing || overFreeCap || scanRunning}
+                disabled={items.length === 0 || committing || scanRunning}
                 title={
-                  overFreeCap
-                    ? `Free tier caps cleanup at ${bytes(freeCap)} — activate DiskBytes Pro to clean more`
-                    : scanRunning
-                      ? "Wait for the scan to finish — cleaning needs a settled map"
-                      : undefined
+                  scanRunning
+                    ? "Wait for the scan to finish — cleaning needs a settled map"
+                    : undefined
                 }
                 onClick={() => setConfirming(true)}
               >

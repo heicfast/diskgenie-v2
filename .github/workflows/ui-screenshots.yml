@@ -42,8 +42,14 @@ jobs:
       - name: npm ci
         run: npm ci
 
-      - name: Build the app (release exe, no installer)
-        run: npx tauri build --no-bundle
+      - name: Build the app (release exe, no installer, ci-license-sim)
+        # The license-sim feature (src-tauri/Cargo.toml [features]) is
+        # ONLY compiled into this screenshots build: it seeds a
+        # simulated activated license (DISKBYTES_LICENSE_SIM=1 below)
+        # so the tour captures the working app AND — when the tour
+        # flips it off — the Activation Gate + Pro status card. It does
+        # not exist in NSIS/MSIX production builds.
+        run: npx tauri build --no-bundle --features ci-license-sim
         env:
           CARGO_INCREMENTAL: 0
 
@@ -145,6 +151,7 @@ jobs:
           $env:DISKBYTES_MODE = 'Folders'
           $env:DISKBYTES_TOUR = '1'
           $env:DISKBYTES_POSTHOG_KEY = ''
+          $env:DISKBYTES_LICENSE_SIM = '1'
           $out = Join-Path $env:RUNNER_TEMP 'shots'
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           $app = Start-Process -FilePath $exe -WorkingDirectory $PWD -RedirectStandardOutput "$env:RUNNER_TEMP\app-stdout.log" -RedirectStandardError "$env:RUNNER_TEMP\app-stderr.log" -PassThru
@@ -158,7 +165,7 @@ jobs:
           Start-Sleep -Milliseconds 5500
           $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
           $step = 0
-          $max = 42   # 34 tour slots (duplicates-run dwells 10x on Defender-throttled runners) + drift margin
+          $max = 48   # 27 tour slots incl. 7 license steps (duplicates-run dwells 10x) + generous drift margin
           while ($step -lt $max) {
             Start-Sleep -Milliseconds 2600
             if ($app.HasExited) { break }

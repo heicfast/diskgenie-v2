@@ -20,6 +20,7 @@ import { InspectorPanel } from "./inspector/InspectorPanel";
 import { PreviewOverlay } from "./components/PreviewOverlay";
 import { CleanupQueuePopover } from "./components/CleanupQueuePopover";
 import { LicenseDialog } from "./components/LicenseDialog";
+import { ActivationGate } from "./components/ActivationGate";
 import { useViewStore } from "./state/view";
 import { useScanStore } from "./state/scan";
 import { useExploreStore } from "./state/explore";
@@ -82,6 +83,7 @@ function AppShell() {
   const generation = useScanStore((s) => s.generation);
   const status = useScanStore((s) => s.status);
   const licensePosture = useLicenseStore((s) => s.status?.posture ?? null);
+  const licenseGate = useLicenseStore((s) => s.gate);
   const currentFolder = useExploreStore((s) => s.currentFolder);
   const openFolder = useExploreStore((s) => s.openFolder);
   const goBack = useExploreStore((s) => s.goBack);
@@ -191,6 +193,24 @@ function AppShell() {
     };
   }, []);
 
+  // License gate interception: a command refused by the Rust license
+  // layer (marker prefix) opens the activation flow — the UI lock and
+  // the command gate protect each other (docs §2 L6).
+  useEffect(() => {
+    if (!licenseGate) return;
+    setLicenseOpen(true);
+    useLicenseStore.getState().dismissGate();
+  }, [licenseGate]);
+
+  // First unlicensed boot: surface the activation flow once (Later
+  // dismisses it; every action re-raises it through the gate).
+  const licenseAutoShown = useRef(false);
+  useEffect(() => {
+    if (licensePosture === null || licenseAutoShown.current) return;
+    licenseAutoShown.current = true;
+    if (licensePosture === "unlicensed") setLicenseOpen(true);
+  }, [licensePosture]);
+
   // Tour-driver overlay events (CI screenshot tours).
   useEffect(() => {
     const openLicense = () => setLicenseOpen(true);
@@ -199,13 +219,16 @@ function AppShell() {
       setLicenseOpen(false);
       setQueueOpen(false);
     };
+    const closeLicense = () => setLicenseOpen(false);
     window.addEventListener("db-open-license", openLicense);
     window.addEventListener("db-open-queue", openQueue);
     window.addEventListener("db-tour-step", closeOverlays);
+    window.addEventListener("db-tour-close-license", closeLicense);
     return () => {
       window.removeEventListener("db-open-license", openLicense);
       window.removeEventListener("db-open-queue", openQueue);
       window.removeEventListener("db-tour-step", closeOverlays);
+      window.removeEventListener("db-tour-close-license", closeLicense);
     };
   }, []);
 
@@ -261,11 +284,14 @@ function AppShell() {
 
   const openPreview = useCallback((id: number) => setPreviewId(id), []);
 
+  // Locked = unlicensed or degraded (docs §6 STRICT posture semantics).
+  const licenseLocked = licensePosture !== null && licensePosture !== "pro" && licensePosture !== "grace";
+
   return (
     <div className="db-app">
       {licensePosture === "degraded" && (
         <div className="db-degrade-banner" role="alert">
-          License couldn’t be validated for over 14 days — scanning works, cleanup is read-only until you reconnect (License in the top bar).
+          License couldn’t be verified for over 14 days — Pro features are paused until you reconnect (License in the top bar).
         </div>
       )}
       <TopBar
@@ -275,11 +301,17 @@ function AppShell() {
         canGoBack={canGoBack}
         query={nameFilter}
         onQueryChange={setNameFilter}
-        onOpenQueue={() => setQueueOpen((o) => !o)}
+        onOpenQueue={() => {
+          if (licenseLocked) setLicenseOpen(true);
+          else setQueueOpen((o) => !o);
+        }}
         queueOpen={queueOpen}
         onOpenLicense={() => setLicenseOpen(true)}
       />
-      <div ref={bodyRef} className={`db-body ${inspectorVisible && tab === "explore" ? "has-inspector" : ""}`}>
+      <div
+        ref={bodyRef}
+        className={`db-body ${inspectorVisible && tab === "explore" && !licenseLocked ? "has-inspector" : ""}`}
+      >
         <div className="db-sidebar-col">
           <Sidebar />
         </div>
@@ -287,18 +319,28 @@ function AppShell() {
           {/* Tab settle-in swap (see TabSwap): old view unmounts
            * instantly, the new one fades in over the solid background
            * at its FINAL geometry (the grid snapped — see bodyRef). */}
+          {/* The license gate (docs §7): while unlicensed/degraded every
+           * tab except Monitor shows the Activation Gate — the views
+           * themselves never mount (and their Rust commands refuse
+           * independently anyway). */}
           <TabSwap key={tab}>
+            {licenseLocked && tab !== "monitor" ? (
+              <ActivationGate tab={tab} />
+            ) : (
+              <>
             {tab === "explore" && <ExploreView onPreview={openPreview} />}
             {tab === "duplicates" && <DuplicatesView />}
             {tab === "applications" && <ApplicationsView />}
             {tab === "monitor" && <MonitorView />}
             {tab === "snapshots" && <SnapshotsView />}
+              </>
+            )}
           </TabSwap>
         </div>
         {/* Mounted whenever Explore is active (the track animates 0px ↔
          * --inspector-w; a conditional mount could only hard-snap) —
          * visibility is the .has-inspector class on .db-body. */}
-        {tab === "explore" && (
+        {tab === "explore" && !licenseLocked && (
           <div className="db-inspector-col">
             <InspectorPanel onPreview={openPreview} />
           </div>
@@ -317,7 +359,7 @@ function AppShell() {
         />
       )}
 
-      <CleanupQueuePopover open={queueOpen} onClose={() => setQueueOpen(false)} anchor="topbar" />
+      <CleanupQueuePopover open={queueOpen && !licenseLocked} onClose={() => setQueueOpen(false)} anchor="topbar" />
       <LicenseDialog open={licenseOpen} onClose={() => setLicenseOpen(false)} />
       {/* Toast (settle-in CSS motion — see overlays.css .db-toast): a
        * plain div with a keyframe entrance and a data-closing exit;

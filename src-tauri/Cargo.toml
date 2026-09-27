@@ -32,14 +32,18 @@ parking_lot = "0.12"
 rayon = "1.10"
 sha2 = "0.10"
 png = "0.17"
-# License client: raw reqwest against Dodo's 3 public endpoints (doc 06
-# §6 decision — the SDK stays backend-side); rustls, blocking (the
-# scheduler owns a dedicated thread).
+# License client v2 (docs/LICENSING-ARCHITECTURE.md): raw reqwest
+# against our Cloudflare Worker (activate/validate/deactivate); rustls,
+# blocking (the scheduler owns a dedicated thread).
 reqwest = { version = "0.13", default-features = false, features = [
     "rustls",
     "blocking",
     "json",
 ] }
+# License entitlement verification (Ed25519 public-key checks) + the
+# request-auth HMAC.
+ed25519-dalek = "2.2"
+hmac = "0.12"
 # Engine telemetry (doc 07): blocking client, default features OFF
 # (no async-client, no error-tracking).
 posthog-rs = { version = "0.26", default-features = false }
@@ -63,6 +67,7 @@ windows = { version = "0.62", features = [
     "Wdk_Storage_FileSystem",
     "Wdk_System_SystemInformation",
     "ApplicationModel",
+    "Services_Store",
     "Foundation",
     "Management_Deployment",
     "Storage",
@@ -93,6 +98,13 @@ windows = { version = "0.62", features = [
     "Win32_System_WindowsProgramming",
     "Win32_Devices",
 ] }
+
+# CI simulation for the UI-screenshots workflow: seeds/flips a
+# simulated activated license so the full tour (incl. the Pro status
+# card and the Activation Gate) can be captured in production-real
+# builds. NEVER enabled in NSIS/MSIX/production builds.
+[features]
+ci-license-sim = []
 
 [dev-dependencies]
 tiny-skia = "0.11"

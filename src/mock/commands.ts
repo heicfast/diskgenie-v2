@@ -5,6 +5,7 @@
  * bundled into production (gated on isTauri()=false + DEV in main.tsx).
  */
 import { emitMockEvent, setMockBackend } from "../lib/ipc";
+import { normalizeKey, isValidKeyShape } from "../lib/licenseKey";
 import { buildLayout, encodeLayout } from "./layouts";
 import { CATEGORY_COLORS, CATEGORY_LABELS, MockTree } from "./tree";
 
@@ -34,7 +35,28 @@ let dupesLastProgress: Record<string, unknown> | null = null;
 let dupesResult: Record<string, unknown> | null = null;
 let dupesError: string | null = null;
 const snapshots: { id: string; root: string; takenAt: number; total: number; folders: number; map: Map<string, number> }[] = [];
-let license = { posture: "unlicensed", isPro: false, tier: "", graceDaysLeft: 0, freeCommitCap: 1 * GB };
+/** License mock (mirrors the Rust LicenseStatusView): starts
+ * unlicensed; `license_sim_set` (the CI tour hook) flips it. */
+let license: Record<string, unknown> = {
+  posture: "unlicensed", isPro: false, tier: "",
+  customerName: "", customerEmail: "", licenseExpiresAt: 0,
+  graceDaysLeft: 0, purchaseUrl: "https://diskbytes.app/pricing",
+  simulated: false,
+};
+const PRO_SIM = {
+  posture: "pro", isPro: true, tier: "lifetime",
+  customerName: "Alex Morgan", customerEmail: "alex@diskbytes.app",
+  licenseExpiresAt: 0, graceDaysLeft: 0,
+  purchaseUrl: "https://diskbytes.app/pricing", simulated: true,
+};
+/** The Rust gate marker (require_licensed) — the ipc layer
+ * intercepts it and opens the activation flow. */
+const GATE_MSG = "ACTIVATION_REQUIRED — Activate DiskBytes Pro to use this.";
+function licenseGate(): void {
+  const p = String(license.posture);
+  if (p === "pro" || p === "grace") return;
+  throw GATE_MSG;
+}
 let lastScanRoot = 0;
 void 0;
 
@@ -482,8 +504,14 @@ const commands: Record<string, Cmd> = {
     progress: { files: 1600, folders: 266, bytes: 66 * GB, currentPath: "", denied: 3, deniedSamples: tree.denied.samples },
     lastDone,
   }),
-  start_scan: (a) => startScan(String(a.target), false),
-  start_scan_turbo: (a) => startScan(String(a.target), true),
+  start_scan: (a) => {
+    licenseGate();
+    return startScan(String(a.target), false);
+  },
+  start_scan_turbo: (a) => {
+    licenseGate();
+    return startScan(String(a.target), true);
+  },
   cancel_scan: () => {
     // Mirrors the Rust cooperative cancel: stop the ticker, flip the
     // flag. The store reverts client-side (tree stays as-is).
@@ -791,6 +819,7 @@ const commands: Record<string, Cmd> = {
 
   // ── cleanup ───────────────────────────────────────────────────────
   commit_cleanup: (a) => {
+    licenseGate();
     const items = (a.items ?? []) as { id: number; path: string; size: number }[];
     const ids = items.map((i) => i.id).filter((id) => id > 0 && id < tree.nodes.length && !tree.nodes[id].protected);
     const failed = items
@@ -822,6 +851,7 @@ const commands: Record<string, Cmd> = {
   // rejects with "cancelled" exactly like the engine.
   find_duplicates: () =>
     new Promise((resolve, reject) => {
+      licenseGate();
       if (dupesRunning) {
         reject("already running");
         return;
@@ -958,6 +988,7 @@ const commands: Record<string, Cmd> = {
 
   // ── snapshots ─────────────────────────────────────────────────────
   take_snapshot: (a) => {
+    licenseGate();
     const node = Number(a.node ?? 0);
     const map = new Map<string, number>();
     for (const d of tree.allDescendants(node)) {
@@ -979,11 +1010,13 @@ const commands: Record<string, Cmd> = {
   list_snapshots: () =>
     snapshots.map((s) => ({ id: s.id, root: s.root, takenAt: s.takenAt, total: s.total, folders: s.folders })),
   delete_snapshot: (a) => {
+    licenseGate();
     const i = snapshots.findIndex((s) => s.id === String(a.id));
     if (i >= 0) snapshots.splice(i, 1);
     return null;
   },
   diff_snapshots: (a) => {
+    licenseGate();
     const before = snapshots.find((s) => s.id === String(a.beforeId));
     const after = snapshots.find((s) => s.id === String(a.afterId));
     if (!before || !after) throw new Error("snapshot not found");
@@ -1000,27 +1033,53 @@ const commands: Record<string, Cmd> = {
     return { sameRoot: before.root === after.root, totalBefore: before.total, totalAfter: after.total, changes };
   },
 
-  // ── license ───────────────────────────────────────────────────────
+  // ── license (mirrors the Rust command surface; the mock enforces
+  // the SAME hard gate the Rust layer does, so browser dev exercises
+  // the real lock paths) ───────────────────────────────────────────
   license_status: () => license,
   activate_license: (a) => {
-    const key = String(a.key ?? a.licenseKey ?? "").trim();
-    if (key.length < 8) {
-      throw "That license key doesn't look right — check it and try again.";
+    
+    const normalized = normalizeKey(String(a.key ?? a.licenseKey ?? ""));
+    if (!isValidKeyShape(normalized)) {
+      throw "Invalid license key. Please check it and try again.";
     }
-    license = { posture: "pro", isPro: true, tier: "pro-yearly", graceDaysLeft: 0, freeCommitCap: 1 * GB };
+    license = {
+      posture: "pro", isPro: true, tier: "lifetime",
+      customerName: "Dev Tester", customerEmail: "dev@diskbytes.local",
+      licenseExpiresAt: 0, graceDaysLeft: 0,
+      purchaseUrl: "https://diskbytes.app/pricing", simulated: false,
+    };
     window.setTimeout(() => {
       emitMockEvent("license-changed", license);
     }, 40);
     return license;
   },
   deactivate_license: () => {
-    license = { posture: "unlicensed", isPro: false, tier: "", graceDaysLeft: 0, freeCommitCap: 1 * GB };
+    license = {
+      posture: "unlicensed", isPro: false, tier: "",
+      customerName: "", customerEmail: "", licenseExpiresAt: 0,
+      graceDaysLeft: 0, purchaseUrl: "https://diskbytes.app/pricing",
+      simulated: false,
+    };
     window.setTimeout(() => {
       emitMockEvent("license-changed", license);
     }, 40);
     return license;
   },
   validate_now: () => license,
+  // CI tour hook (browser-mock mirror of the Rust ci-license-sim
+  // feature): flips the simulated license state.
+  license_sim_set: (a) => {
+    const mode = String(a?.state ?? a?.mode ?? "unlicensed");
+    license = mode === "pro" ? { ...PRO_SIM } : {
+      posture: "unlicensed", isPro: false, tier: "",
+      customerName: "", customerEmail: "", licenseExpiresAt: 0,
+      graceDaysLeft: 0, purchaseUrl: "https://diskbytes.app/pricing",
+      simulated: false,
+    };
+    emitMockEvent("license-changed", license);
+    return license;
+  },
   analytics_opt_out: () => false,
   set_analytics_opt_out: () => null,
 };
@@ -1037,6 +1096,12 @@ function ageBucketOf(modified: number, now: number): number {
 
 /** Install the mock backend (browser dev/test mode). */
 export function installMock(): void {
+  // Tour mode boots with the simulated PRO license (the CI tour needs
+  // a working app; the tour's license steps flip it back for the
+  // Activation Gate captures).
+  if (new URLSearchParams(location.search).get("tour") === "1") {
+    license = { ...PRO_SIM };
+  }
   setMockBackend(async (cmd, args) => {
     const handler = commands[cmd];
     if (!handler) {
@@ -1053,7 +1118,9 @@ export function installMock(): void {
     tree: () => tree,
     rescan: (target = "ThisPC") => startScan(target, false),
     setLicense: (p: string) => {
-      license = { ...license, posture: p, isPro: p === "pro" || p === "grace", graceDaysLeft: p === "grace" ? 9 : 0 };
+      license = p === "pro"
+        ? { ...PRO_SIM }
+        : { ...license, posture: p, isPro: p === "grace", graceDaysLeft: p === "grace" ? 9 : 0 };
       emitMockEvent("license-changed", license);
     },
     reset: () => {

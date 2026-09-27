@@ -788,3 +788,96 @@
     padding-inline: 32px;
   }
 }
+
+/* ── Activation Gate (session-10 licensing) ───────────────────────
+ * Rendered instead of Explore/Duplicates/Applications/Snapshots while
+ * unlicensed or degraded (Monitor stays live). A centered card over
+ * the page background — no scrim (this is page content, not a modal),
+ * same visual family as the empty states. */
+.db-activation-gate {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 32px;
+}
+
+.db-activation-gate-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: 460px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--card);
+  box-shadow: var(--shadow-pop);
+  padding: 34px 38px 26px;
+  text-align: center;
+}
+
+.db-activation-gate-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+}
+
+.db-activation-gate-card h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.db-activation-gate-card > p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.db-activation-gate-card ul {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.db-activation-gate-card li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.db-activation-gate-card li svg {
+  color: var(--free);
+  flex: none;
+}
+
+.db-activation-gate-sub {
+  font-size: 11px !important;
+  color: var(--text-secondary) !important;
+}
+
+.db-activation-gate-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.db-activation-gate-monitor {
+  font-size: 10.5px !important;
+  color: var(--text-secondary) !important;
+}
+
+.db-activation-gate-monitor strong {
+  color: var(--text);
+}
