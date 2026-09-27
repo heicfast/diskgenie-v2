@@ -101,9 +101,9 @@ export function TopBar(props: TopBarProps) {
     >
       <div className="db-brand" data-tauri-drag-region>
         <span className="db-brand-mark">
-          {/* The DiskBytes product mark (Icon Pack redesign — flat coral
-           * circle with the white spiral mark; same design as the
-           * window/taskbar/installer icon everywhere the product
+          {/* The DiskBytes product mark (PhotoIcon pack — the photoreal
+           * hard-drive + brush badge on the orange circle; same design as
+           * the window/taskbar/installer icon everywhere the product
            * appears. 31px frame = the tab-pill height for symmetry. */}
           <img src={brandMark} alt="" draggable={false} />
         </span>

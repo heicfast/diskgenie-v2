@@ -79,15 +79,17 @@
   cursor: default;
 }
 .db-brand-mark {
-  /* The product mark (Icon Pack redesign) is a flat coral circle with
-   * the white spiral mark on TRANSPARENT margins — the container is a
-   * plain frame: no fill, no glow, radius only as clip insurance. The
-   * circle spans the full asset, so the frame height IS the circle's
-   * height, matching .db-tabcaps button / .db-tab-pill exactly (31px):
-   * the logo sits in SYMMETRY with the tab strip — same visual height
-   * as the orange pill that highlights the open page (the 26px frame
-   * read undersized next to it; the 62px asset is 2x for crisp
-   * 1x/2x rendering). */
+  /* The product mark (PhotoIcon pack) is a photoreal hard-drive + brush
+   * badge on a full-bleed orange CIRCLE (tangent to the asset edges,
+   * transparent corners) — the container is a plain frame: no fill, no
+   * glow, radius only as clip insurance (never touches the circle's
+   * tangent points). The circle spans the full asset, so the frame
+   * height IS the circle's height, matching .db-tabcaps button /
+   * .db-tab-pill exactly (31px): the logo sits in SYMMETRY with the tab
+   * strip — same visual height as the orange pill that highlights the
+   * open page. The 62px asset is 2x for crisp 1x/2x rendering, with the
+   * pack's own light unsharp (its <=48px small-size policy) so the
+   * photoreal detail survives at 31px. */
   display: grid;
   place-items: center;
   width: 31px;
