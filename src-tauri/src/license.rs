@@ -31,20 +31,20 @@ use std::time::Duration;
 
 /// Default production license-server base (change per deployment; the
 /// env `DISKBYTES_LICENSE_API` overrides for tests/local dev).
-const LICENSE_API_BASE: &str = "https://license.diskbytes.app/";
+const LICENSE_API_BASE: &str = "https://diskbytes-license.heictojpg-pics.workers.dev/";
 
 /// Ed25519 public key (64 hex chars) — the ONLY key this binary holds.
 /// The matching private seed lives as the Worker secret
 /// `LICENSE_SIGNING_PRIVATE_KEY` (deployment guide: the license-server
 /// repo README §2). Rotating the pair = regenerate + update here + ship.
 pub const LICENSE_PUBLIC_KEY_HEX: &str =
-    "7fe82b6675b4927244615e8d582dbc7e7bd7d1bec10e2f8a8f71240472038d38";
+    "4e4f51ef1593c184a1d1863d0cd53f5c3718c1674a1dfb3b85ee552d775fbb89";
 
 /// HMAC-SHA256 request secret (64 hex) shared with the Worker secret
 /// `CLIENT_REQUEST_SECRET`. NOTE (honest threat model, doc §2 L2): this
 /// ships in a public-source binary — it is abuse friction, NOT the
 /// security boundary; the boundary is [`LICENSE_PUBLIC_KEY_HEX`].
-const CLIENT_SECRET_HEX: &str = "e99e24e165a7f4066382d6591132a2a02573d083952e6c7da8ae070d79ec56f4";
+const CLIENT_SECRET_HEX: &str = "333d71177f5b8558e7ea8f45140742dfa71621e1000b899b682e340b80c61993";
 
 /// The purchase page (external; collects name + email + billing address
 /// at checkout — the address stays with the payment processor).
