@@ -423,12 +423,27 @@
   margin: 0 0 3px;
 }
 .db-uninstall-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   color: var(--text-tertiary);
   font-size: 11.5px;
   font-weight: 560;
-  white-space: nowrap;
+  /* Flex children (blockified) carry their own ellipsis — a bare inline
+   * span here IGNORES text-overflow and let long real-world publisher
+   * names run straight past the dialog edge. */
+  min-width: 0;
+}
+.db-uninstall-publisher,
+.db-uninstall-version {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.db-uninstall-version {
+  opacity: 0.85;
+  font-weight: 540;
 }
 /* Footprint tiles: two peers + a full-width total — the numbers read
  * at a glance instead of being buried in a sentence. */

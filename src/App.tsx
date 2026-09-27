@@ -32,7 +32,7 @@ import { invoke } from "./lib/ipc";
 import { pushRecent } from "./sidebar/RecentSection";
 import { TourDriver } from "./shell/TourDriver";
 import { AppErrorBoundary } from "./shell/AppErrorBoundary";
-import { CheckIcon, ShieldIcon, Trash2Icon } from "./components/Icon";
+import { CheckIcon, Trash2Icon, UacShieldIcon } from "./components/Icon";
 import { SPRING_TOAST } from "./lib/motion";
 import { listen } from "./lib/ipc";
 import "./theme/tokens.css";
@@ -318,7 +318,7 @@ function AppShell() {
             exit={{ opacity: 0, y: 10, scale: 0.97 }}
             transition={SPRING_TOAST}
           >
-            {toastIcon === "trash" ? <Trash2Icon size={15} /> : toastIcon === "shield" ? <ShieldIcon size={15} /> : <CheckIcon size={15} />}
+            {toastIcon === "trash" ? <Trash2Icon size={15} /> : toastIcon === "shield" ? <UacShieldIcon size={15} /> : <CheckIcon size={15} />}
             {toast}
           </motion.div>
         )}

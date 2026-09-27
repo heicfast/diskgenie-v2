@@ -9,7 +9,7 @@ import { AppWindowIcon, CheckIcon, PackageOpenIcon, RefreshCwIcon, Trash2Icon, U
 import { TailPath } from "../components/TailPath";
 import { EmptyState, SkeletonRows, Spinner } from "../components/buttons";
 import { useFocusTrap } from "../lib/useFocusTrap";
-import { bytes, relativeAge } from "../lib/format";
+import { bytes } from "../lib/format";
 import { invoke } from "../lib/ipc";
 import { useApplicationsStore, type AppEntry, type UninstallResult } from "../state/applications";
 import { useCleanupStore } from "../state/cleanup";
@@ -73,7 +73,6 @@ export function ApplicationsView() {
 
   const sorted = [...(apps ?? [])].sort((a, b) => b.total - a.total);
   const totalFootprint = sorted.reduce((a, x) => a + x.total, 0);
-  const now = Math.floor(Date.now() / 1000);
 
   const runUninstall = async (app: AppEntry) => {
     setUninstalling(true);
@@ -177,7 +176,6 @@ export function ApplicationsView() {
                 <div className="db-app-meta">
                   <em>{app.publisher || "—"}</em>
                   <span>v{app.version || "—"}</span>
-                  <span>{app.lastUsed ? relativeAge(app.lastUsed, now) : "Last used: —"}</span>
                   {app.leftovers.length > 0 && (
                     <span className="db-leftover-count">+{app.leftovers.length} leftovers</span>
                   )}
@@ -252,10 +250,20 @@ export function ApplicationsView() {
               )}
               <div className="db-uninstall-title">
                 <h3 id="db-uninstall-title">Uninstall {confirm.name}?</h3>
+                {/* Two truncating lines instead of one nowrap run: real
+                 * registry publishers can be long, and the old single
+                 * inline span let the "publisher · v… · Store package"
+                 * run spill past the dialog edge (inline elements
+                 * ignore text-overflow — the "text goes out of the
+                 * popup" report). */}
                 <span className="db-uninstall-meta">
-                  {confirm.publisher || "Unknown publisher"}
-                  {confirm.version ? ` · v${confirm.version}` : ""}
-                  {confirm.source === "msix" ? " · Store package" : ""}
+                  <span className="db-uninstall-publisher">
+                    {confirm.publisher || "Unknown publisher"}
+                  </span>
+                  <span className="db-uninstall-version">
+                    {confirm.version ? `v${confirm.version}` : "Version unknown"}
+                    {confirm.source === "msix" ? " · Store package" : ""}
+                  </span>
                 </span>
               </div>
             </div>

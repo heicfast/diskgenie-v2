@@ -54,6 +54,7 @@ function etaText(seconds: number): string {
  */
 const BusyRow = memo(function BusyRow({ onCancel }: { onCancel: () => void }) {
   const progress = useDupesStore((s) => s.progress);
+  const cancelling = useDupesStore((s) => s.cancelling);
   const rate = useRef<{ at: number; bytes: number; v: number } | null>(null);
 
   let mbps = 0;
@@ -80,9 +81,9 @@ const BusyRow = memo(function BusyRow({ onCancel }: { onCancel: () => void }) {
   return (
     <div className="db-loading-block db-dupes-busy" role="status">
       <div className="db-dupes-busy-line">
-        <span className="db-dupes-phase" data-phase={phase}>
+        <span className="db-dupes-phase" data-phase={phase} data-cancelling={cancelling || undefined}>
           <i className="db-dupes-phase-dot" aria-hidden="true" />
-          {PHASE_LABEL[phase]}
+          {cancelling ? "Cancelling…" : PHASE_LABEL[phase]}
           {counting && progress && progress.filesTotal > 0 && (
             <span className="tnum db-dupes-counts">
               {progress.filesDone.toLocaleString()} / {progress.filesTotal.toLocaleString()} files
@@ -95,8 +96,8 @@ const BusyRow = memo(function BusyRow({ onCancel }: { onCancel: () => void }) {
         <span className="tnum db-dupes-rate">
           {mbps > 0.5 ? <>{mbps >= 100 ? mbps.toFixed(0) : mbps.toFixed(1)} MB/s{eta ? ` · ${eta}` : ""}</> : "\u00A0"}
         </span>
-        <button type="button" className="db-outline compact auto" onClick={onCancel}>
-          <XIcon size={12} /> Cancel
+        <button type="button" className="db-outline compact auto" onClick={onCancel} disabled={cancelling}>
+          <XIcon size={12} /> {cancelling ? "Stopping…" : "Cancel"}
         </button>
       </div>
       <div className="db-dupes-bar" aria-hidden="true" style={{ ["--pct" as string]: `${pct}%` }} />

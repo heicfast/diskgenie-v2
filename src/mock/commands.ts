@@ -525,7 +525,16 @@ const commands: Record<string, Cmd> = {
   get_home_path: () => "C:\\Users\\dev",
   disk_storage: () => ({ label: "Local Disk", total: 512 * GB, used: 450.6 * GB, free: 61.4 * GB, usedPct: 0.880 }),
   is_elevated: () => true,
-  restart_as_admin: () => null,
+  // Parity with the Rust flow: the real command either exits (success)
+  // or emits `admin-restart-failed`. The mock can't restart, so it
+  // takes the failure branch — the elevation toast (with the UAC
+  // shield) is exercisable in dev/demo exactly as on Windows.
+  restart_as_admin: () => {
+    window.setTimeout(() => {
+      emitMockEvent("admin-restart-failed", "Elevation was declined or failed (shell error 5).");
+    }, 350);
+    return null;
+  },
   open_recycle_bin: () => null,
   open_url: () => null,
   copy_path: (a) => {

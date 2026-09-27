@@ -79,14 +79,22 @@
   cursor: default;
 }
 .db-brand-mark {
+  /* The product mark (Icon Pack v2) ships its own squircle + gradient —
+   * the container is a plain 26px frame: no fill, no glow, and the
+   * radius smaller than the PNG's baked corners so nothing clips. */
   display: grid;
   place-items: center;
   width: 26px;
   height: 26px;
-  border-radius: var(--radius-s);
-  background: var(--ink-grad);
-  color: var(--on-ink);
-  box-shadow: var(--ink-glow), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  border-radius: 6px;
+  overflow: hidden;
+  flex: none;
+  -webkit-user-drag: none;
+}
+.db-brand-mark img {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 .db-brand strong {
   font-size: 14.5px;

@@ -400,13 +400,24 @@ fn hash_middle(path: &std::path::Path, size: u64) -> Option<[u8; 32]> {
     Some(digest)
 }
 
-/// Full hash (pass 3, read in 1 MiB chunks). `None` = unreadable.
-fn hash_full(path: &std::path::Path) -> Option<[u8; 32]> {
+/// Full hash (pass 3, read in 1 MiB chunks). `None` = unreadable
+/// OR aborted by cancellation (the caller checks `ctl.cancelled()`
+/// right after and discards the pass — the two meanings never mix
+/// into a result).
+///
+/// The chunk loop probes the cancel latch every 1 MiB: a multi-GB
+/// true-duplicate bucket would otherwise keep its 4 workers busy
+/// hashing for MINUTES after the user pressed Stop (the per-file
+/// check in `finish_pipeline` only fires between files).
+fn hash_full(path: &std::path::Path, ctl: &DupesCtl) -> Option<[u8; 32]> {
     use std::io::Read;
     let mut f = open_seq(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; CHUNK];
     loop {
+        if ctl.cancelled() {
+            return None;
+        }
         let n = f.read(&mut buf).ok()?;
         if n == 0 {
             break;
@@ -660,6 +671,15 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl) -> Result<DupesResult, String> {
         prefix_targets
             .par_iter()
             .map(|&i| {
+                // Cooperative cancel: fold THIS pass the moment the user
+                // asks (the boundary check below lands the Err). Without
+                // the per-file probe a cancel during a many-minute
+                // prefix sweep (Defender first-opens) did NOTHING until
+                // every target had been read — "the stop button
+                // doesn't stop".
+                if ctl.cancelled() {
+                    return None;
+                }
                 let read = candidates[i].size.min(PREFIX);
                 let d = hash_prefix(std::path::Path::new(&candidates[i].path));
                 // Counted even when unreadable — the attempt is the work
@@ -713,6 +733,11 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl) -> Result<DupesResult, String> {
         mid_candidates
             .par_iter()
             .map(|&i| {
+                // Same cooperative-cancel probe as the prefix pass (the
+                // tier reads 2 MiB/file — minutes across a real disk).
+                if ctl.cancelled() {
+                    return None;
+                }
                 let d = hash_middle(
                     std::path::Path::new(&candidates[i].path),
                     candidates[i].size,
@@ -819,7 +844,7 @@ fn finish_pipeline(
                         let (sha256, read) = if *size <= PREFIX {
                             (*prefix_digest, 0)
                         } else {
-                            match hash_full(std::path::Path::new(&c.path)) {
+                            match hash_full(std::path::Path::new(&c.path), ctl) {
                                 Some(d) => (d, *size),
                                 None => return None,
                             }
@@ -981,6 +1006,50 @@ mod tests {
         assert!(s.bytes_done_all > 0, "cumulative bytes");
     }
 
+    /// The stop-button latency contract (session-6): `hash_full` must
+    /// abort at the FIRST chunk probe when the run is already
+    /// cancelled — a multi-GB true-dup bucket may not keep hashing
+    /// after the user pressed Stop. Deterministic (no timing): the
+    /// latch is bumped before the call.
+    #[test]
+    fn hash_full_aborts_immediately_when_cancelled() {
+        let root = scratch_shared("hash-abort");
+        let _keep = TempTree(root.clone());
+        // 5 MiB of readable content — without the chunk probe the whole
+        // file would hash before the boundary check.
+        std::fs::write(root.join("big.bin"), vec![7u8; 5 * 1024 * 1024]).unwrap();
+        let gen = Arc::new(AtomicU64::new(0));
+        let ctl = DupesCtl::quiet(Arc::clone(&gen));
+        gen.fetch_add(1, Ordering::SeqCst); // user pressed Stop
+        assert!(
+            hash_full(&root.join("big.bin"), &ctl).is_none(),
+            "cancelled run must abort the full hash"
+        );
+        // Sanity: the same file with a live latch hashes fine (the
+        // abort is cancel-driven, not a broken reader).
+        let live = DupesCtl::quiet(Arc::new(AtomicU64::new(99)));
+        assert!(hash_full(&root.join("big.bin"), &live).is_some());
+    }
+
+    /// Scratch WITHOUT the cfg(windows) gate — the hash-abort test runs
+    /// everywhere the module tests do (Linux CI included).
+    fn scratch_shared(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("db-dupes-unit-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&d); // R7.1-allow: test-scratch (own temp dir, test-only)
+        std::fs::create_dir_all(&d).expect("scratch dir");
+        d
+    }
+
+    /// Keeps a scratch dir alive for the test body (module-level: the
+    /// windows E2E suite and the cross-platform unit tests share it).
+    struct TempTree(std::path::PathBuf);
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            // R7.1-allow: test-scratch (own temp dir, test-only)
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[cfg(windows)]
     mod windows_e2e {
         use super::*;
@@ -1012,14 +1081,6 @@ mod tests {
             }
             v.truncate(size);
             v
-        }
-
-        /// Keeps the scratch dir alive for the test body.
-        struct TempTree(PathBuf);
-        impl Drop for TempTree {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0); // R7.1-allow: test-scratch (own %TEMP% dir, test-only)
-            }
         }
 
         /// Scan a REAL folder with the REAL Windows platform, then run

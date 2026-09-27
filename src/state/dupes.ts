@@ -63,6 +63,10 @@ export interface DupesStatusSnapshot {
 
 interface DupesStore {
   running: boolean;
+  /** Set the instant the user presses Cancel — the busy row shows
+   * "Cancelling…" and disables the button while the engine folds
+   * (its per-file probes land within one file / one 1 MiB chunk). */
+  cancelling: boolean;
   progress: DupesProgress | null;
   result: DupesResult | null;
   error: string | null;
@@ -102,25 +106,26 @@ function flushProgress(): void {
 
 export const useDupesStore = create<DupesStore>((set, get) => ({
   running: false,
+  cancelling: false,
   progress: null,
   result: null,
   error: null,
 
   start: (generation) => {
     if (get().running) return; // the engine also rejects ("already running")
-    set({ running: true, progress: null, result: null, error: null });
+    set({ running: true, cancelling: false, progress: null, result: null, error: null });
     void invoke<DupesResult>("find_duplicates", { generation })
       .then((res) => {
-        set({ running: false, progress: null, result: res, error: null });
+        set({ running: false, cancelling: false, progress: null, result: res, error: null });
         track(EVENTS.duplicatesScanCompleted, { groups: res.groups.length, wasted: res.wastedTotal });
       })
       .catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
         // Cancellation is a USER action, not a failure — quiet reset.
         if (!/cancel/i.test(msg)) {
-          set({ running: false, progress: null, error: msg });
+          set({ running: false, cancelling: false, progress: null, error: msg });
         } else {
-          set({ running: false, progress: null, error: null });
+          set({ running: false, cancelling: false, progress: null, error: null });
         }
       });
   },
@@ -128,8 +133,12 @@ export const useDupesStore = create<DupesStore>((set, get) => ({
   refresh: async () => {
     try {
       const st = await invoke<DupesStatusSnapshot>("dupes_status");
+      // `cancelling` survives re-attach while the backend still reports
+      // running (the fold is in flight); a folded run clears it.
+      const cancelling = st.running && get().cancelling;
       set({
         running: st.running,
+        cancelling,
         progress: st.running ? st.progress : null,
         result: st.result,
         error: st.error,
@@ -140,6 +149,12 @@ export const useDupesStore = create<DupesStore>((set, get) => ({
   },
 
   cancel: () => {
+    if (!get().running || get().cancelling) return;
+    // Optimistic: the engine folds within one file / one 1 MiB chunk
+    // (per-file probes), but the busy row reacts the MOMENT the user
+    // clicks — "the stop button doesn't stop" is as much about the
+    // missing acknowledgement as the latency.
+    set({ cancelling: true });
     void invoke("cancel_duplicates").catch(() => undefined);
   },
 
@@ -187,5 +202,5 @@ export function __resetDupesForTests(): void {
   pending = null;
   if (flushTimer !== null) window.clearTimeout(flushTimer);
   flushTimer = null;
-  useDupesStore.setState({ running: false, progress: null, result: null, error: null });
+  useDupesStore.setState({ running: false, cancelling: false, progress: null, result: null, error: null });
 }

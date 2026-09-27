@@ -148,6 +148,16 @@
   50% { opacity: 0.45; transform: scale(0.78); }
   100% { opacity: 1; transform: scale(1); }
 }
+/* Cancelling: the row settles (dot stops pulsing, label dims) — an
+ * explicit acknowledgement beat between the click and the fold. */
+.db-dupes-phase[data-cancelling] {
+  color: var(--text-secondary);
+}
+.db-dupes-phase[data-cancelling] .db-dupes-phase-dot {
+  animation: none;
+  opacity: 0.55;
+  background: var(--text-tertiary);
+}
 .db-dupes-counts {
   color: var(--text-secondary);
   font-size: 11.5px;
@@ -340,6 +350,15 @@
 .db-app-row .db-app-meta em {
   font-style: normal;
   overflow: hidden;
+  /* Long publishers give way to the version chip, not the reverse:
+   * both truncate with an ellipsis and the row never hard-clips a
+   * mid-word edge (the flex row itself also has overflow:hidden). */
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.db-app-row .db-app-meta > span {
+  overflow: hidden;
+  min-width: 0;
   text-overflow: ellipsis;
 }
 .db-app-row b {
@@ -355,6 +374,10 @@
   background: var(--used-tint);
   border-radius: 999px;
   padding: 1.5px 8px;
+  /* Never the element that sacrifices space at narrow widths: the
+   * publisher em truncates (it has the ellipsis); the count chip
+   * shrinking meant "+1 leftov…" hard-clipped mid-word. */
+  flex: none;
 }
 .db-app-row .db-app-uninstall {
   min-height: 30px;
@@ -445,6 +468,7 @@
   font-size: 13px;
   color: var(--text-tertiary);
   font-weight: 600;
+  margin-left: 3px;
 }
 .db-mon-sub {
   display: flex;
@@ -470,7 +494,7 @@
   stroke-width: 1;
 }
 .db-mon-spark .spark-area {
-  opacity: 0.14;
+  opacity: 0.2;
 }
 .db-mem-segs {
   display: flex;

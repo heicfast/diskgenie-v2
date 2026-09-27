@@ -9,9 +9,10 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import {
-  AppWindowIcon, ChevronLeftIcon, ChevronRightIcon, Clock3Icon, CopyIcon, DatabaseIcon,
-  GaugeIcon, LayoutGridIcon, MoonIcon, PanelRightIcon, SearchIcon, SunIcon, Trash2Icon, XIcon,
+  AppWindowIcon, ChevronLeftIcon, ChevronRightIcon, Clock3Icon, CopyIcon, GaugeIcon,
+  LayoutGridIcon, MoonIcon, PanelRightIcon, SearchIcon, SunIcon, Trash2Icon, XIcon,
 } from "../components/Icon";
+import brandMark from "../assets/brand-mark.png";
 import { MOD_KEY, IS_MAC } from "../lib/platform";
 import { useCleanupStore } from "../state/cleanup";
 import { useLicenseStore } from "../state/license";
@@ -100,7 +101,10 @@ export function TopBar(props: TopBarProps) {
     >
       <div className="db-brand" data-tauri-drag-region>
         <span className="db-brand-mark">
-          <DatabaseIcon size={15} />
+          {/* The DiskBytes product mark (Icon Pack v2 — HDD + broom on the
+           * orange squircle; matches the window/taskbar/installer icon
+           * everywhere the product appears). */}
+          <img src={brandMark} alt="" draggable={false} />
         </span>
         <strong data-tauri-drag-region>DiskBytes</strong>
       </div>
