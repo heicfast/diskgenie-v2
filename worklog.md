@@ -1079,3 +1079,16 @@ Stage Summary:
 - Uninstall dialog text truncates inside the popup at any data length; app rows ellipsize cleanly; "Last used" gone
 - Icon Pack v2 lives on every surface AND survives CI (the regen pipeline now starts from the committed design source)
 - Next: push → all 4 workflows (first CI compile of the dupes.rs cancel changes + the icon regen path) → pull production screenshots → VLM-verify → report
+
+---
+Task ID: uiux-11 (session 6, cont.) — CI convergence + production verification
+Agent: main (Super Z)
+Task: Close the CI loop and verify the production Windows build
+
+Work Log:
+- CI round 1 (8195e00): macOS Build, Test Matrix, UI Screenshots GREEN; CI failed ONLY on the R7.1 direct-delete gate — my module-level TempTree put the exemption marker on the comment line ABOVE the drop call, but the gate greps line-by-line (git grep). Fixed by moving `// R7.1-allow: test-scratch` onto the remove_dir_all line itself (locally re-ran the exact gate grep: clean).
+- ALL 4 WORKFLOWS GREEN on fe48b4e: CI (static gates + workspace tests incl. the new hash-abort test + the Windows dupes E2E + NSIS bundle), Test Matrix (all platforms), macOS Build, UI Screenshots.
+- PRODUCTION VERIFICATION (Windows runner): the icon-regen step ran from the committed Icon-Pack-v2 source ("fanning out sizes" in the NSIS job log) and the installer built (DiskBytes_0.1.0_x64-setup.exe); production screenshots VLM-audited — brand mark = the NEW orange rounded-square HDD/broom (not a database glyph), treemap/license/queue/monitor/snapshots all defect-free; Duplicates mid-scan busy row ("Verifying full contents · 23/29 files · 2.79/8.79 GB") + result ("6.79 GB could be reclaimed across 4 groups · 148 files considered", 3 group cards, no defects); app-stderr trace: start gen=3 → 148 candidates → 29 prefixes 4.7ms → 9.44GB full → resolved 5.27s. Applications rows (no "Last used", publisher+version ellipsis) verified in the local VLM audit — the tour only captured their skeleton phase (load lands between capture ticks).
+
+Stage Summary:
+- Session 6 complete: the stop button now stops (per-file + per-chunk cancel probes + "Cancelling…" ack), the elevation-declined toast wears the Fluent UAC shield, the uninstall dialog truncates inside its bounds at any data length, "Last used" is gone, and Icon Pack v2 lives on every surface — window/taskbar/installer/dmg/favicon/top-bar — with the CI regen pipeline re-pointed at the committed design source so it survives every future build
