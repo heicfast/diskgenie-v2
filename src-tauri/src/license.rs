@@ -73,6 +73,10 @@ pub fn api_base() -> String {
 /// The HTTP seam: real = reqwest blocking; tests = scripted fake.
 pub trait LicenseHttp {
     /// POST JSON with headers → (status, body).
+    ///
+    /// # Errors
+    /// String transport error (network/TLS) — callers map to
+    /// [`LicenseError::Network`]-class soft failures.
     fn post_json(
         &self,
         url: &str,
@@ -372,8 +376,10 @@ pub struct LicenseState {
     /// "yearly" | "lifetime" ("" before activation).
     #[serde(default)]
     pub tier: String,
+    /// Customer display name (verified claims).
     #[serde(default)]
     pub customer_name: String,
+    /// Customer email (verified claims).
     #[serde(default)]
     pub customer_email: String,
     /// License expiry (unix; 0 = lifetime / unknown).
@@ -382,10 +388,13 @@ pub struct LicenseState {
     /// The latest verified token (its `exp` drives the grace window).
     #[serde(default)]
     pub token: String,
+    /// Token expiry — the offline grace window's hard stop.
     #[serde(default)]
     pub token_exp: i64,
+    /// When this device activated (display).
     #[serde(default)]
     pub activated_at: i64,
+    /// Last successful server validation.
     #[serde(default)]
     pub last_validated_at: i64,
     /// Monotonic "last known good time" (clock-rollback guard).
@@ -405,7 +414,10 @@ pub enum LicensePosture {
     /// Verified, fresh (checked within the interval).
     Pro,
     /// Verified, offline, token still inside its grace window.
-    Grace { days_left: i64 },
+    Grace {
+        /// Whole days left in the offline window (display).
+        days_left: i64,
+    },
     /// Token window exhausted (or license expired) → locked.
     Degraded,
 }
@@ -487,6 +499,7 @@ pub fn component_hashes() -> (Option<String>, Option<String>, Option<String>) {
 
 /// sha256 hex of a string (key-hash binding; public for the command
 /// layer).
+#[must_use]
 pub fn sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
@@ -700,6 +713,7 @@ pub mod dpapi {
 // ============================================================================
 
 /// Lowercase hex (public for the command layer's key-hash binding).
+#[must_use]
 pub fn hex_of(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(bytes.len() * 2);

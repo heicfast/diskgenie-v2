@@ -318,8 +318,9 @@ fn live_license_lifecycle_keeps_device_facts() {
     println!("[e2e] slot freed → re-registered on the new hardware");
 
     // 7. Cleanup: revoke the license; validation must now hard-fail.
-    let _: serde_json::Value =
-        admin.post(&format!("/v1/admin/keys/{}/revoke", look.license.id), "{}");
+    let _: serde_json::Value = admin
+        .post(&format!("/v1/admin/keys/{}/revoke", look.license.id), "{}")
+        .expect("cleanup revoke");
     let err2 = api()
         .expect("api")
         .validate(key, &other)
