@@ -127,7 +127,7 @@ pub fn ram_mb() -> Option<u64> {
             0,
         )
     };
-    (rc == 0).then(|| value / (1024 * 1024))
+    (rc == 0).then_some(value / (1024 * 1024))
 }
 
 /// Shared sysctl string reader (kern./hw. leaf names — small values).

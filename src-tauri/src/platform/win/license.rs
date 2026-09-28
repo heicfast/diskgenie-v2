@@ -42,7 +42,7 @@ pub fn hostname() -> Option<String> {
             &mut len,
         )
     };
-    if !ok.is_ok() {
+    if ok.is_err() {
         return None;
     }
     let slice = &buf[..(len as usize).min(buf.len())];
@@ -66,8 +66,7 @@ pub fn ram_mb() -> Option<u64> {
     };
     // SAFETY: properly sized out-struct per the API contract.
     let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
-    ok.is_ok()
-        .then(|| u64::from(status.ullTotalPhys) / (1024 * 1024))
+    ok.is_ok().then_some(status.ullTotalPhys / (1024 * 1024))
 }
 
 /// SMBIOS machine identity for display (v2 device fact):
