@@ -184,7 +184,15 @@ fn live_license_lifecycle_keeps_device_facts() {
     //    rate limits, and the admin lookup route all ship in v2). A v1
     //    worker would fail step 4 with the wipe bug — fail FAST with
     //    the redeploy instruction instead of a cryptic mid-test assert.
-    let health: serde_json::Value = admin.get("/v1/health").expect("health");
+    let health: serde_json::Value = admin.get("/v1/health").unwrap_or_else(|e| {
+        panic!(
+            "worker unreachable: {e}\nIf the body says 'error code: 1042': the \
+             workers.dev route is disabled — Cloudflare dashboard → Workers & Pages → \
+             diskbytes-license → Settings → Domains & Routes → enable workers.dev \
+             (the license-server repo now defaults workers_dev: true in wrangler.jsonc; \
+             redeploy with `npx wrangler deploy` after enabling)."
+        );
+    });
     assert!(
         health
             .get("version")

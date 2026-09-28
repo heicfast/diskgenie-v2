@@ -725,8 +725,13 @@ pub fn hex_of(bytes: &[u8]) -> String {
 }
 
 /// Hex decode (case-insensitive; even length).
+// The 1.98 clippy wants `s.len().is_multiple_of(2)` here, but that
+// method is stable since 1.87 and the crate MSRV is 1.80 — the two
+// lints (manual_is_multiple_of vs incompatible_msrv) cannot both be
+// satisfied, so the modulo form stays with an explicit allow.
+#[allow(clippy::manual_is_multiple_of)]
 fn from_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+    if s.len() % 2 != 0 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
     let bytes: Option<Vec<u8>> = s
