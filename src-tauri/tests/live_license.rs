@@ -21,7 +21,7 @@
 
 #![cfg(feature = "live-license-e2e")]
 
-use diskbytes::license::{
+use diskbytes_lib::license::{
     DeviceFacts, EntitlementDto, LicenseApi, LicenseError, ReqwestLicense, LICENSE_PUBLIC_KEY_HEX,
     LICENSE_PURCHASE_URL, VALIDATION_INTERVAL_S,
 };
@@ -37,7 +37,7 @@ fn now_unix() -> i64 {
 }
 
 fn live_base() -> String {
-    std::env::var("DISKBYTES_LICENSE_API").unwrap_or_else(|_| diskbytes::license::api_base())
+    std::env::var("DISKBYTES_LICENSE_API").unwrap_or_else(|_| diskbytes_lib::license::api_base())
 }
 
 /// Minimal admin HTTP (plain bearer JSON — no HMAC on admin routes).
@@ -57,11 +57,32 @@ impl AdminHttp {
         })
     }
 
+    fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+        let resp = self
+            .client
+            .get(format!("{}{path}", self.base))
+            .header(
+                "authorization",
+                format!("Bearer {}", ADMIN_KEY.unwrap_or_default()),
+            )
+            .send()
+            .map_err(|e| format!("admin get: {e}"))?;
+        let status = resp.status().as_u16();
+        let text = resp.text().map_err(|e| format!("admin read: {e}"))?;
+        if !(200..300).contains(&status) {
+            return Err(format!("admin {path} -> {status}: {text}"));
+        }
+        serde_json::from_str(&text).map_err(|e| format!("admin parse: {e}"))
+    }
+
     fn post<T: serde::de::DeserializeOwned>(&self, path: &str, body: &str) -> Result<T, String> {
         let resp = self
             .client
             .post(format!("{}{path}", self.base))
-            .header("authorization", format!("Bearer {}", ADMIN_KEY.unwrap_or_default()))
+            .header(
+                "authorization",
+                format!("Bearer {}", ADMIN_KEY.unwrap_or_default()),
+            )
             .header("content-type", "application/json")
             .body(body.to_string())
             .send()
@@ -116,16 +137,16 @@ struct LookupDevice {
 /// The synthetic-but-realistic device for this run (fresh hw per run —
 /// sha256 of the epoch-second, so reruns never collide on slots).
 fn run_facts(tag: &str) -> DeviceFacts {
-    let hw = diskbytes::license::sha256_hex(&format!("live-e2e-{tag}-{}", now_unix()));
+    let hw = diskbytes_lib::license::sha256_hex(&format!("live-e2e-{tag}-{}", now_unix()));
     DeviceFacts {
         platform: "windows".to_string(),
         hardware_hash: hw,
         hostname: format!("E2E-{tag}"),
         os_version: "Windows 11.0.26100".to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        comp_machine: Some(diskbytes::license::sha256_hex("live-e2e-machine")),
-        comp_volume: Some(diskbytes::license::sha256_hex("live-e2e-volume")),
-        comp_cpu: Some(diskbytes::license::sha256_hex("live-e2e-cpu")),
+        comp_machine: Some(diskbytes_lib::license::sha256_hex("live-e2e-machine")),
+        comp_volume: Some(diskbytes_lib::license::sha256_hex("live-e2e-volume")),
+        comp_cpu: Some(diskbytes_lib::license::sha256_hex("live-e2e-cpu")),
         cpu_brand: Some("Intel(R) Core(TM) i7-1260P CPU @ 2.10GHz".to_string()),
         ram_mb: Some(16_384),
         machine_model: Some("E2E Runner Co. License Test Rig".to_string()),
@@ -139,10 +160,10 @@ fn api() -> Result<LicenseApi<ReqwestLicense>, String> {
 /// Verify a returned token with the production public key + the run's
 /// fingerprint — the same call the command layer makes before trusting.
 fn verify(dto: &EntitlementDto, key: &str, facts: &DeviceFacts) -> Result<(), String> {
-    let claims = diskbytes::license::verify_token(
+    let claims = diskbytes_lib::license::verify_token(
         &dto.token,
         LICENSE_PUBLIC_KEY_HEX,
-        &diskbytes::license::sha256_hex(key),
+        &diskbytes_lib::license::sha256_hex(key),
         &facts.hardware_hash,
         &facts.platform,
         now_unix(),
@@ -158,6 +179,23 @@ fn live_license_lifecycle_keeps_device_facts() {
         panic!("live-license-e2e feature enabled but DISKBYTES_LIVE_LICENSE_E2E / DISKBYTES_LIVE_ADMIN_KEY not set");
     }
     let admin = AdminHttp::new().expect("admin client");
+
+    // 0. The worker must be v2+ (the device-facts COALESCE fix, the
+    //    rate limits, and the admin lookup route all ship in v2). A v1
+    //    worker would fail step 4 with the wipe bug — fail FAST with
+    //    the redeploy instruction instead of a cryptic mid-test assert.
+    let health: serde_json::Value = admin.get("/v1/health").expect("health");
+    assert!(
+        health
+            .get("version")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(1)
+            >= 2,
+        "the deployed license server is still v1 — redeploy the v2 worker from the \
+         diskbytes-license-server repo:  npx wrangler d1 migrations apply DB --remote  \
+         && npx wrangler deploy  (migration 0002 is additive; the README walks it)"
+    );
+    println!("[e2e] worker v{} healthy", health["version"]);
 
     // 1. Mint a throwaway yearly key (days=1 → self-expires even if a
     //    later step fails; note tags it as CI).
@@ -186,7 +224,10 @@ fn live_license_lifecycle_keeps_device_facts() {
 
     // 3. Admin lookup — the device row carries every fact.
     let look: LookupResponse = admin
-        .post("/v1/admin/lookup", &serde_json::json!({ "key": key }).to_string())
+        .post(
+            "/v1/admin/lookup",
+            &serde_json::json!({ "key": key }).to_string(),
+        )
         .expect("lookup");
     assert_eq!(look.license.customer_email, "e2e@diskbytes.test");
     let dev = look
@@ -197,7 +238,10 @@ fn live_license_lifecycle_keeps_device_facts() {
     assert_eq!(dev.hostname.as_deref(), Some("E2E-A"));
     assert_eq!(dev.os_version.as_deref(), Some("Windows 11.0.26100"));
     assert_eq!(dev.ram_mb, Some(16_384));
-    assert!(dev.machine_model.as_deref().is_some_and(|m| m.contains("Test Rig")));
+    assert!(dev
+        .machine_model
+        .as_deref()
+        .is_some_and(|m| m.contains("Test Rig")));
     println!("[e2e] activation stored the full device facts");
 
     // 4. Revalidate with CHANGED facts (OS bump + app bump — exactly
@@ -206,11 +250,17 @@ fn live_license_lifecycle_keeps_device_facts() {
     let mut bumped = run_facts("A");
     bumped.os_version = "Windows 11.0.27842".to_string();
     bumped.app_version = "0.2.0".to_string();
-    let dto2 = api().expect("api").validate(key, &bumped).expect("validate");
+    let dto2 = api()
+        .expect("api")
+        .validate(key, &bumped)
+        .expect("validate");
     verify(&dto2, key, &bumped).expect("verify revalidation token");
 
     let look2: LookupResponse = admin
-        .post("/v1/admin/lookup", &serde_json::json!({ "key": key }).to_string())
+        .post(
+            "/v1/admin/lookup",
+            &serde_json::json!({ "key": key }).to_string(),
+        )
         .expect("lookup 2");
     let dev2 = look2
         .devices
@@ -233,7 +283,10 @@ fn live_license_lifecycle_keeps_device_facts() {
 
     // 5. Slot rule: a second device on the same platform is refused.
     let other = run_facts("B");
-    let err = api().expect("api").activate(key, &other).expect_err("slot must be taken");
+    let err = api()
+        .expect("api")
+        .activate(key, &other)
+        .expect_err("slot must be taken");
     assert!(
         matches!(err, LicenseError::DeviceSlotTaken),
         "expected DeviceSlotTaken, got {err:?}"
@@ -241,9 +294,15 @@ fn live_license_lifecycle_keeps_device_facts() {
     println!("[e2e] second Windows device refused (DEVICE_SLOT_TAKEN)");
 
     // 6. Deactivate frees the slot; the other device can now register.
-    api().expect("api").deactivate(key, &facts).expect("deactivate");
+    api()
+        .expect("api")
+        .deactivate(key, &facts)
+        .expect("deactivate");
     let look3: LookupResponse = admin
-        .post("/v1/admin/lookup", &serde_json::json!({ "key": key }).to_string())
+        .post(
+            "/v1/admin/lookup",
+            &serde_json::json!({ "key": key }).to_string(),
+        )
         .expect("lookup 3");
     let dev3 = look3
         .devices
@@ -251,13 +310,19 @@ fn live_license_lifecycle_keeps_device_facts() {
         .find(|d| d.hardware_hash == facts.hardware_hash)
         .expect("device row 3");
     assert!(dev3.revoked, "device row revoked after deactivate");
-    let dto3 = api().expect("api").activate(key, &other).expect("activate after free");
+    let dto3 = api()
+        .expect("api")
+        .activate(key, &other)
+        .expect("activate after free");
     verify(&dto3, key, &other).expect("verify second activation");
     println!("[e2e] slot freed → re-registered on the new hardware");
 
     // 7. Cleanup: revoke the license; validation must now hard-fail.
     let _ = admin.post(&format!("/v1/admin/keys/{}/revoke", look.license.id), "{}");
-    let err2 = api().expect("api").validate(key, &other).expect_err("revoked must hard-fail");
+    let err2 = api()
+        .expect("api")
+        .validate(key, &other)
+        .expect_err("revoked must hard-fail");
     assert!(
         matches!(err2, LicenseError::Inactive),
         "expected KEY_REVOKED -> Inactive, got {err2:?}"

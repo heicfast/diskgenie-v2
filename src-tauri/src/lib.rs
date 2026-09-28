@@ -10,7 +10,11 @@
 
 mod analytics;
 mod commands;
-mod license;
+// Public so the live-E2E integration test (tests/live_license.rs, the
+// `live-license-e2e` feature) can drive the REAL client against the
+// deployed worker. Binary crate — the lib surface is only consumed by
+// main.rs + tests, so this widens nothing that ships.
+pub mod license;
 mod platform;
 mod recycle;
 mod state;

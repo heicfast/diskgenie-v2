@@ -1,6 +1,8 @@
-# DiskBytes Licensing & Store Architecture (v2 — paid-only)
+# DiskBytes Licensing & Store Architecture (v2 — paid-only; wire v2.1)
 
-Status: **implemented** (session 10 / uiux-15). Supersedes the Dodo Payments
+Status: **implemented** (session 10 / uiux-15; hardening session 11 /
+uiux-16 — the device-facts wipe fix, race-proof slot binding, rate
+limiting, richer device claims, live E2E). Supersedes the Dodo Payments
 design in doc 06. This document is the build plan AND the operating
 reference for the two-repo system:
 
@@ -38,11 +40,13 @@ leaves the valuable property protected:
 
 | Layer | Implementation | Failure it covers |
 |---|---|---|
+| L0 rate limits | D1 fixed-window counters per key + per IP on activate/validate/deactivate (10/60/10 per hour; the 429 `RATE_LIMITED` contract) | brute-force noise, budget abuse |
 | L1 TLS | HTTPS to the Worker only | network observers |
 | L2 request auth | HMAC-SHA256 over (ts, nonce, method, path, body-sha256) with a shared client secret + ±300 s window + nonce replay rejection in D1 | casual curl/scan abuse of the public endpoint (friction — the secret ships in a public-source binary; documented as such) |
 | L3 server-side entitlement | D1 license status/expiry/device slots — the Worker REFUSES to issue tokens for bad keys | local UI patching (no valid token can be minted) |
 | L4 signed entitlement | Ed25519-signed compact token (payload.sig); the client verifies with the **embedded public key** and rejects everything else | **license-server spoofing / response mimicry** — a fake server cannot forge a signature; the private key never leaves the Worker |
-| L5 device binding | hardware fingerprint (SHA-256 of MachineGuid + system-volume serial + CPUID on Windows; IOPlatformUUID + root fsid + CPU brand on macOS) inside the signed payload; the client re-derives it every check | copying `license.bin` to another machine (also DPAPI/Keychain-wrapped at rest) |
+| L5 device binding | hardware fingerprint (SHA-256 of MachineGuid + system-volume serial + CPUID on Windows; IOPlatformUUID + root fsid + CPU brand on macOS) inside the signed payload; the client re-derives it every check. The composite algorithm is FROZEN (v1 activations re-match). v2 adds per-COMPONENT hashes (machine/volume/cpu hashed separately, stored in the device row) — swap forensics for support, not a new binding | copying `license.bin` to another machine (also DPAPI/Keychain-wrapped at rest) |
+| L5b slot invariant | the 1 Windows + 1 macOS rule is enforced by a PARTIAL UNIQUE INDEX in D1 (`idx_devices_live_slot`), not by check-then-insert code — INSERT and the atomic conditional revive map constraint failures to DEVICE_SLOT_TAKEN | concurrent activations double-registering a slot (v1 TOCTOU) |
 | L6 command-layer gates | every privileged Tauri command (`start_scan`, `start_scan_turbo`, `find_duplicates`, `commit_cleanup`, `take_snapshot`, `diff_snapshots`, `delete_snapshot`, `uninstall_app`) re-checks posture in Rust | hiding/disabling UI is not the boundary; the operation itself refuses |
 | L7 binary hardening | existing release profile (symbols stripped, LTO, panic=abort); MSIX Store-signed at distribution | tampered binaries lose the Store signature (Microsoft signs on ingest) |
 | L8 24 h revalidation | scheduler thread validates every 24 h + at launch; explicit server "invalid" deactivates locally | long-term abuse of stale state |
@@ -129,6 +133,24 @@ the customer's email). Key-hash lookups are indexed. UI shows the
 "Activate" button only when the normalized key is complete (22 valid
 chars) — "Later" + "Purchase Licence" before that.
 
+### 3.4 The v2 device claim (what activation AND every revalidation send)
+
+```
+platform, hardwareHash           // the binding identity (unchanged)
+hostname, osVersion, appVersion  // display + audit
+compMachine, compVolume, compCpu // per-component sha256s (swap forensics)
+cpuBrand, ramMb, machineModel    // display (SMBIOS / sysctl)
+```
+
+Server storage rule: **COALESCE-only writes** — a claim that omits a
+field NEVER blanks the stored one. This is the fix for the v1 bug
+where the 24 h revalidation (which sent no facts) wiped
+hostname/os_version/app_version on every licensed install (the
+owner-reported "doesn't save hostname / Windows version"). Change
+detection diffs each revalidation against the stored row and audits
+what changed (OS upgrade, app update, hostname rename) as structured
+`device_update` events.
+
 ## 4. Protocol (Worker endpoints, all POST JSON)
 
 | Route | Auth | Purpose |
@@ -151,11 +173,11 @@ Error contract (app-relevant):
 |---|---|---|
 | 400 | `BAD_REQUEST` | surface error text |
 | 401 | `BAD_SIGNATURE` / `BAD_TIMESTAMP` / `REPLAYED` | surface; never unlocks |
-| 403 | `KEY_REVOKED` / `KEY_EXPIRED` / `LICENSE_EXPIRED` | hard-fail → local deactivate + typed copy |
+| 403 | `KEY_REVOKED` / `KEY_REFUNDED` / `KEY_PENDING` | hard-fail → local deactivate + typed copy |
 | 403 | `DEVICE_MISMATCH` | "already activated on another <platform>" copy |
-| 409 | `DEVICE_SLOT_TAKEN` | slot occupied by different hardware → deactivate-that-device copy |
+| 409 | `DEVICE_SLOT_TAKEN` | slot occupied by different hardware → "contact support to move your license" copy (v2: no deactivate button) |
 | 404 | `KEY_NOT_FOUND` | "Invalid license key" copy |
-| 429 | `RATE_LIMITED` | backoff + retry (client retries with jitter) |
+| 429 | `RATE_LIMITED` | typed copy; activate does NOT fast-retry (each attempt burns a window slot) |
 | 5xx | — | network-class → grace path |
 
 Activation logic: key lookup by hash → status `active`? → yearly not
@@ -170,12 +192,17 @@ Colo.
 ## 5. D1 schema (see `schema.sql` in the server repo)
 
 - `licenses` (id, key_hash UNIQUE, key_last4, tier, status, customer_name,
-  customer_email, note, issued_at, expires_at, created_at, updated_at)
-- `devices` (id, license_id, platform, hardware_hash, hostname,
-  os_version, app_version, activated_at, last_seen_at, revoked)
+  customer_email, note, source, issued_at, expires_at, created_at, updated_at)
+- `devices` (id, license_id, platform, hardware_hash, hostname, os_version,
+  app_version, comp_machine, comp_volume, comp_cpu, cpu_brand, ram_mb,
+  machine_model, activated_at, last_seen_at, revoked) + the partial
+  UNIQUE live-slot index `idx_devices_live_slot (license_id, platform)
+  WHERE revoked = 0`
 - `audit_events` (id, license_id, key_last4, event, platform, hw_prefix,
-  reason, ip_hash, created_at)
+  reason, ip_hash, detail, created_at)
 - `nonce_seen` (nonce PK, seen_at) — replay defense (TTL-swept)
+- `rate_buckets` (bucket_key PK, window_start, count) — fixed-window
+  rate counters (swept with the nonces)
 
 No address column — the owner decision: billing address lives with the
 payment processor; the license server needs identity (name, email) and
@@ -244,6 +271,21 @@ till/thank-you), `license-locked` (sim off → Activation Gate), and the
 existing `license-dialog` step now captures the Later/Purchase state and
 the Activate state (typed key). Browser-dev mocks implement the same
 command surface.
+
+## 8b. LIVE end-to-end CI (`license-e2e.yml`, session 11)
+
+A second opt-in cargo feature `live-license-e2e` (tests-only, never in
+build artifacts) compiles `src-tauri/tests/live_license.rs`. The
+workflow runs it on every push on a Windows runner against the REAL
+deployed worker, with the repo secret `LIVE_ADMIN_KEY`:
+
+generate a throwaway yearly key (days=1, self-expiring) → activate with
+the full v2 claim → verify the returned token against the PRODUCTION
+public key (the real anti-spoof path) → revalidate with CHANGED facts →
+admin-lookup and assert the device row kept them (the v1 wipe
+regression, LIVE) → assert DEVICE_SLOT_TAKEN for a second device →
+deactivate → assert the slot freed → revoke for cleanup. Every run
+mints its own key; customer data is never touched.
 
 ## 9. Microsoft Store distribution + auto-update
 
