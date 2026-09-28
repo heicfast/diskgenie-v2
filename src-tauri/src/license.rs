@@ -143,6 +143,8 @@ pub enum LicenseError {
     DeviceSlotTaken,
     /// 403 — this device is not the registered one.
     DeviceMismatch,
+    /// 429 — rate limit (D1 fixed window) — retry after a pause.
+    RateLimited,
     /// Transport failure → offline grace path.
     Network,
     /// 5xx / parse failure.
@@ -159,9 +161,10 @@ impl std::fmt::Display for LicenseError {
             Self::Inactive => "This license key is no longer active. Contact support.",
             Self::Expired => "Your yearly license has expired — renew to keep DiskBytes Pro.",
             Self::DeviceSlotTaken => {
-                "This key is already activated on another device. Deactivate it there (or contact support) to move it here."
+                "This key is already activated on another device. Contact support to move your license."
             }
             Self::DeviceMismatch => "This device isn't registered with this license key.",
+            Self::RateLimited => "Too many attempts — wait a minute and try again.",
             Self::Network => "Network unavailable — DiskBytes keeps working offline.",
             Self::ServerError => "The license server had a problem. Try again in a moment.",
             Self::Spoofed => {
@@ -180,15 +183,17 @@ impl LicenseError {
             (403, "KEY_REVOKED" | "KEY_REFUNDED" | "KEY_PENDING") => Self::Inactive,
             (403, "LICENSE_EXPIRED") => Self::Expired,
             (403, "DEVICE_MISMATCH") => Self::DeviceMismatch,
+            (429, _) | (_, "RATE_LIMITED") => Self::RateLimited,
             (409, _) | (_, "DEVICE_SLOT_TAKEN") => Self::DeviceSlotTaken,
             _ => Self::ServerError,
         }
     }
 
     /// Hard failures deactivate local state (doc §6 posture semantics).
+    /// Rate-limited is SOFT (retry with backoff — the window resets).
     #[must_use]
     pub fn is_hard(&self) -> bool {
-        !matches!(self, Self::Network | Self::ServerError)
+        !matches!(self, Self::Network | Self::ServerError | Self::RateLimited)
     }
 }
 
@@ -198,19 +203,46 @@ impl LicenseError {
 
 /// The device facts collected at activation (doc §6: what we collect and
 /// store in D1 — platform + fingerprint + audit strings, nothing else).
+///
+/// v2 (additive): component hashes + descriptive facts travel on
+/// EVERY request (activate AND validate — the server-side wipe fix
+/// needs the revalidation to carry the claim), serialized camelCase
+/// with absent fields skipped. The composite [`hardware_hash`] stays
+/// THE binding identity (algorithm unchanged — v1-activated devices
+/// re-match after upgrade); the components give support swap
+/// forensics (disk swap vs machine swap) and the admin panel a real
+/// device census.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceFacts {
     /// "windows" | "macos".
     pub platform: String,
-    /// The hardware fingerprint (64 hex).
+    /// The hardware fingerprint (64 hex) — the binding identity.
     pub hardware_hash: String,
-    /// Human-readable machine name (audit).
+    /// Human-readable machine name (audit + support display).
     pub hostname: String,
-    /// OS version string (audit).
+    /// OS version string (audit + support display).
     pub os_version: String,
-    /// App semver (audit).
+    /// App semver (audit + support display).
     pub app_version: String,
+    /// sha256("machine:" + MachineGuid / IOPlatformUUID) — component.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comp_machine: Option<String>,
+    /// sha256("volume:" + system-drive serial / root fsid) — component.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comp_volume: Option<String>,
+    /// sha256("cpu:" + CPUID brand) — component.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comp_cpu: Option<String>,
+    /// CPU brand string for display.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_brand: Option<String>,
+    /// Total physical memory (MB).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ram_mb: Option<u64>,
+    /// Machine model for display ("Dell Inc. XPS 15 9520" / "MacBookPro18,3").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_model: Option<String>,
 }
 
 /// The server's success envelope (serde mirror of the Worker response).
@@ -406,6 +438,9 @@ pub fn posture(state: &LicenseState, now: i64) -> LicensePosture {
 /// The device identity for binding (unchanged from doc 06 §3.5):
 /// `SHA-256(MachineGuid ‖ system-drive volume serial ‖ CPUID)` via the
 /// platform seam (IOPlatformUUID + fsid + CPU brand on macOS).
+/// The algorithm is FROZEN — the server's stored device rows (and
+/// every issued token's `hw` claim) match this exact digest; changing
+/// the recipe would orphan every v1 activation.
 ///
 /// # Errors
 /// String error when any platform input is unreadable (all three
@@ -420,6 +455,34 @@ pub fn hardware_id() -> Result<String, String> {
     hasher.update(cpuid.as_bytes());
     let digest = hasher.finalize();
     Ok(hex_of(&digest))
+}
+
+/// Hash one component identity (pure seam — tests pin the recipe):
+/// `sha256(label || value)`, `None` when the input is unreadable.
+#[must_use]
+pub fn component_hash(label: &str, value: Option<String>) -> Option<String> {
+    let v = value?;
+    let mut hasher = Sha256::new();
+    hasher.update(label.as_bytes());
+    hasher.update(v.as_bytes());
+    Some(hex_of(&hasher.finalize()))
+}
+
+/// The per-component identity hashes (v2 device claim): each binding
+/// input hashed SEPARATELY so the server can tell WHICH component
+/// changed when a device shows up with a new composite (disk swap vs
+/// machine swap vs CPU swap — swap forensics, not a new binding).
+/// Returns `None` per component when that input is unreadable.
+#[must_use]
+pub fn component_hashes() -> (Option<String>, Option<String>, Option<String>) {
+    (
+        component_hash("machine:", crate::platform::os::machine_guid()),
+        component_hash(
+            "volume:",
+            crate::platform::os::system_drive_serial().map(|s| s.to_string()),
+        ),
+        component_hash("cpu:", crate::platform::os::cpuid_brand()),
+    )
 }
 
 /// sha256 hex of a string (key-hash binding; public for the command
@@ -536,31 +599,24 @@ impl<H: LicenseHttp> LicenseApi<H> {
     /// # Errors
     /// [`LicenseError`] per the endpoint contract.
     pub fn activate(&self, key: &str, facts: &DeviceFacts) -> Result<EntitlementDto, LicenseError> {
-        let body = serde_json::json!({
-            "licenseKey": key,
-            "hardwareHash": facts.hardware_hash,
-            "platform": facts.platform,
-            "hostname": facts.hostname,
-            "osVersion": facts.os_version,
-            "appVersion": facts.app_version,
-        });
-        match self.call("/v1/activate", &body.to_string())? {
+        let body = claim_body(key, facts);
+        match self.call("/v1/activate", &body)? {
             Ok(dto) => Ok(dto),
             Err(e) => Err(e),
         }
     }
 
-    /// The 24 h revalidation call.
+    /// The 24 h revalidation call. v2: carries the FULL device claim —
+    /// the server refreshes hostname/os/app/components with COALESCE
+    /// semantics (the v1 wire omitted them, and the v1 server then
+    /// blanked the stored rows — the owner-reported "doesn't save
+    /// hostname / Windows version" bug; fixed on both ends).
     ///
     /// # Errors
     /// [`LicenseError`] per the endpoint contract.
     pub fn validate(&self, key: &str, facts: &DeviceFacts) -> Result<EntitlementDto, LicenseError> {
-        let body = serde_json::json!({
-            "licenseKey": key,
-            "hardwareHash": facts.hardware_hash,
-            "platform": facts.platform,
-        });
-        match self.call("/v1/validate", &body.to_string())? {
+        let body = claim_body(key, facts);
+        match self.call("/v1/validate", &body)? {
             Ok(dto) => Ok(dto),
             Err(e) => Err(e),
         }
@@ -586,6 +642,18 @@ impl<H: LicenseHttp> LicenseApi<H> {
             Ok(())
         }
     }
+}
+
+/// The activate/validate wire body: the full DeviceFacts claim (the
+/// `skip_serializing_if` attrs keep absent optional fields OFF the
+/// wire) plus the license key. One shape for both routes — the server
+/// refreshes the same columns either way.
+fn claim_body(key: &str, facts: &DeviceFacts) -> String {
+    let mut value = serde_json::to_value(facts).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("licenseKey".to_string(), serde_json::json!(key));
+    }
+    value.to_string()
 }
 
 // ============================================================================
@@ -1013,6 +1081,7 @@ mod tests {
     fn only_network_and_server_are_soft() {
         assert!(!LicenseError::Network.is_hard());
         assert!(!LicenseError::ServerError.is_hard());
+        assert!(!LicenseError::RateLimited.is_hard());
         assert!(LicenseError::InvalidKey.is_hard());
         assert!(LicenseError::Spoofed.is_hard());
         assert!(LicenseError::DeviceSlotTaken.is_hard());
@@ -1024,6 +1093,7 @@ mod tests {
         responses: RefCell<Vec<Result<(u16, String), String>>>,
         urls: RefCell<Vec<String>>,
         headers: RefCell<Vec<Vec<(String, String)>>>,
+        bodies: RefCell<Vec<String>>,
     }
 
     impl FakeHttp {
@@ -1032,6 +1102,7 @@ mod tests {
                 responses: RefCell::new(rs),
                 urls: RefCell::new(Vec::new()),
                 headers: RefCell::new(Vec::new()),
+                bodies: RefCell::new(Vec::new()),
             }
         }
     }
@@ -1041,10 +1112,11 @@ mod tests {
             &self,
             url: &str,
             headers: &[(String, String)],
-            _body: &str,
+            body: &str,
         ) -> Result<(u16, String), String> {
             self.urls.borrow_mut().push(url.to_string());
             self.headers.borrow_mut().push(headers.to_vec());
+            self.bodies.borrow_mut().push(body.to_string());
             self.responses
                 .borrow_mut()
                 .pop()
@@ -1059,6 +1131,12 @@ mod tests {
             hostname: "DEV-PC".into(),
             os_version: "Win 11".into(),
             app_version: "0.1.0".into(),
+            comp_machine: Some("a".repeat(64)),
+            comp_volume: Some("b".repeat(64)),
+            comp_cpu: Some("c".repeat(64)),
+            cpu_brand: Some("Intel Core i7-1260P".into()),
+            ram_mb: Some(16_384),
+            machine_model: Some("Dell Inc. XPS 15 9520".into()),
         }
     }
 
@@ -1113,6 +1191,7 @@ mod tests {
             (404, "KEY_NOT_FOUND", LicenseError::InvalidKey),
             (403, "KEY_REVOKED", LicenseError::Inactive),
             (409, "DEVICE_SLOT_TAKEN", LicenseError::DeviceSlotTaken),
+            (429, "RATE_LIMITED", LicenseError::RateLimited),
         ] {
             let body = serde_json::json!({ "ok": false, "code": code, "message": "x" });
             let http = FakeHttp::with(vec![Ok((status, body.to_string()))]);
@@ -1128,6 +1207,103 @@ mod tests {
             let api = LicenseApi::with_secret(http, "a".repeat(64));
             assert!(api.deactivate("DBK", &facts()).is_ok());
         }
+    }
+
+    // ── v2: the full device claim on the wire ───────────────────────
+
+    /// The v2 claim body carries every fact (the server-side wipe fix
+    /// needs validate to carry the SAME claim as activate) and skips
+    /// None fields (older clients' sparse claims stay byte-identical).
+    #[test]
+    fn claim_body_carries_full_facts_and_skips_absent() {
+        let full = facts();
+        let body = claim_body("DBK", &full);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["licenseKey"], "DBK");
+        assert_eq!(v["hardwareHash"], "e".repeat(64));
+        assert_eq!(v["hostname"], "DEV-PC");
+        assert_eq!(v["osVersion"], "Win 11");
+        assert_eq!(v["appVersion"], "0.1.0");
+        assert_eq!(v["compMachine"], "a".repeat(64));
+        assert_eq!(v["compVolume"], "b".repeat(64));
+        assert_eq!(v["compCpu"], "c".repeat(64));
+        assert_eq!(v["cpuBrand"], "Intel Core i7-1260P");
+        assert_eq!(v["ramMb"], 16_384);
+        assert_eq!(v["machineModel"], "Dell Inc. XPS 15 9520");
+
+        // Sparse claim: absent optional fields stay OFF the wire.
+        let sparse = DeviceFacts {
+            comp_machine: None,
+            comp_volume: None,
+            comp_cpu: None,
+            cpu_brand: None,
+            ram_mb: None,
+            machine_model: None,
+            ..facts()
+        };
+        let body = claim_body("DBK", &sparse);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.get("compMachine").is_none());
+        assert!(v.get("ramMb").is_none());
+        assert!(v.get("machineModel").is_none());
+        assert_eq!(v["hostname"], "DEV-PC");
+    }
+
+    /// validate() sends the SAME full claim as activate() — pin the
+    /// v2 wire contract (the v1 validate omitted the facts and the
+    /// server then wiped its stored rows — the owner-reported bug).
+    #[test]
+    fn validate_sends_the_full_claim() {
+        let token = fixture_token(&facts().hardware_hash, &sha256_hex("DBK"), NOW);
+        let body = serde_json::json!({ "token": token });
+        let http = FakeHttp::with(vec![Ok((200, body.to_string()))]);
+        let api = LicenseApi::with_secret(http, "a".repeat(64));
+        assert!(api.validate("DBK", &facts()).is_ok());
+        let sent = api.http.bodies.borrow()[0].clone();
+        let v: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(v["licenseKey"], "DBK");
+        assert_eq!(v["hardwareHash"], "e".repeat(64));
+        assert_eq!(v["hostname"], "DEV-PC");
+        assert_eq!(v["osVersion"], "Win 11");
+        assert_eq!(v["appVersion"], "0.1.0");
+        assert_eq!(v["compMachine"], "a".repeat(64));
+        assert_eq!(v["cpuBrand"], "Intel Core i7-1260P");
+        assert_eq!(v["ramMb"], 16_384);
+        assert_eq!(v["machineModel"], "Dell Inc. XPS 15 9520");
+    }
+
+    /// activate() carries the same claim shape (one wire, two routes).
+    #[test]
+    fn activate_sends_the_full_claim() {
+        let token = fixture_token(&facts().hardware_hash, &sha256_hex("DBK"), NOW);
+        let body = serde_json::json!({ "token": token });
+        let http = FakeHttp::with(vec![Ok((200, body.to_string()))]);
+        let api = LicenseApi::with_secret(http, "a".repeat(64));
+        assert!(api.activate("DBK", &facts()).is_ok());
+        let sent = api.http.bodies.borrow()[0].clone();
+        let v: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(v["licenseKey"], "DBK");
+        assert_eq!(v["machineModel"], "Dell Inc. XPS 15 9520");
+        assert_eq!(v["ramMb"], 16_384);
+    }
+
+    /// Component hashing: distinct labels → distinct digests; stable
+    /// across calls; None propagates (unreadable input).
+    #[test]
+    fn component_hashing_is_labeled_stable_and_none_safe() {
+        let m = component_hash("machine:", Some("guid-1".into())).unwrap();
+        let v = component_hash("volume:", Some("42".into())).unwrap();
+        let c = component_hash("cpu:", Some("Intel".into())).unwrap();
+        assert_eq!(m.len(), 64);
+        assert_ne!(m, v);
+        assert_ne!(v, c);
+        assert_eq!(
+            m,
+            component_hash("machine:", Some("guid-1".into())).unwrap()
+        );
+        assert!(component_hash("machine:", None).is_none());
+        // The label is part of the digest (same value, different label).
+        assert_ne!(m, component_hash("other:", Some("guid-1".into())).unwrap());
     }
 
     // ── codecs ──────────────────────────────────────────────────────

@@ -29,9 +29,14 @@ describe("licenseKey", () => {
     expect(isValidKeyShape("DBXK2M9QF3P8")).toBe(false);
   });
 
-  it("formats display groups of 5", () => {
-    expect(formatKey(GOOD_KEY)).toBe("DBXK2-M9QF3-P8NR4-T2VW6-Y4");
+  it("formats display groups like the server (DB- + 4×5)", () => {
+    // The purchase email shows DB-XK2M9-QF3P8-NR4T2-VW6Y4 — the
+    // display form must match what the user received.
+    expect(formatKey(GOOD_KEY)).toBe(GOOD_KEY_DASHED);
     expect(formatKey("DB")).toBe("DB");
+    expect(formatKey("DBXK2")).toBe("DB-XK2");
+    // Paste-with-dashes normalizes back to the same display form.
+    expect(formatKey(normalizeKey(GOOD_KEY_DASHED))).toBe(GOOD_KEY_DASHED);
   });
 
   it("key length is the wire constant", () => {

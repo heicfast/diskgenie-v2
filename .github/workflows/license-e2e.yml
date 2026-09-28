@@ -1,0 +1,70 @@
+name: License E2E (live worker)
+
+# The REAL-FLOW license verification (owner instruction: "test and
+# simulate all this on platform-specific CI with as real and natural a
+# flow as possible"): on every push, a Windows runner runs the Rust
+# license client end-to-end against the DEPLOYED Cloudflare worker —
+#
+#   admin-generate a throwaway key → activate with the full v2 device
+#   claim → verify the Ed25519 token against the compiled-in PRODUCTION
+#   public key → revalidate with changed facts → admin-lookup and
+#   assert the device row kept them (the v1 wipe regression, LIVE) →
+#   assert the one-slot-per-platform rule → deactivate → assert the
+#   slot freed → revoke for cleanup.
+#
+# The admin key lives in the repo secret LIVE_ADMIN_KEY (private repo;
+# set once in repo Settings → Secrets → Actions). Until it is set, the
+# job exits green with a "skipped" note (secrets-presence guard), so a
+# fresh clone never fails on missing secrets.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: license-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-e2e:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Run the live license lifecycle test
+        # The feature gates tests/live_license.rs to nothing in every
+        # other build; option_env! reads the admin key at compile time
+        # (same step), the test reads DISKBYTES_LIVE_LICENSE_E2E at
+        # run time. Key material is never printed (only the last-4).
+        env:
+          DISKBYTES_LIVE_ADMIN_KEY: ${{ secrets.LIVE_ADMIN_KEY }}
+          DISKBYTES_LIVE_LICENSE_E2E: "1"
+        shell: pwsh
+        run: |
+          if (-not $env:DISKBYTES_LIVE_ADMIN_KEY) {
+            Write-Host "::notice::LIVE_ADMIN_KEY secret not set — skipping the live E2E (set it in repo Settings → Secrets → Actions)."
+            exit 0
+          }
+          cargo test --manifest-path src-tauri/Cargo.toml -p diskbytes --features live-license-e2e --test live_license -- --nocapture
+
+      - name: Post-run health check
+        shell: pwsh
+        run: |
+          try {
+            $h = Invoke-RestMethod -Uri "https://diskbytes-license.heictojpg-pics.workers.dev/v1/health" -TimeoutSec 20
+            Write-Host "worker healthy: version=$($h.version)"
+          } catch {
+            Write-Host "::warning::health check failed: $_"
+          }

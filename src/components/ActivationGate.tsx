@@ -4,6 +4,14 @@
  * while unlicensed or degraded. The Monitor tab stays live (owner
  * decision). Every locked surface funnels to the same two actions —
  * Activate (opens the dialog) and Purchase Licence.
+ *
+ * v2 (owner feedback): the actions row uses PROPORTIONAL buttons —
+ * v1 inherited `.db-ink-button`'s sidebar contract (`width: 100%`),
+ * so both buttons claimed full width and the row stacked ("Purchase"
+ * over "Licence"). The gate now scopes its own button sizing: equal
+ * heights, auto widths, centered, wrapping as a pair at narrow
+ * widths — and the card itself carries the settle-in fade so a
+ * license-state flip never hard-cuts the view.
  */
 import { CheckIcon, LockKeyholeIcon, SparklesIcon } from "./Icon";
 import { useLicenseStore } from "../state/license";
@@ -65,13 +73,11 @@ export function ActivationGate({ tab }: { tab: TabId }) {
   return (
     <div className="db-activation-gate" role="note" aria-label="Activation required">
       <div className="db-activation-gate-card">
-        <div className="db-activation-gate-icon">
+        <div className="db-activation-gate-icon" aria-hidden="true">
           {posture === "degraded" ? <LockKeyholeIcon size={22} /> : <SparklesIcon size={22} />}
         </div>
         <h2>
-          {posture === "degraded"
-            ? "Pro features are paused"
-            : pitch.title}
+          {posture === "degraded" ? "Pro features are paused" : pitch.title}
         </h2>
         {posture === "degraded" ? (
           <p>
@@ -85,7 +91,7 @@ export function ActivationGate({ tab }: { tab: TabId }) {
               {pitch.lines.map((line) => (
                 <li key={line}>
                   <CheckIcon size={13} />
-                  {line}
+                  <span>{line}</span>
                 </li>
               ))}
             </ul>
@@ -95,12 +101,12 @@ export function ActivationGate({ tab }: { tab: TabId }) {
           </>
         )}
         <div className="db-activation-gate-actions">
-          <button type="button" className="db-ink-button" onClick={openDialog}>
+          <button type="button" className="db-activation-gate-primary" onClick={openDialog}>
             <LockKeyholeIcon size={14} />
             {posture === "degraded" ? "Reactivate" : "Activate DiskBytes"}
           </button>
           {posture !== "degraded" && (
-            <button type="button" className="db-outline" onClick={openPurchase}>
+            <button type="button" className="db-activation-gate-secondary" onClick={openPurchase}>
               Purchase Licence
             </button>
           )}

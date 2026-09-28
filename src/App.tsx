@@ -134,17 +134,26 @@ function AppShell() {
   // DOM BEFORE the browser paints the tab change — an effect lands one
   // paint late and that first frame showed the grid track partially
   // open (a ~10 px column jitter).
+  // v2: the LICENSE lock flip also changes `has-inspector` (the
+  // inspector column unmounts while locked) — the same snap applies,
+  // so a posture change never animates the grid under the swap.
+  // Locked = unlicensed or degraded (docs §6 STRICT posture semantics)
+  // — computed ONCE per render, above every consumer below.
+  const licenseLocked = licensePosture !== null && licensePosture !== "pro" && licensePosture !== "grace";
   const bodyRef = useRef<HTMLDivElement>(null);
   const prevTab = useRef(tab);
+  const prevLocked = useRef(licenseLocked);
   useLayoutEffect(() => {
-    if (prevTab.current === tab) return;
+    const lockFlipped = prevLocked.current !== licenseLocked;
+    if (prevTab.current === tab && !lockFlipped) return;
     prevTab.current = tab;
+    prevLocked.current = licenseLocked;
     const el = bodyRef.current;
     if (!el) return;
     el.classList.add("db-tab-snap");
     const t = window.setTimeout(() => el.classList.remove("db-tab-snap"), 280);
     return () => window.clearTimeout(t);
-  }, [tab]);
+  }, [tab, licenseLocked]);
 
   // Toast bus: any surface can raise a transient toast via the
   // `db-toast` window event (detail: { text, icon? }). The elevation
@@ -284,9 +293,6 @@ function AppShell() {
 
   const openPreview = useCallback((id: number) => setPreviewId(id), []);
 
-  // Locked = unlicensed or degraded (docs §6 STRICT posture semantics).
-  const licenseLocked = licensePosture !== null && licensePosture !== "pro" && licensePosture !== "grace";
-
   return (
     <div className="db-app">
       {licensePosture === "degraded" && (
@@ -318,12 +324,16 @@ function AppShell() {
         <div className="db-main-col">
           {/* Tab settle-in swap (see TabSwap): old view unmounts
            * instantly, the new one fades in over the solid background
-           * at its FINAL geometry (the grid snapped — see bodyRef). */}
+           * at its FINAL geometry (the grid snapped — see bodyRef).
+           * v2: the key includes the LOCK state — a license flip
+           * (activate/deactivate/lock-down) remounts the swap wrapper
+           * so the Activation Gate/view crossfade runs the SAME
+           * settle-in as a tab switch (v1 hard-cut the content). */}
           {/* The license gate (docs §7): while unlicensed/degraded every
            * tab except Monitor shows the Activation Gate — the views
            * themselves never mount (and their Rust commands refuse
            * independently anyway). */}
-          <TabSwap key={tab}>
+          <TabSwap key={`${tab}:${licenseLocked ? "locked" : "open"}`}>
             {licenseLocked && tab !== "monitor" ? (
               <ActivationGate tab={tab} />
             ) : (

@@ -110,6 +110,11 @@ windows = { version = "0.62", features = [
 # builds. NEVER enabled in NSIS/MSIX/production builds.
 [features]
 ci-license-sim = []
+# LIVE end-to-end license test against the real deployed worker
+# (tests/live_license.rs). NEVER enabled in any build artifact —
+# tests-only; the workflow license-e2e.yml opts in and provides the
+# admin key as an env var at compile+run time.
+live-license-e2e = []
 
 [dev-dependencies]
 tiny-skia = "0.11"

@@ -685,13 +685,27 @@
   color: var(--text-secondary);
 }
 .db-license-body input {
-  height: 36px;
+  height: 38px;
   border: 1px solid var(--border);
   border-radius: var(--radius-m);
   background: var(--card);
   padding: 0 12px;
-  font: 12px var(--font-mono);
+  font: 12.5px var(--font-mono);
   color: var(--text);
+  /* The display form is dashed groups — tracking breathes them apart
+   * without widening the field past the dialog's rhythm. */
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transition: border-color var(--fade) ease, box-shadow var(--fade) ease;
+}
+/* Complete-key affordance: the border quietly agrees with the ok
+   chip below (the ACTIVATE button swap is the loud signal). */
+.db-license-body input[data-complete="true"] {
+  border-color: color-mix(in srgb, var(--free) 55%, transparent);
+}
+.db-license-body input[data-complete="true"]:focus {
+  border-color: var(--free);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--free) 22%, transparent);
 }
 .db-license-body input:focus {
   border-color: var(--ink);
@@ -786,12 +800,34 @@
   color: var(--ink);
 }
 
-/* ── License dialog v2 (session-10 licensing) ─────────────────────
- * The activation entry + the Pro status card. The status card uses a
- * definition grid (label/value rows) — the same visual family as the
- * inspector's metadata rows. */
+/* ── License dialog v2 (session-10 licensing + owner polish pass) ──
+ * The activation entry + the Pro status card. Motion contract:
+ *  * ENTER: shared .db-dialog fade-up + scrim fade (unchanged).
+ *  * EXIT: `data-closing` on BOTH scrim and panel — one 130 ms
+ *    transition (opacity + gentle scale), the DOM outlives the
+ *    logic exactly like .db-toast (no instant pop).
+ *  * STATE SWAPS: .db-license-body-swap runs db-settle-in (130 ms
+ *    opacity) keyed by dialog state — key entry → success → status
+ *    card never hard-cut.
+ * The status card uses a definition grid (label/value rows) — the
+ * same visual family as the inspector's metadata rows. */
 .db-license-dialog {
   min-width: 400px;
+}
+
+.db-license-dialog[data-closing="true"] {
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+  /* No display/animation changes: the transition interpolates from
+   * live values, and pointer events stop the moment closing starts. */
+  pointer-events: none;
+  transition: opacity 130ms ease-in, transform 130ms ease-in;
+}
+
+.db-scrim[data-closing="true"] {
+  animation: none;
+  opacity: 0;
+  transition: opacity 130ms ease-in;
 }
 
 .db-license-dialog h3 {
@@ -802,6 +838,17 @@
 
 .db-license-dialog h3 svg {
   color: var(--ink);
+}
+
+.db-license-body-swap {
+  animation: db-settle-in 130ms ease-out both;
+}
+
+.db-license-lead {
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
 }
 
 .db-license-status {
@@ -860,19 +907,24 @@
 .db-license-status dl {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-m);
   background: var(--card);
-  padding: 12px 14px;
+  padding: 4px 14px;
   margin: 0;
 }
 
 .db-license-status dl > div {
   display: grid;
-  grid-template-columns: 96px 1fr;
+  grid-template-columns: 104px 1fr;
   align-items: baseline;
   gap: 12px;
+  padding: 9px 0;
+}
+
+/* Row rhythm: hairline separators BETWEEN rows (first/last breathe). */
+.db-license-status dl > div + div {
+  border-top: 1px solid var(--divider);
 }
 
 .db-license-status dt {
@@ -904,19 +956,22 @@
   color: var(--text-secondary);
 }
 
-/* Activation success state (auto-closes ~1.5 s): the win gets a
- * centered badge + one warm sentence — nothing blinking, nothing
- * bouncing (premium = calm). */
+/* Activation success state (auto-closes ~1.6 s through the closing
+ * fade): the win gets a centered badge + one warm sentence — nothing
+ * blinking, nothing bouncing (premium = calm). The badge settles in
+ * with the toast's overshoot curve; a soft radial glow lifts it off
+ * the panel without any strobing. */
 .db-license-success {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 18px 8px 6px;
+  padding: 22px 8px 8px;
   text-align: center;
 }
 
 .db-license-success-badge {
+  position: relative;
   display: grid;
   place-items: center;
   width: 58px;
@@ -924,6 +979,36 @@
   border-radius: 50%;
   background: color-mix(in srgb, var(--free) 14%, transparent);
   color: var(--free);
+  animation: db-license-badge-in 240ms cubic-bezier(0.3, 1.2, 0.45, 1) both;
+}
+
+.db-license-success-badge::after {
+  content: "";
+  position: absolute;
+  inset: -14px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--free) 16%, transparent) 0%,
+    transparent 70%
+  );
+  pointer-events: none;
+}
+
+@keyframes db-license-badge-in {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.db-license-success h3 {
+  justify-content: center;
+  margin: 0;
 }
 
 .db-license-success p {

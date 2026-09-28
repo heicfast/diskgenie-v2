@@ -789,11 +789,22 @@
   }
 }
 
-/* ── Activation Gate (session-10 licensing) ───────────────────────
+/* ── Activation Gate (session-10 licensing; v2 actions) ───────────
  * Rendered instead of Explore/Duplicates/Applications/Snapshots while
  * unlicensed or degraded (Monitor stays live). A centered card over
  * the page background — no scrim (this is page content, not a modal),
- * same visual family as the empty states. */
+ * same visual family as the empty states. The card carries the
+ * settle-in fade so a license-state flip crossfades like a tab swap
+ * (the TabSwap re-key in App.tsx guarantees a remount, this keyframe
+ * guarantees the fade).
+ *
+ * v2 BUTTONS: v1 reused `.db-ink-button` whose sidebar contract is
+ * `width: 100%` (scan button) — inside the flex row BOTH buttons
+ * claimed full width and stacked ("Purchase" above "Licence": the
+ * owner-reported bug). The gate now owns its two button classes with
+ * the app's button look but PROPORTIONAL sizing: auto width, equal
+ * 40px height, nowrap labels, centered row that wraps as a pair only
+ * below ~360px. */
 .db-activation-gate {
   display: grid;
   place-items: center;
@@ -813,6 +824,7 @@
   box-shadow: var(--shadow-pop);
   padding: 34px 38px 26px;
   text-align: center;
+  animation: db-settle-in 130ms ease-out both;
 }
 
 .db-activation-gate-icon {
@@ -823,6 +835,7 @@
   border-radius: 50%;
   background: color-mix(in srgb, var(--ink) 10%, transparent);
   color: var(--ink);
+  flex: none;
 }
 
 .db-activation-gate-card h2 {
@@ -831,6 +844,7 @@
   font-weight: 720;
   letter-spacing: -0.01em;
   color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .db-activation-gate-card > p {
@@ -855,6 +869,7 @@
   gap: 9px;
   font-size: 12px;
   color: var(--text-secondary);
+  text-align: left;
 }
 
 .db-activation-gate-card li svg {
@@ -869,8 +884,88 @@
 
 .db-activation-gate-actions {
   display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 10px;
-  margin-top: 8px;
+  margin-top: 10px;
+  /* Slightly wider than the pair so a hair of breathing room always
+   * surrounds the buttons; the card's own max-width keeps it bounded. */
+  max-width: 100%;
+}
+
+/* Primary: the ink button's LOOK (gradient + glow + press feedback)
+ * with the gate's SIZING (auto width — never the sidebar's 100%). */
+.db-activation-gate-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: var(--radius-m);
+  background: var(--ink-grad);
+  color: var(--on-ink);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  box-shadow: var(--ink-glow), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  transition: box-shadow var(--fade) ease, filter var(--fade) ease;
+}
+
+.db-activation-gate-primary:hover {
+  filter: saturate(1.06) brightness(1.03);
+  box-shadow: var(--ink-glow-strong), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.db-activation-gate-primary:active {
+  transform: scale(var(--press-scale));
+  opacity: var(--press-opacity);
+}
+
+/* Secondary: the outline button's look, sized to sit NEXT TO the
+ * primary (same 40px height, auto width, nowrap label). */
+.db-activation-gate-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 18px;
+  border-radius: var(--radius-m);
+  border: 1px solid var(--control-border);
+  background: var(--card);
+  color: var(--on-control);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background var(--fade) ease, color var(--fade) ease,
+    border-color var(--fade) ease, box-shadow var(--fade) ease;
+}
+
+.db-activation-gate-secondary:hover {
+  background: var(--control-hover);
+  color: var(--text);
+  border-color: var(--control-active);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.db-activation-gate-secondary:active {
+  transform: scale(var(--press-scale));
+  opacity: var(--press-opacity);
+}
+
+[data-theme="dark"] .db-activation-gate-secondary {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: var(--control-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .db-activation-gate-secondary:hover {
+  background: rgba(255, 255, 255, 0.075);
+  border-color: #8d8d98;
 }
 
 .db-activation-gate-monitor {

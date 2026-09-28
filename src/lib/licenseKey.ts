@@ -32,9 +32,18 @@ export function isValidKeyShape(normalized: string): boolean {
   );
 }
 
-/** Display grouping `XXXXX-XXXXX-XXXXX-XXXXX-XXXX` (5-char groups). */
+/**
+ * Display grouping matching the SERVER's key format (keys.ts
+ * generateKey: "DB-" + four 5-char groups). v1 grouped the 22 chars
+ * as 5-5-5-5-2 ("DBXK2-M9QF3-…"), which disagreed with the purchase
+ * email's "DB-EQGA0-F17AN-7HGKB-5J3VE" — normalization strips dashes
+ * either way, but the dialog's auto-formatting and any future key
+ * display must match what the user actually received.
+ */
 export function formatKey(normalized: string): string {
-  return normalized.replace(/(.{5})(?=.)/g, "$1-");
+  if (normalized.length <= 2) return normalized;
+  const body = normalized.slice(2).replace(/(.{5})(?=.)/g, "$1-");
+  return `DB-${body}`;
 }
 
 /**

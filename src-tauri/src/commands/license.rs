@@ -120,25 +120,41 @@ pub fn normalize_key(raw: &str) -> Option<String> {
     ok.then_some(normalized)
 }
 
-/// Collect the device facts for activation (doc §6: exactly what the
-/// server stores — platform + fingerprint + audit strings, nothing
-/// else; no telemetry beyond the license layer's own events).
+/// Collect the device facts for activation (doc §6 + the v2 claim:
+/// platform + binding fingerprint + component hashes + descriptive
+/// facts — exactly what the server stores; no telemetry beyond the
+/// license layer's own events).
+///
+/// Collection order: the composite fingerprint first (the hard
+/// identity — its failure aborts activation), then the best-effort
+/// descriptive facts (each falls back to `None` independently; the
+/// server COALESCEs so a missing fact never blanks a stored one).
 fn device_facts(hardware_hash: String) -> DeviceFacts {
-    let hostname = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| {
+    let hostname = crate::platform::os::hostname()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| {
             if cfg!(target_os = "macos") {
                 "Mac".to_string()
             } else {
                 "PC".to_string()
             }
         });
+    let (comp_machine, comp_volume, comp_cpu) = crate::license::component_hashes();
     DeviceFacts {
         platform: platform_string().to_string(),
         hardware_hash,
         hostname,
         os_version: crate::platform::os::os_version(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
+        comp_machine,
+        comp_volume,
+        comp_cpu,
+        cpu_brand: crate::platform::os::cpuid_brand(),
+        ram_mb: crate::platform::os::ram_mb(),
+        machine_model: crate::platform::os::machine_model(),
     }
 }
 
@@ -189,13 +205,24 @@ pub fn activate_license(
     let api = LicenseApi::new(http);
 
     // Retry the transport (lightning-fast when healthy; two quick
-    // retries with backoff when the edge blips — doc §4 "error
-    // management").
+    // retries with jittered backoff when the edge blips — doc §4
+    // "error management"). RATE_LIMITED deliberately does NOT retry:
+    // each attempt consumes another window slot, and the hourly window
+    // cannot expire inside a seconds-scale retry loop — the typed copy
+    // ("wait a minute") is the honest response.
     let mut attempt = 0u32;
     let mut outcome = api.activate(&normalized, &facts);
-    while matches!(&outcome, Err(e) if !e.is_hard() && attempt < 2) {
+    while matches!(
+        &outcome,
+        Err(e) if matches!(e, LicenseError::Network | LicenseError::ServerError) && attempt < 2
+    ) {
         attempt += 1;
-        std::thread::sleep(std::time::Duration::from_millis(250 * u64::from(attempt)));
+        let jitter = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::from(d.subsec_nanos() % 150));
+        std::thread::sleep(std::time::Duration::from_millis(
+            250 * u64::from(attempt) + jitter,
+        ));
         outcome = api.activate(&normalized, &facts);
     }
     let dto = outcome.map_err(|e| {

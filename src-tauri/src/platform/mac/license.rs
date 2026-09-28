@@ -87,13 +87,61 @@ pub fn system_drive_serial() -> Option<u32> {
 /// CPU brand via sysctl.
 #[must_use]
 pub fn cpuid_brand() -> Option<String> {
-    let name = CString::new("machdep.cpu.brand_string").ok()?;
+    sysctl_string("machdep.cpu.brand_string")
+}
+
+/// The machine's hostname via `kern.hostname` sysctl (v2 device
+/// fact). GUI-launched macOS apps do NOT inherit the shell's
+/// `HOSTNAME` variable (it is a shell-computed value, not exported),
+/// so the v1 env-var lookup silently fell back to "Mac" on every
+/// real activation — the sysctl is the kernel's own value.
+#[must_use]
+pub fn hostname() -> Option<String> {
+    sysctl_string("kern.hostname").map(|h| h.split('.').next().unwrap_or(&h).to_string())
+}
+
+/// Hardware model identifier via `hw.model` (v2 device fact) — e.g.
+/// "MacBookPro18,3", "Macmini9,1".
+#[must_use]
+pub fn machine_model() -> Option<String> {
+    sysctl_string("hw.model")
+}
+
+/// Total physical memory in MB via `hw.memsize` (bytes) (v2 device
+/// fact).
+#[must_use]
+pub fn ram_mb() -> Option<u64> {
+    use super::ffi::sysctlbyname;
+    let Ok(name) = CString::new("hw.memsize") else {
+        return None;
+    };
+    let mut value: u64 = 0;
+    let mut len = std::mem::size_of::<u64>();
+    // SAFETY: sysctlbyname into a fixed u64 slot.
+    let rc = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            &mut value as *mut u64 as *mut core::ffi::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (rc == 0).then(|| value / (1024 * 1024))
+}
+
+/// Shared sysctl string reader (kern./hw. leaf names — small values).
+fn sysctl_string(name: &str) -> Option<String> {
+    use super::ffi::sysctlbyname;
+    let Ok(c) = CString::new(name) else {
+        return None;
+    };
     let mut buf = [0u8; 128];
     let mut len = buf.len();
     // SAFETY: sysctlbyname into a fixed buffer.
     let rc = unsafe {
         sysctlbyname(
-            name.as_ptr(),
+            c.as_ptr(),
             buf.as_mut_ptr().cast(),
             &mut len,
             std::ptr::null_mut(),
@@ -103,8 +151,16 @@ pub fn cpuid_brand() -> Option<String> {
     if rc != 0 {
         return None;
     }
-    let end = buf[..len].iter().position(|&b| b == 0).unwrap_or(len);
-    String::from_utf8(buf[..end].to_vec()).ok()
+    let end = buf[..len.min(buf.len())]
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(len);
+    let s = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 //! License platform surface: app data dir, machine GUID, drive
-//! serial, CPUID brand, DPAPI protection, hardlink identity.
+//! serial, CPUID brand, DPAPI protection, hardlink identity, and the
+//! v2 device facts (hostname, RAM, machine model).
 
 use windows::core::PCWSTR;
 
@@ -19,6 +20,144 @@ pub fn app_data_dir() -> std::path::PathBuf {
     let dir = base.join("DiskBytes");
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// The machine's DNS hostname via `GetComputerNameExW` (v2 device
+/// fact). The env-var fallback the v1 facts used misses GUI-launched
+/// processes with scrubbed environments; the API is the reliable
+/// source (and is what `hostname`/`ipconfig` report). `None` only if
+/// the API itself fails (then the caller falls back to env → "PC").
+#[must_use]
+pub fn hostname() -> Option<String> {
+    use windows::Win32::System::SystemInformation::GetComputerNameExW;
+    use windows::Win32::System::SystemInformation::COMPUTER_NAME_FORMAT;
+    let format = COMPUTER_NAME_FORMAT(1); // ComputerNameDnsHostname
+    let mut buf = [0u16; 64];
+    let mut len = u32::try_from(buf.len()).unwrap_or(64);
+    // SAFETY: properly sized wide buffer + valid out-len per contract.
+    let ok = unsafe {
+        GetComputerNameExW(
+            format,
+            Some(windows::core::PWSTR(buf.as_mut_ptr())),
+            &mut len,
+        )
+    };
+    if !ok.is_ok() {
+        return None;
+    }
+    let slice = &buf[..(len as usize).min(buf.len())];
+    let name = String::from_utf16_lossy(slice);
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Total physical memory in MB via `GlobalMemoryStatusEx` (v2 device
+/// fact). `None` when the API fails.
+#[must_use]
+pub fn ram_mb() -> Option<u64> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: u32::try_from(std::mem::size_of::<MEMORYSTATUSEX>()).unwrap_or(0),
+        ..MEMORYSTATUSEX::default()
+    };
+    // SAFETY: properly sized out-struct per the API contract.
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+    ok.is_ok()
+        .then(|| u64::from(status.ullTotalPhys) / (1024 * 1024))
+}
+
+/// SMBIOS machine identity for display (v2 device fact):
+/// `HKLM\SYSTEM\CurrentControlSet\Control\SystemInformation` →
+/// `SystemManufacturer` + `SystemModel` — the same source
+/// `Win32_ComputerSystem` reports, read straight from the registry
+/// (no WMI round trip; WMI is slow and flaky under low-privilege
+/// service hobbles). `None` when both values are missing.
+#[must_use]
+pub fn machine_model() -> Option<String> {
+    let manufacturer = reg_sz(
+        r"SYSTEM\CurrentControlSet\Control\SystemInformation",
+        "SystemManufacturer",
+    )
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty());
+    let model = reg_sz(
+        r"SYSTEM\CurrentControlSet\Control\SystemInformation",
+        "SystemModel",
+    )
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty());
+    match (manufacturer, model) {
+        (Some(m), Some(p)) => Some(format!("{m} {p}")),
+        (Some(m), None) => Some(m),
+        (None, Some(p)) => Some(p),
+        (None, None) => None,
+    }
+}
+
+/// One REG_SZ read from HKLM (shared by machine_model; the MachineGuid
+/// path keeps its own specialized reader for its narrower contract).
+fn reg_sz(sub_key: &str, value: &str) -> Option<String> {
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ,
+        REG_VALUE_TYPE,
+    };
+    let sub = wide(sub_key);
+    let mut hk = HKEY::default();
+    // SAFETY: NUL-terminated subkey; out-handle slot valid.
+    let open = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(sub.as_ptr()),
+            None,
+            KEY_READ,
+            &mut hk,
+        )
+    };
+    if !open.is_ok() {
+        return None;
+    }
+    let name = wide(value);
+    let mut ty = REG_VALUE_TYPE::default();
+    let mut len = 0u32;
+    // SAFETY: size probe.
+    let err = unsafe {
+        RegQueryValueExW(
+            hk,
+            PCWSTR(name.as_ptr()),
+            None,
+            Some(&mut ty),
+            None,
+            Some(&mut len),
+        )
+    };
+    if err.is_err() || ty != REG_SZ || len == 0 {
+        let _ = unsafe { RegCloseKey(hk) };
+        return None;
+    }
+    let mut buf = vec![0u16; len as usize / 2 + 1];
+    let mut len2 = len;
+    // SAFETY: buffer covers the reported size.
+    let err = unsafe {
+        RegQueryValueExW(
+            hk,
+            PCWSTR(name.as_ptr()),
+            None,
+            Some(&mut ty),
+            Some(buf.as_mut_ptr().cast::<u8>()),
+            Some(&mut len2),
+        )
+    };
+    let _ = unsafe { RegCloseKey(hk) };
+    if err.is_err() {
+        return None;
+    }
+    let raw = &buf[..len2 as usize / 2];
+    let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+    Some(String::from_utf16_lossy(&raw[..end]))
 }
 
 /// `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid` (hardware binding
