@@ -412,9 +412,8 @@ fn hash_prefix(path: &std::path::Path) -> Option<[u8; 16]> {
             if b.len() < cap {
                 b.resize(cap, 0);
             }
-            f.read(&mut b[..cap]).ok().map(|n| {
+            f.read(&mut b[..cap]).ok().inspect(|&n| {
                 hasher.update(&b[..n]);
-                n
             })
         })?;
         if n == 0 {
@@ -448,9 +447,8 @@ fn hash_middle(path: &std::path::Path, size: u64) -> Option<[u8; 16]> {
             if b.len() < want {
                 b.resize(want, 0);
             }
-            f.read(&mut b[..want]).ok().map(|n| {
+            f.read(&mut b[..want]).ok().inspect(|&n| {
                 hasher.update(&b[..n]);
-                n
             })
         })?;
         if n == 0 {
@@ -473,9 +471,8 @@ fn hash_middle(path: &std::path::Path, size: u64) -> Option<[u8; 16]> {
             if b.len() < want {
                 b.resize(want, 0);
             }
-            f.read(&mut b[..want]).ok().map(|n| {
+            f.read(&mut b[..want]).ok().inspect(|&n| {
                 hasher.update(&b[..n]);
-                n
             })
         })?;
         if n == 0 {
@@ -512,9 +509,8 @@ fn hash_full(path: &std::path::Path, ctl: &DupesCtl) -> Option<[u8; 32]> {
             if b.len() < CHUNK {
                 b.resize(CHUNK, 0);
             }
-            f.read(&mut b[..CHUNK]).ok().map(|n| {
+            f.read(&mut b[..CHUNK]).ok().inspect(|&n| {
                 hasher.update(&b[..n]);
-                n
             })
         })?;
         if n == 0 {
@@ -1293,6 +1289,47 @@ mod tests {
             );
         }
 
+        /// Format magics (realistic headers so every family reads like a
+        /// genuine file to the OS cache + Defender) — shared by the
+        /// performance corpus below.
+        const FORMATS: [(&str, &[u8]); 8] = [
+            (
+                "jpg",
+                &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'],
+            ),
+            ("png", &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+            (
+                "mp4",
+                &[
+                    0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm',
+                ],
+            ),
+            ("zip", &[b'P', b'K', 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]),
+            ("pdf", b"%PDF-1.7"),
+            ("iso", &[0x01, b'C', b'D', 0x00, 0x01]),
+            ("txt", b"DiskBytes"),
+            ("bin", &[0x7F, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00]),
+        ];
+
+        /// Magic-headed pseudo-random payload (xorshift64 stream).
+        fn fmt_blob(fmt: usize, seed: u64, size: usize) -> Vec<u8> {
+            let mut s = seed | 1;
+            let mut v = Vec::with_capacity(size);
+            while v.len() < size {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                v.extend_from_slice(&s.to_le_bytes());
+            }
+            v.truncate(size);
+            let (_, magic) = FORMATS[fmt % FORMATS.len()];
+            let m = magic.len();
+            if size >= m {
+                v[..m].copy_from_slice(magic);
+            }
+            v
+        }
+
         /// The PERFORMANCE corpus (owner ask: "spawn fake real-size
         /// multi-format files and then test"): ~1.9 GB of realistic
         /// multi-format content — magic-headed JPG/PNG/MP4/ZIP/PDF/ISO/
@@ -1303,53 +1340,15 @@ mod tests {
         /// effective throughput floor (the "9-10 MB/s" regression
         /// guard: the v2 pools must sustain ≥ 40 MB/s counting every
         /// byte the pipeline read, on Defender-active CI hardware).
+        /// One linear scenario, deliberately readable top-to-bottom —
+        /// splitting the staging into helpers would scatter the
+        /// planted-group narrative the assertions pin.
         #[test]
+        #[allow(clippy::too_many_lines)]
         fn throughput_corpus_multi_format_finds_groups_fast() {
             let root = scratch("perf");
             let _keep = TempTree(root.clone());
             let t_stage = Instant::now();
-
-            // Format magics (realistic headers so every family reads
-            // like a genuine file to the OS cache + Defender).
-            const FORMATS: [(&str, &[u8]); 8] = [
-                (
-                    "jpg",
-                    &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'],
-                ),
-                ("png", &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
-                (
-                    "mp4",
-                    &[
-                        0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm',
-                    ],
-                ),
-                ("zip", &[b'P', b'K', 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]),
-                ("pdf", &[b'%', b'P', b'D', b'F', b'-', b'1', b'.', b'7']),
-                ("iso", &[0x01, b'C', b'D', 0x00, 0x01]),
-                (
-                    "txt",
-                    &[b'D', b'i', b's', b'k', b'B', b'y', b't', b'e', b's'],
-                ),
-                ("bin", &[0x7F, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00]),
-            ];
-            /// Magic-headed pseudo-random payload (xorshift64 stream).
-            fn fmt_blob(fmt: usize, seed: u64, size: usize) -> Vec<u8> {
-                let mut s = seed | 1;
-                let mut v = Vec::with_capacity(size);
-                while v.len() < size {
-                    s ^= s << 13;
-                    s ^= s >> 7;
-                    s ^= s << 17;
-                    v.extend_from_slice(&s.to_le_bytes());
-                }
-                v.truncate(size);
-                let (_, magic) = FORMATS[fmt % FORMATS.len()];
-                let m = magic.len();
-                if size >= m {
-                    v[..m].copy_from_slice(magic);
-                }
-                v
-            }
 
             let kib = 1024u64;
             let mib = 1024 * 1024u64;
@@ -1361,7 +1360,7 @@ mod tests {
             fs::create_dir_all(&small_dir).unwrap();
             for i in 0..300u64 {
                 let fmt = (i % 8) as usize;
-                let size = (64 + (i % 129) as u64) * kib;
+                let size = (64 + i % 129) * kib;
                 let name = format!("shot_{i:03}.{}", FORMATS[fmt].0);
                 fs::write(
                     small_dir.join(&name),
@@ -1374,7 +1373,7 @@ mod tests {
                     let prev = format!("shot_{:03}.{}", i - 1, FORMATS[((i - 1) % 8) as usize].0);
                     fs::copy(
                         small_dir.join(&prev),
-                        small_dir.join(&name.replace("shot", "copy")),
+                        small_dir.join(name.replace("shot", "copy")),
                     )
                     .unwrap();
                     expected_groups.push((size, 2, vec![prev, name.replace("shot", "copy")]));
@@ -1413,7 +1412,7 @@ mod tests {
             fs::create_dir_all(&media_dir).unwrap();
             for i in 0..60u64 {
                 let fmt = ((i + 2) % 8) as usize;
-                let size = (4 + (i % 13)) as u64 * mib;
+                let size = (4 + i % 13) * mib;
                 let name = format!("clip_{i:02}.{}", FORMATS[fmt].0);
                 fs::write(
                     media_dir.join(&name),
@@ -1463,7 +1462,10 @@ mod tests {
             //    would group if readable): hold it unshared.
             fs::write(
                 root.join("locked.zip"),
-                fmt_blob(3, 0x5EED + 5, (4 + (5 % 13)) as usize * mib as usize),
+                // 9 MiB = the i=5 medium file's size (4 + 5%13): same
+                // size bucket, DIFFERENT content — if it were readable
+                // it would be screened out at the prefix tier.
+                fmt_blob(3, 0x5EED + 5, (9 * mib) as usize),
             )
             .unwrap();
             let _locked = std::fs::OpenOptions::new()

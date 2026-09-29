@@ -530,7 +530,14 @@ fn parse_smbios_uuid(table: &[u8]) -> Option<String> {
     // fields matches how Windows displays it, since SMBIOS ≥ 2.6
     // defines the UUID as little-endian on the wire and tools show the
     // canonical RFC form).
-    let hexs = |b: &[u8]| -> String { b.iter().map(|x| format!("{x:02x}")).collect() };
+    let hexs = |b: &[u8]| -> String {
+        use std::fmt::Write as _;
+        let mut s = String::with_capacity(b.len() * 2);
+        for x in b {
+            let _ = write!(s, "{x:02x}");
+        }
+        s
+    };
     Some(format!(
         "{}-{}-{}-{}-{}",
         hexs(&uuid[0..4]),
