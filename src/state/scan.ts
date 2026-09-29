@@ -9,6 +9,7 @@ import { create } from "zustand";
 import { invoke } from "../lib/ipc";
 import { EVENTS, track } from "../lib/analytics";
 import { listen, type UnlistenFn } from "../lib/ipc";
+import { userFacingError } from "../lib/userFacingError";
 import { invalidateLayouts, invalidateHoverCache } from "../viz/layoutIpc";
 
 export interface ScanProgress {
@@ -229,7 +230,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
       await reconcileDone(generation);
     } catch (e) {
       scanStartedAt = null;
-      set({ status: "error", error: String(e) });
+      set({ status: "error", error: userFacingError(e) });
     }
   },
 
@@ -256,7 +257,7 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         set({ error: "ELEVATION_REQUIRED", status: "error", turboFallback: null });
       } else {
         scanStartedAt = null;
-        set({ status: "error", error: String(e) });
+        set({ status: "error", error: userFacingError(e) });
       }
     }
   },

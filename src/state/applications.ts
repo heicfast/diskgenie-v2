@@ -10,6 +10,7 @@
  */
 import { create } from "zustand";
 import { invoke } from "../lib/ipc";
+import { userFacingError } from "../lib/userFacingError";
 
 export interface LeftoverPath {
   path: string;
@@ -65,7 +66,9 @@ export const useApplicationsStore = create<ApplicationsState>((set) => ({
       const apps = await invoke<AppEntry[]>("list_applications", { refresh });
       set({ apps, busy: false });
     } catch (e) {
-      set({ apps: null, busy: false, error: String(e) });
+      // A failed REFRESH keeps the loaded list (wiping it would claim
+      // the user's apps vanished); the error banner explains the retry.
+      set((s) => ({ apps: s.apps, busy: false, error: userFacingError(e) }));
     }
   },
   uninstall: async (id) =>

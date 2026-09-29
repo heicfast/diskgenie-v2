@@ -230,6 +230,25 @@
   /* Data-layer literals (dark): amber lifted for the dark panel. */
   --seg-compressed: #f5a623;
 
+  /* ── Dark tone family (vivid variants) ──────────────────────────
+   * The pastels above are LIGHT-mode material: L≈0.90 with C≈0.03.
+   * Every dark-mode recipe mixed them into surface grays, which keeps
+   * the lightness but halves the already-low chroma — all eight tones
+   * collapsed into the same faint gray wash (owner report: the Top
+   * Sizes bars read "too faint or similar" in dark; clearly distinct
+   * in light). Dark mode gets its own family: the same eight hues at
+   * L≈0.62-0.68 with real chroma, so the tuned dark recipes land with
+   * actual color instead of gray. The .tone-* utilities resolve to
+   * this family in dark (see sidebar.css); light mode is untouched. */
+  --vivid-blue: #5d8fe0;
+  --vivid-mint: #3ec39a;
+  --vivid-violet: #9678e6;
+  --vivid-amber: #dca43e;
+  --vivid-rose: #e66a80;
+  --vivid-green: #61b857;
+  --vivid-sky: #45aede;
+  --vivid-slate: #8b95a3;
+
   /* ── Elevation (deeper in dark) ───────────────────────────────────── */
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 4px 10px rgba(0, 0, 0, 0.45);

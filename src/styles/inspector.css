@@ -32,10 +32,11 @@
   flex: none;
   box-shadow: var(--shadow-1);
 }
-/* Dark: muted tone tint + theme ink (a 50 px bright pastel square is
- * glare on the dark inspector). */
+/* Dark: tone tint + theme ink (a 50 px bright pastel square is
+ * glare on the dark inspector). Vivid seam → mix drops 30%→24%,
+ * same dark scale, ~3× the chroma. */
 [data-theme="dark"] .db-file-icon {
-  background: color-mix(in oklab, var(--tone, var(--pastel-blue)) 30%, #242427);
+  background: color-mix(in oklab, var(--tone, var(--vivid-blue)) 24%, #242427);
   color: var(--text);
 }
 .db-inspector-title > div {

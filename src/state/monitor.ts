@@ -14,6 +14,7 @@
  */
 import { create } from "zustand";
 import { invoke, listen } from "../lib/ipc";
+import { userFacingError } from "../lib/userFacingError";
 
 export interface MonitorSample {
   dtMs: number;
@@ -76,7 +77,7 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
         // setting both made the skeleton run forever on failure).
         set({ started: true, error: null });
       } catch (e) {
-        set({ error: String(e) });
+        set({ error: userFacingError(e) });
       } finally {
         starting = false;
       }

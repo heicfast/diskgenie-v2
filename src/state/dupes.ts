@@ -20,6 +20,7 @@
 import { create } from "zustand";
 import { invoke, listen, type UnlistenFn } from "../lib/ipc";
 import { EVENTS, track } from "../lib/analytics";
+import { userFacingError } from "../lib/userFacingError";
 
 export interface DupeGroup {
   id: number;
@@ -120,10 +121,9 @@ export const useDupesStore = create<DupesStore>((set, get) => ({
         track(EVENTS.duplicatesScanCompleted, { groups: res.groups.length, wasted: res.wastedTotal });
       })
       .catch((e: unknown) => {
-        const msg = e instanceof Error ? e.message : String(e);
         // Cancellation is a USER action, not a failure — quiet reset.
-        if (!/cancel/i.test(msg)) {
-          set({ running: false, cancelling: false, progress: null, error: msg });
+        if (!/cancel/i.test(String(e))) {
+          set({ running: false, cancelling: false, progress: null, error: userFacingError(e) });
         } else {
           set({ running: false, cancelling: false, progress: null, error: null });
         }

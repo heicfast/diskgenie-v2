@@ -4,9 +4,9 @@
  * `data-theme="light|dark"` on the document root carries the actual
  * palette (tokens.css). This hook flips it, asks Tauri to set the native
  * window theme (so native menus/tooltips match), and persists the choice
- * in localStorage. First launch follows `prefers-color-scheme`; the
- * pre-mount inline script in index.html applies the saved theme before
- * React mounts so there is no flash.
+ * in localStorage. First launch defaults to LIGHT (owner decision); the
+ * pre-mount inline script in index.html applies the saved/default theme
+ * before React mounts so there is no flash.
  */
 import { useCallback, useEffect, useState } from "react";
 
@@ -14,11 +14,11 @@ export type Theme = "light" | "dark";
 
 const STORAGE_KEY = "diskbytes.theme";
 
-/** The theme the pre-mount script already applied (or the OS preference). */
+/** The theme the pre-mount script already applied (light by default). */
 function currentDomTheme(): Theme {
   const dom = document.documentElement.getAttribute("data-theme");
   if (dom === "dark" || dom === "light") return dom;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return "light";
 }
 
 /**

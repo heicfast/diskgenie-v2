@@ -182,14 +182,19 @@
   outline: 2.5px solid color-mix(in oklab, var(--ink) 55%, transparent);
 }
 
-/* Dark mode: the rank-bar text sits on the ROW surface (the pastel
- * pill only underlays part of it) — --on-pastel (#0f172a dark navy)
- * on a dark row is INVISIBLE. Muted tint bars + theme-ink text. */
+/* Dark mode: the rank-bar text sits on the ROW surface (the pill only
+ * underlays part of it) — theme ink text. The pill uses the vivid tone
+ * family at 62%→40%: the previous pastel-at-52%/36% recipe landed every
+ * one of the eight tones in the same faint gray wash (the "too faint
+ * or similar" report — chroma dies in the mix because pastels start at
+ * C≈0.03). Vivid tokens carry C≈0.12, so the mix lands L≈0.45-0.55 with
+ * real hue separation; white name text on the strongest stop keeps
+ * ≈4:1 (the old washed bar was ≈2.6:1 — this is a contrast win too). */
 [data-theme="dark"] .rank-bar::before {
   background: linear-gradient(
     90deg,
-    color-mix(in oklab, var(--tone, var(--pastel-blue)) 52%, #2a2a2e),
-    color-mix(in oklab, var(--tone, var(--pastel-blue)) 36%, #202024)
+    color-mix(in oklab, var(--tone, var(--vivid-blue)) 62%, #242429),
+    color-mix(in oklab, var(--tone, var(--vivid-blue)) 40%, #1e1e20)
   );
 }
 [data-theme="dark"] .rank-bar strong {

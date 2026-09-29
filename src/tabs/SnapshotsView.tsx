@@ -2,7 +2,9 @@
  * Snapshots tab (spec §13): Take Snapshot Now (disabled without a scan
  * or while saving), rows with path / "size · date" / Before & After
  * toggles / delete; diff = top-200 |change| with +red / −green and
- * different-roots notice.
+ * different-roots notice. Every failure surfaces as a banner (the
+ * production-readiness sweep: silent failure — the button re-enabling
+ * with nothing happening — is indistinguishable from data loss here).
  */
 import { useEffect, useState } from "react";
 import { Clock3Icon, CameraIcon, Trash2Icon } from "../components/Icon";
@@ -10,6 +12,7 @@ import { TailPath } from "../components/TailPath";
 import { EmptyState, SkeletonRows } from "../components/buttons";
 import { invoke } from "../lib/ipc";
 import { bytes } from "../lib/format";
+import { userFacingError } from "../lib/userFacingError";
 import { useScanStore } from "../state/scan";
 import { useExploreStore } from "../state/explore";
 
@@ -43,6 +46,10 @@ export function SnapshotsView() {
   const [after, setAfter] = useState<string | null>(null);
   const [diff, setDiff] = useState<DiffView | null>(null);
   const [diffing, setDiffing] = useState(false);
+  // Surfaced failures: take / list-refresh / delete (banner at the top)
+  // and diff (inline in the Changes section, where the user is looking).
+  const [snapErr, setSnapErr] = useState<string | null>(null);
+  const [diffErr, setDiffErr] = useState<string | null>(null);
   // Two-step delete: the first click arms "Delete?" on the row (danger),
   // the second confirms. Snapshots are irreversible user data — every
   // other destructive action in the app confirms first; this did not.
@@ -51,8 +58,13 @@ export function SnapshotsView() {
   const refresh = async () => {
     try {
       setList(await invoke<SnapshotView[]>("list_snapshots"));
-    } catch {
-      setList([]);
+      setSnapErr(null);
+    } catch (e) {
+      // A failed refresh keeps the prior list (wiping it would claim the
+      // user's snapshots are GONE); on the very first load the skeleton
+      // resolves to the honest failed state, not an empty one.
+      setList((prev) => prev ?? []);
+      setSnapErr(userFacingError(e));
     }
   };
 
@@ -62,11 +74,12 @@ export function SnapshotsView() {
 
   const take = async () => {
     setSaving(true);
+    setSnapErr(null);
     try {
       await invoke("take_snapshot", { generation, node: currentFolder });
       await refresh();
-    } catch {
-      /* snapshot failed — the button re-enables */
+    } catch (e) {
+      setSnapErr(userFacingError(e));
     } finally {
       setSaving(false);
     }
@@ -77,10 +90,12 @@ export function SnapshotsView() {
     setAfter(a);
     setDiffing(true);
     setDiff(null);
+    setDiffErr(null);
     try {
       setDiff(await invoke<DiffView>("diff_snapshots", { beforeId: b, afterId: a }));
-    } catch {
+    } catch (e) {
       setDiff(null);
+      setDiffErr(userFacingError(e));
     } finally {
       setDiffing(false);
     }
@@ -88,7 +103,11 @@ export function SnapshotsView() {
 
   const del = async (id: string) => {
     setArmDel(null);
-    await invoke("delete_snapshot", { id }).catch(() => undefined);
+    try {
+      await invoke("delete_snapshot", { id });
+    } catch (e) {
+      setSnapErr(userFacingError(e));
+    }
     if (before === id) setBefore(null);
     if (after === id) setAfter(null);
     void refresh();
@@ -134,6 +153,13 @@ export function SnapshotsView() {
           </div>
         )}
       </div>
+
+      {snapErr && (
+        <div className="db-pop-failed" style={{ margin: "0 0 14px" }}>
+          <strong>Snapshot operation failed</strong>
+          <p style={{ margin: 0, fontSize: 11 }}>{snapErr}</p>
+        </div>
+      )}
 
       {list === null ? (
         // Initial list load (loading system v2): snapshot-row skeletons —
@@ -216,6 +242,12 @@ export function SnapshotsView() {
             <div className="db-pop-failed" style={{ margin: "0 0 10px" }}>
               <strong>Different roots</strong>
               <p style={{ margin: 0, fontSize: 11 }}>These snapshots were taken at different roots — the diff is not meaningful.</p>
+            </div>
+          )}
+          {diffErr && !diffing && (
+            <div className="db-pop-failed" style={{ margin: "0 0 10px" }}>
+              <strong>Couldn’t compare these snapshots</strong>
+              <p style={{ margin: 0, fontSize: 11 }}>{diffErr}</p>
             </div>
           )}
           {diffing && (

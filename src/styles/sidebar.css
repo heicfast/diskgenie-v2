@@ -397,9 +397,12 @@
   background: color-mix(in oklab, var(--tone, var(--chip)) 70%, var(--card));
   color: var(--on-pastel);
 }
-/* Dark: muted tone tint + theme ink. */
+/* Dark: tone tint + theme ink. Vivid-family seam (below) means the
+ * mix percentage drops (vivid carries ~4× the chroma of a pastel)
+ * so the pill keeps its place in the dark lightness scale while
+ * actually reading as its hue. */
 [data-theme="dark"] .db-quick-list .db-quick-icon {
-  background: color-mix(in oklab, var(--tone, var(--pastel-blue)) 42%, #26262a);
+  background: color-mix(in oklab, var(--tone, var(--vivid-blue)) 30%, #26262a);
   color: var(--text);
 }
 .db-quick-list button:hover .db-quick-chevron,
@@ -421,6 +424,20 @@
 .tone-green { --tone: var(--pastel-green); }
 .tone-sky { --tone: var(--pastel-sky); }
 .tone-slate { --tone: var(--pastel-slate); }
+
+/* Dark seam: the utilities resolve to the VIVID family. Light mode is
+ * byte-identical; dark mode's --tone carries the same hue with real
+ * chroma — every dark recipe that mixes --tone into a surface gray
+ * (rank bars, quick pills, inspector icon, folder cards) re-tunes its
+ * percentages where needed. One seam, all surfaces consistent. */
+[data-theme="dark"] .tone-blue { --tone: var(--vivid-blue); }
+[data-theme="dark"] .tone-mint { --tone: var(--vivid-mint); }
+[data-theme="dark"] .tone-violet { --tone: var(--vivid-violet); }
+[data-theme="dark"] .tone-amber { --tone: var(--vivid-amber); }
+[data-theme="dark"] .tone-rose { --tone: var(--vivid-rose); }
+[data-theme="dark"] .tone-green { --tone: var(--vivid-green); }
+[data-theme="dark"] .tone-sky { --tone: var(--vivid-sky); }
+[data-theme="dark"] .tone-slate { --tone: var(--vivid-slate); }
 
 /* ── File types ─────────────────────────────────────────────────────── */
 .db-types-bar {

@@ -23,17 +23,14 @@
     </style>
     <script>
       // Pre-mount theme application (BuildPrompt §14): the saved theme
-      // (localStorage) or prefers-color-scheme is applied BEFORE React
-      // mounts so there is no flash. Runs synchronously in <head>.
+      // (localStorage) is applied BEFORE React mounts so there is no
+      // flash. Runs synchronously in <head>. Default on first launch is
+      // LIGHT (owner decision — the app ships light; the toggle still
+      // persists a saved choice forever).
       (function () {
         try {
           var saved = localStorage.getItem("diskbytes.theme");
-          var theme =
-            saved === "light" || saved === "dark"
-              ? saved
-              : window.matchMedia("(prefers-color-scheme: dark)").matches
-                ? "dark"
-                : "light";
+          var theme = saved === "light" || saved === "dark" ? saved : "light";
           document.documentElement.setAttribute("data-theme", theme);
         } catch (e) {
           document.documentElement.setAttribute("data-theme", "light");
