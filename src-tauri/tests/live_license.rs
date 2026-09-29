@@ -43,6 +43,20 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// The run-scoped epoch stamp: ONE value for the whole test binary.
+/// `run_facts` derives the synthetic fingerprint from this, so calling
+/// it twice with the same tag yields the SAME hardware hash — the
+/// real collector's determinism property (the live log proves it:
+/// "fingerprint stable across two collections"). The v3 fixture
+/// embedded `now_unix()` per CALL, so the revalidation step minted a
+/// brand-new fingerprint and the server correctly answered
+/// DEVICE_MISMATCH — a fixture bug, not a server one. A fresh value
+/// per RUN still guarantees reruns never collide on live slots.
+fn run_stamp() -> i64 {
+    static STAMP: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *STAMP.get_or_init(now_unix)
+}
+
 fn live_base() -> String {
     std::env::var("DISKBYTES_LICENSE_API").unwrap_or_else(|_| diskbytes_lib::license::api_base())
 }
@@ -154,9 +168,10 @@ struct LookupDevice {
 }
 
 /// The synthetic-but-realistic device for this run (fresh hw per run —
-/// sha256 of the epoch-second, so reruns never collide on slots).
+/// sha256 of the run stamp, so reruns never collide on slots but the
+/// hash is STABLE within a run, exactly like real hardware).
 fn run_facts(tag: &str) -> DeviceFacts {
-    let hw = diskbytes_lib::license::sha256_hex(&format!("live-e2e-{tag}-{}", now_unix()));
+    let hw = diskbytes_lib::license::sha256_hex(&format!("live-e2e-{tag}-{run_stamp()}"));
     DeviceFacts {
         platform: "windows".to_string(),
         hardware_hash: hw,
