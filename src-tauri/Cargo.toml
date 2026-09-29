@@ -31,6 +31,10 @@ thiserror = "2"
 parking_lot = "0.12"
 rayon = "1.10"
 sha2 = "0.10"
+# Duplicate-screen hashing (v2 perf): XXH3-128 for the prefix/mid
+# screens — ~20 GB/s core, 128-bit collision safety (the dedup
+# decision for screens; the FULL pass still SHA-256s as the authority).
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 png = "0.17"
 # License client v2 (docs/LICENSING-ARCHITECTURE.md): raw reqwest
 # against our Cloudflare Worker (activate/validate/deactivate); rustls,

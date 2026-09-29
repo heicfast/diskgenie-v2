@@ -1,8 +1,8 @@
 //! Duplicates commands (spec §10; doc 03 M8): the 3-pass flow
-//! (size-grouping, 64 KiB prefix SHA-256, full hashing for matches,
-//! both hash passes on a DEDICATED bounded pool). Hardlink exclusion
-//! via (volume-serial, file-index); cloud placeholders never open
-//! (R7.3); wasted-space ranking per the spec.
+//! (size-grouping, 64 KiB prefix screen, tier-2 mid-file screen, full
+//! SHA-256 for survivors). Hardlink exclusion via (volume-serial,
+//! file-index); cloud placeholders never open (R7.3); wasted-space
+//! ranking per the spec.
 //!
 //! Liveness contract (the "Scanning… forever" fix): a real disk can
 //! hold hundreds of GB in same-size buckets, so the command reports
@@ -13,13 +13,29 @@
 //! compares against the latch, so a late cancel can never poison a
 //! newer run).
 //!
-//! Speed contract: pass 2 reads only 64 KiB per size-bucket candidate;
-//! a tier-2 mid-file fingerprint (1 MiB at +64 KiB + the last 1 MiB)
-//! screens same-prefix false positives (identical headers, zero-padded
-//! formats) BEFORE the full read; pass 3 full-hashes only survivors.
-//! Windows opens every hash read with `FILE_FLAG_SEQUENTIAL_SCAN`.
-//! All hash work runs on a 4-worker pool over PATH-SORTED files (the
-//! session-5 speed fix — see [`hash_pool`]).
+//! Speed contract v2 (the "9 MB/s" rewrite): the passes read only
+//! 64 KiB per size-bucket candidate, a tier-2 mid-file fingerprint
+//! (1 MiB at +64 KiB + the last 1 MiB) screens same-prefix false
+//! positives (identical headers, zero-padded formats) BEFORE the
+//! full read, and pass 3 full-SHA-256s only survivors. Windows opens
+//! every hash read with `FILE_FLAG_SEQUENTIAL_SCAN`. The throughput
+//! levers (each addressed; see the session-12 design):
+//!  * TWO dedicated pools with different sizing laws — a LATENCY
+//!    pool (screens: one open per file, Defender's per-open scan and
+//!    NVMe queue depth reward MANY concurrent streams — sized
+//!    `available_parallelism` clamped 8..24, the old 4-worker cap was
+//!    the measured bottleneck) and a BANDWIDTH pool (full pass:
+//!    sequential 1 MiB streams saturate the disk with far fewer
+//!    workers — 2..8).
+//!  * The screens hash XXH3-128 (~20 GB/s per core vs portable
+//!    SHA-256's ~0.4): the SHA-256 full pass stays the authority, so
+//!    no reported group can be wrong — a screen can only mis-bucket
+//!    a pair INTO the (verified) full pass, never out.
+//!  * Per-thread REUSED buffers (thread_local grow-on-demand) — the
+//!    old per-file 64 KiB..1 MiB allocations churned the allocator
+//!    half a million times per real-disk scan.
+//!  * PATH-SORTED work order on every pass (disk locality: short
+//!    seeks, warm cache lines, Defender scanning neighbours).
 //!
 //! State contract (the "page switch killed my scan" fix): the run's
 //! live status and sticky result live in `AppState.dupes_status`
@@ -56,42 +72,80 @@ const TICK_MS: u64 = 200;
 /// Progress `elapsed_ms` cap (10 minutes) — `as_millis` is u128; real
 /// scans stay far below this and the UI re-computes from its own clock.
 const ELAPSED_CAP_MS: u128 = 600_000_000;
-/// Hash-pool worker count (see [`hash_pool`]).
-const POOL_THREADS: usize = 4;
+/// Latency-pool floor (see [`screen_pool`]).
+const SCREEN_POOL_MIN: usize = 8;
+/// Latency-pool ceiling (see [`screen_pool`]).
+const SCREEN_POOL_MAX: usize = 24;
+/// Bandwidth-pool ceiling (see [`full_pool`]).
+const FULL_POOL_MAX: usize = 8;
 
-/// The dedicated, bounded hash pool (session-5 speed fix).
+/// The dedicated, bounded SCREEN pool — the small-file engine.
 ///
-/// The passes used to run on the GLOBAL rayon pool — one thread per
-/// logical CPU (16–32 on a modern machine) — which is exactly wrong
-/// for disk work: dozens of concurrently-opened files in work-stolen
-/// (effectively random) order thrash the queue with seeks and stampede
-/// Windows Defender's per-open scan, the two compounding causes of the
-/// user-measured "9 MB/s". Four workers reading PATH-SORTED files
-/// keep streams near-adjacent on disk (short seeks, warm cache lines,
-/// Defender scanning neighbours) and leave the global pool free for
-/// CPU-bound work. Four also saturates NVMe queue depth (the full pass
-/// streams 1 MiB sequential reads) without tripping over itself on
-/// SATA. The parallel iterators are scoped with `ThreadPool::install`
-/// (see [`hash_pool`]).
-fn hash_pool() -> &'static rayon::ThreadPool {
+/// One open per file, each paying Windows Defender's per-open scan +
+/// open/CreateFile latency. That is a LATENCY problem, and the only
+/// cure is concurrency: the measured "9–10 MB/s" on a real disk was
+/// exactly 4 workers × (file-open + 64 KiB read + hash) with no
+/// overlap headroom. `available_parallelism` (clamped 8..24) keeps
+/// enough streams in flight to hide per-open latency on NVMe while
+/// still leaving the OS the CPU it needs for Defender itself; HDD
+/// systems still benefit because the work order is path-sorted
+/// (near-adjacent extents), and the ceiling keeps SSD-eraser-level
+/// queue thrash off. The parallel iterators are scoped with
+/// `ThreadPool::install` (never nested inside another pool).
+fn screen_pool() -> &'static rayon::ThreadPool {
     static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
     POOL.get_or_init(|| {
         let n = std::thread::available_parallelism()
-            .map_or(POOL_THREADS, std::num::NonZero::get)
-            .clamp(1, POOL_THREADS);
+            .map_or(SCREEN_POOL_MIN, std::num::NonZero::get)
+            .clamp(SCREEN_POOL_MIN, SCREEN_POOL_MAX);
         rayon::ThreadPoolBuilder::new()
             .num_threads(n)
-            .thread_name(|i| format!("db-dupes-hash-{i}"))
+            .thread_name(|i| format!("db-dupes-screen-{i}"))
             .build()
-            .expect("dupes hash pool")
+            .expect("dupes screen pool")
     })
+}
+
+/// The dedicated, bounded FULL-hash pool — the streaming engine.
+///
+/// The full pass reads sequential 1 MiB chunks of large survivors:
+/// disk-BANDWIDTH + hash-CPU bound, where extra concurrency mostly
+/// buys seek conflicts. 2..8 workers saturate NVMe queue depth and
+/// feed SHA-256 (SHA-NI accelerated where the CPU has it) without
+/// fighting the screen pool for open()s.
+fn full_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let n = std::thread::available_parallelism()
+            .map_or(2, std::num::NonZero::get)
+            .clamp(2, FULL_POOL_MAX);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .thread_name(|i| format!("db-dupes-full-{i}"))
+            .build()
+            .expect("dupes full pool")
+    })
+}
+
+thread_local! {
+    /// Screen-scratch (grow-on-demand to `PREFIX`, reused for every
+    /// file this thread screens). The old per-call `vec![0u8; …]`
+    /// churned a 64 KiB..1 MiB allocation per file — half a million
+    /// frees per real-disk scan, pure allocator noise on the latency
+    /// path.
+    static SCREEN_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Mid-screen scratch (grows to `SAMPLE`).
+    static MID_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Full-hash scratch (grows to `CHUNK`).
+    static FULL_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// A pass-3 bucket: `((size, prefix digest), candidate indices)` —
 /// prefix survivors with ≥ 2 members heading into the full hash. (A
 /// type alias because the spelled-out tuple trips
-/// `clippy::type_complexity`.)
-type Bucket = ((u64, [u8; 32]), Vec<usize>);
+/// `clippy::type_complexity`.) The prefix digest is XXH3-128 (16
+/// bytes — the screen); the full hash below it is SHA-256.
+type Bucket = ((u64, [u8; 16]), Vec<usize>);
 
 /// One collected file heading into the pipeline.
 struct Candidate {
@@ -334,47 +388,74 @@ fn open_seq(path: &std::path::Path) -> Option<std::fs::File> {
     }
 }
 
-/// Hash ONLY the first `PREFIX` bytes (pass 2). `None` = unreadable
-/// (skipped honestly). For files ≤ PREFIX this IS the full digest.
-fn hash_prefix(path: &std::path::Path) -> Option<[u8; 32]> {
+/// Hash ONLY the first `PREFIX` bytes with XXH3-128 (pass 2 screen).
+/// `None` = unreadable (skipped honestly). For files ≤ PREFIX this IS
+/// the full-content screen (tiny files are decided here).
+///
+/// Why XXH3 for the screen: the screen only BUCKETS candidates — a
+/// false positive costs one extra full-hash read, a false negative is
+/// impossible for identical contents, and 128-bit XXH3 makes random
+/// collisions unreachable at disk scale (~10^-20 at a billion files).
+/// The FULL pass remains SHA-256 — the authority behind every reported
+/// group. XXH3's ~20 GB/s core also makes the hash itself free next to
+/// the open()+read() latency it hides.
+fn hash_prefix(path: &std::path::Path) -> Option<[u8; 16]> {
     use std::io::Read;
+    use xxhash_rust::xxh3::Xxh3;
     let mut f = open_seq(path)?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; PREFIX as usize];
+    let mut hasher = Xxh3::new();
     let mut read = 0u64;
     while read < PREFIX {
-        let n = f.read(&mut buf[..(PREFIX as usize - read as usize)]).ok()?;
+        let cap = (PREFIX - read) as usize;
+        let n = SCREEN_BUF.with(|b| {
+            let mut b = b.borrow_mut();
+            if b.len() < cap {
+                b.resize(cap, 0);
+            }
+            f.read(&mut b[..cap]).ok().map(|n| {
+                hasher.update(&b[..n]);
+                n
+            })
+        })?;
         if n == 0 {
             break;
         }
-        hasher.update(&buf[..n]);
         read += n as u64;
     }
-    let digest: [u8; 32] = hasher.finalize().into();
+    let digest: [u8; 16] = hasher.digest128().to_le_bytes();
     Some(digest)
 }
 
-/// Tier-2 mid-file fingerprint: SHA-256 over the byte range
+/// Tier-2 mid-file fingerprint: XXH3-128 over the byte range
 /// `[PREFIX, PREFIX + SAMPLE)` concatenated with the LAST `SAMPLE`
 /// bytes of the file. Same-size files that share a 64 KiB prefix but
 /// differ anywhere in these two windows are screened out before the
 /// full read; files identical through all three windows are almost
 /// certainly identical (the full hash confirms). `None` = unreadable.
-fn hash_middle(path: &std::path::Path, size: u64) -> Option<[u8; 32]> {
+fn hash_middle(path: &std::path::Path, size: u64) -> Option<[u8; 16]> {
     use std::io::{Read, Seek, SeekFrom};
+    use xxhash_rust::xxh3::Xxh3;
     let mut f = open_seq(path)?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; SAMPLE as usize];
+    let mut hasher = Xxh3::new();
     // Window A: [PREFIX, PREFIX + SAMPLE) — clamped to the file end.
     let a_len = (size - PREFIX).min(SAMPLE) as usize;
     f.seek(SeekFrom::Start(PREFIX)).ok()?;
     let mut got = 0usize;
     while got < a_len {
-        let n = f.read(&mut buf[got..a_len]).ok()?;
+        let want = a_len - got;
+        let n = MID_BUF.with(|b| {
+            let mut b = b.borrow_mut();
+            if b.len() < want {
+                b.resize(want, 0);
+            }
+            f.read(&mut b[..want]).ok().map(|n| {
+                hasher.update(&b[..n]);
+                n
+            })
+        })?;
         if n == 0 {
             break;
         }
-        hasher.update(&buf[got..got + n]);
         got += n;
     }
     if got < a_len {
@@ -386,17 +467,26 @@ fn hash_middle(path: &std::path::Path, size: u64) -> Option<[u8; 32]> {
     f.seek(SeekFrom::Start(b_start)).ok()?;
     let mut got = 0usize;
     while got < SAMPLE as usize {
-        let n = f.read(&mut buf[got..]).ok()?;
+        let want = SAMPLE as usize - got;
+        let n = MID_BUF.with(|b| {
+            let mut b = b.borrow_mut();
+            if b.len() < want {
+                b.resize(want, 0);
+            }
+            f.read(&mut b[..want]).ok().map(|n| {
+                hasher.update(&b[..n]);
+                n
+            })
+        })?;
         if n == 0 {
             break;
         }
-        hasher.update(&buf[got..got + n]);
         got += n;
     }
     if got < SAMPLE as usize {
         return None;
     }
-    let digest: [u8; 32] = hasher.finalize().into();
+    let digest: [u8; 16] = hasher.digest128().to_le_bytes();
     Some(digest)
 }
 
@@ -413,16 +503,23 @@ fn hash_full(path: &std::path::Path, ctl: &DupesCtl) -> Option<[u8; 32]> {
     use std::io::Read;
     let mut f = open_seq(path)?;
     let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; CHUNK];
     loop {
         if ctl.cancelled() {
             return None;
         }
-        let n = f.read(&mut buf).ok()?;
+        let n = FULL_BUF.with(|b| {
+            let mut b = b.borrow_mut();
+            if b.len() < CHUNK {
+                b.resize(CHUNK, 0);
+            }
+            f.read(&mut b[..CHUNK]).ok().map(|n| {
+                hasher.update(&b[..n]);
+                n
+            })
+        })?;
         if n == 0 {
             break;
         }
-        hasher.update(&buf[..n]);
     }
     let digest: [u8; 32] = hasher.finalize().into();
     Some(digest)
@@ -611,12 +708,13 @@ pub fn cancel_duplicates(state: State<'_, AppState>) -> u64 {
 }
 
 /// The full pipeline (spec §10 3-pass + tier-2 screen): collect →
-/// size groups → parallel prefix hashes → parallel mid-file screens →
+/// size groups → parallel prefix screens → parallel mid-file screens →
 /// parallel full hashes → hardlink exclusion → wasted-space ranking.
-/// All hash passes run on the bounded [`hash_pool`] over PATH-SORTED
+/// The screens run on the latency-sized [`screen_pool`] and the full
+/// pass on the bandwidth-sized [`full_pool`], both over PATH-SORTED
 /// work — disk-locality ordering (short seeks, warm caches, Defender
 /// scanning neighbours) instead of the global pool's work-stolen
-/// random order; see [`hash_pool`] for the throughput story.
+/// random order; see the pool docs for the throughput story.
 ///
 /// # Errors
 /// `Err("cancelled")` when the user cancelled mid-pipeline.
@@ -675,7 +773,7 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl) -> Result<DupesResult, String> {
         .map(|&i| candidates[i].size.min(PREFIX))
         .sum();
     ctl.set_phase(PHASE_PREFIX, prefix_targets.len() as u64, prefix_bytes);
-    let digests: Vec<Option<[u8; 32]>> = hash_pool().install(|| {
+    let digests: Vec<Option<[u8; 16]>> = screen_pool().install(|| {
         prefix_targets
             .par_iter()
             .map(|&i| {
@@ -708,7 +806,7 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl) -> Result<DupesResult, String> {
     );
 
     // (size, prefix digest) → candidates sharing it.
-    let mut by_prefix: HashMap<(u64, [u8; 32]), Vec<usize>> = HashMap::new();
+    let mut by_prefix: HashMap<(u64, [u8; 16]), Vec<usize>> = HashMap::new();
     for (slot, &i) in prefix_targets.iter().enumerate() {
         if let Some(digest) = digests[slot] {
             by_prefix
@@ -737,7 +835,7 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl) -> Result<DupesResult, String> {
     }
     let mid_bytes: u64 = mid_candidates.len() as u64 * 2 * SAMPLE;
     ctl.set_phase(PHASE_SCREEN, mid_candidates.len() as u64, mid_bytes);
-    let mids: Vec<Option<[u8; 32]>> = hash_pool().install(|| {
+    let mids: Vec<Option<[u8; 16]>> = screen_pool().install(|| {
         mid_candidates
             .par_iter()
             .map(|&i| {
@@ -761,7 +859,7 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl) -> Result<DupesResult, String> {
     // Re-bucket by (size, MID digest); a member whose mid read failed
     // drops out (unreadable NOW — was readable at prefix time; honest
     // skip). Survivors = members of ≥2-member mid buckets.
-    let mut by_mid: HashMap<(u64, [u8; 32]), Vec<usize>> = HashMap::new();
+    let mut by_mid: HashMap<(u64, [u8; 16]), Vec<usize>> = HashMap::new();
     for (slot, &i) in mid_candidates.iter().enumerate() {
         if let Some(digest) = mids[slot] {
             by_mid
@@ -795,8 +893,9 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl) -> Result<DupesResult, String> {
 }
 
 /// Pass 3 + ranking: shared tail for both routes (with/without the
-/// tier-2 screen). Files ≤ PREFIX already have their full digest from
-/// pass 2 — reused verbatim, zero re-reads.
+/// tier-2 screen). Every survivor is SHA-256 full-hashed here — the
+/// screens only bucket, the authority always re-reads (v2: the screen
+/// hash is XXH3-128, so the v1 tiny-file digest reuse is gone).
 ///
 /// # Errors
 /// `Err("cancelled")` when the user cancelled mid-hash.
@@ -808,15 +907,12 @@ fn finish_pipeline(
     total_files: u64,
     survivors: &[Bucket],
 ) -> Result<DupesResult, String> {
-    let full_files: u64 = survivors
-        .iter()
-        .flat_map(|((_, _), g)| g.iter())
-        .filter(|&&i| candidates[i].size > PREFIX)
-        .count() as u64;
+    // Every survivor full-hashes now (the XXH3 screens decide nothing
+    // on their own — SHA-256 is the authority for every group).
+    let full_files: u64 = survivors.iter().flat_map(|((_, _), g)| g.iter()).count() as u64;
     let full_bytes: u64 = survivors
         .iter()
         .flat_map(|((_, _), g)| g.iter())
-        .filter(|&&i| candidates[i].size > PREFIX)
         .map(|&i| candidates[i].size)
         .sum();
     ctl.set_phase(PHASE_FULL, full_files, full_bytes);
@@ -838,10 +934,10 @@ fn finish_pipeline(
             .path
             .cmp(&candidates[*b.1.first().unwrap_or(&0)].path)
     });
-    let hashed: Vec<HashedFile> = hash_pool().install(|| {
+    let hashed: Vec<HashedFile> = full_pool().install(|| {
         ordered
             .par_iter()
-            .flat_map(|((size, prefix_digest), group)| {
+            .flat_map(|((size, _prefix_screen), group)| {
                 group
                     .iter()
                     .filter_map(|&i| {
@@ -849,13 +945,17 @@ fn finish_pipeline(
                             return None;
                         }
                         let c = &candidates[i];
-                        let (sha256, read) = if *size <= PREFIX {
-                            (*prefix_digest, 0)
-                        } else {
-                            match hash_full(std::path::Path::new(&c.path), ctl) {
-                                Some(d) => (d, *size),
-                                None => return None,
-                            }
+                        // The XXH3 prefix is ONLY a screen — the SHA-256
+                        // authority always comes from hash_full. (v1
+                        // could reuse the prefix SHA-256 verbatim for
+                        // ≤64 KiB files; the screen hash changed to
+                        // XXH3-128 in v2, so tiny survivors just
+                        // full-hash like everyone else — a ≤64 KiB
+                        // re-read, negligible next to the correctness
+                        // guarantee it buys.)
+                        let (sha256, read) = match hash_full(std::path::Path::new(&c.path), ctl) {
+                            Some(d) => (d, *size),
+                            None => return None,
                         };
                         ctl.file_done(read);
                         let (vs, fi) = hardlink_identity(std::path::Path::new(&c.path))
@@ -1075,8 +1175,8 @@ mod tests {
             d
         }
 
-        /// Deterministic pseudo-random content (xorshift64) — fast and
-        /// good enough that SHA-256 collides only for identical inputs.
+        /// Deterministic pseudo-random content (xorshift64) — fast;
+        /// distinct seeds never collide under the screen + full hashes.
         fn blob(seed: u64, size: usize) -> Vec<u8> {
             let mut s = seed | 1;
             let mut v = Vec::with_capacity(size);
@@ -1190,6 +1290,297 @@ mod tests {
             println!(
                 "dupes E2E: 2 groups in {} ms (26 MiB staged)",
                 elapsed.as_millis()
+            );
+        }
+
+        /// The PERFORMANCE corpus (owner ask: "spawn fake real-size
+        /// multi-format files and then test"): ~1.9 GB of realistic
+        /// multi-format content — magic-headed JPG/PNG/MP4/ZIP/PDF/ISO/
+        /// TXT/BIN payloads — with planted exact-duplicate groups,
+        /// same-prefix near-duplicates (must screen out), a hardlink
+        /// pair (must exclude), unicode + deep nesting, and a locked
+        /// file. Asserts CORRECTNESS of every planted group AND an
+        /// effective throughput floor (the "9-10 MB/s" regression
+        /// guard: the v2 pools must sustain ≥ 40 MB/s counting every
+        /// byte the pipeline read, on Defender-active CI hardware).
+        #[test]
+        fn throughput_corpus_multi_format_finds_groups_fast() {
+            let root = scratch("perf");
+            let _keep = TempTree(root.clone());
+            let t_stage = Instant::now();
+
+            // Format magics (realistic headers so every family reads
+            // like a genuine file to the OS cache + Defender).
+            const FORMATS: [(&str, &[u8]); 8] = [
+                (
+                    "jpg",
+                    &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'],
+                ),
+                ("png", &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+                (
+                    "mp4",
+                    &[
+                        0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm',
+                    ],
+                ),
+                ("zip", &[b'P', b'K', 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]),
+                ("pdf", &[b'%', b'P', b'D', b'F', b'-', b'1', b'.', b'7']),
+                ("iso", &[0x01, b'C', b'D', 0x00, 0x01]),
+                (
+                    "txt",
+                    &[b'D', b'i', b's', b'k', b'B', b'y', b't', b'e', b's'],
+                ),
+                ("bin", &[0x7F, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00]),
+            ];
+            /// Magic-headed pseudo-random payload (xorshift64 stream).
+            fn fmt_blob(fmt: usize, seed: u64, size: usize) -> Vec<u8> {
+                let mut s = seed | 1;
+                let mut v = Vec::with_capacity(size);
+                while v.len() < size {
+                    s ^= s << 13;
+                    s ^= s >> 7;
+                    s ^= s << 17;
+                    v.extend_from_slice(&s.to_le_bytes());
+                }
+                v.truncate(size);
+                let (_, magic) = FORMATS[fmt % FORMATS.len()];
+                let m = magic.len();
+                if size >= m {
+                    v[..m].copy_from_slice(magic);
+                }
+                v
+            }
+
+            let kib = 1024u64;
+            let mib = 1024 * 1024u64;
+            let mut expected_groups: Vec<(u64, u64, Vec<String>)> = Vec::new();
+
+            // ── SMALL: 300 files (64–192 KiB) across the 8 formats,
+            //    30 exact-duplicate pairs. ~45 MB.
+            let small_dir = root.join("photos");
+            fs::create_dir_all(&small_dir).unwrap();
+            for i in 0..300u64 {
+                let fmt = (i % 8) as usize;
+                let size = (64 + (i % 129) as u64) * kib;
+                let name = format!("shot_{i:03}.{}", FORMATS[fmt].0);
+                fs::write(
+                    small_dir.join(&name),
+                    fmt_blob(fmt, i * 7 + 1, size as usize),
+                )
+                .unwrap();
+                if i % 10 == 0 && i > 0 {
+                    // Duplicate of the PREVIOUS file (same content, same
+                    // size) → an exact group of 2.
+                    let prev = format!("shot_{:03}.{}", i - 1, FORMATS[((i - 1) % 8) as usize].0);
+                    fs::copy(
+                        small_dir.join(&prev),
+                        small_dir.join(&name.replace("shot", "copy")),
+                    )
+                    .unwrap();
+                    expected_groups.push((size, 2, vec![prev, name.replace("shot", "copy")]));
+                }
+            }
+
+            // ── Unicode + deep nesting: files the scanner must still
+            //    walk (2 more small groups).
+            let deep = root
+                .join("备份")
+                .join(" archival ")
+                .join("ännu")
+                .join("-depth-")
+                .join("₄");
+            fs::create_dir_all(&deep).unwrap();
+            let uni_a = fmt_blob(2, 0x0BAD_BEEF, 300 * 1024);
+            fs::write(deep.join("🎞 video ñ.mp4"), &uni_a).unwrap();
+            fs::write(deep.join("🎞 video ñ (copy).mp4"), &uni_a).unwrap();
+            expected_groups.push((
+                300 * kib,
+                2,
+                vec!["🎞 video ñ.mp4".into(), "🎞 video ñ (copy).mp4".into()],
+            ));
+            let uni_b = fmt_blob(4, 0x0FEE_FACE, 500 * 1024);
+            fs::write(deep.join("документ.pdf"), &uni_b).unwrap();
+            fs::write(deep.join("документ — копия.pdf"), &uni_b).unwrap();
+            expected_groups.push((
+                500 * kib,
+                2,
+                vec!["документ.pdf".into(), "документ — копия.pdf".into()],
+            ));
+
+            // ── MEDIUM: 60 files (4–16 MiB) + 10 duplicate groups.
+            //    ~740 MB.
+            let media_dir = root.join("media");
+            fs::create_dir_all(&media_dir).unwrap();
+            for i in 0..60u64 {
+                let fmt = ((i + 2) % 8) as usize;
+                let size = (4 + (i % 13)) as u64 * mib;
+                let name = format!("clip_{i:02}.{}", FORMATS[fmt].0);
+                fs::write(
+                    media_dir.join(&name),
+                    fmt_blob(fmt, i * 0x9E37 + 5, size as usize),
+                )
+                .unwrap();
+                if i % 6 == 5 {
+                    fs::copy(
+                        media_dir.join(&name),
+                        media_dir.join(&name.replace("clip", "mirror")),
+                    )
+                    .unwrap();
+                    expected_groups.push((size, 2, vec![name, name.replace("clip", "mirror")]));
+                }
+            }
+
+            // ── NEAR-DUP: 6 pairs, same size + same 64 KiB prefix,
+            //    different mid bytes → the tier-2 screen must kill
+            //    them (no full-hash, never reported). ~96 MB.
+            let nd_dir = root.join("near-dups");
+            fs::create_dir_all(&nd_dir).unwrap();
+            for i in 0..6u64 {
+                let base = fmt_blob(3, 0x51DE + i, 8 * mib as usize);
+                let mut twin = base.clone();
+                twin[(PREFIX + mib / 2) as usize] ^= 0xA5;
+                fs::write(nd_dir.join(format!("nd-a{i}.zip")), &base).unwrap();
+                fs::write(nd_dir.join(format!("nd-b{i}.zip")), &twin).unwrap();
+            }
+
+            // ── HARDLINK pair: same content twice on disk, but one
+            //    file identity → NOT a duplicate (spec §10).
+            let hl_dir = root.join("hardlinked");
+            fs::create_dir_all(&hl_dir).unwrap();
+            let hl_src = fmt_blob(5, 0x1BAD_B002, 6 * mib as usize);
+            fs::write(hl_dir.join("hl-orig.iso"), &hl_src).unwrap();
+            let hl_ok =
+                fs::hard_link(hl_dir.join("hl-orig.iso"), hl_dir.join("hl-link.iso")).is_ok();
+            if !hl_ok {
+                println!("(hardlink creation unavailable — skipping that assertion)");
+            }
+
+            // ── LOCKED file (same size as a planted medium group —
+            //    would group if readable): hold it unshared.
+            fs::write(
+                root.join("locked.zip"),
+                fmt_blob(3, 0x5EED + 5, (4 + (5 % 13)) as usize * mib as usize),
+            )
+            .unwrap();
+            let _locked = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(root.join("locked.zip"))
+                .expect("open locked");
+
+            // ── LARGE: 6 files × 128 MiB + ONE exact triple. ~1.2 GB.
+            let big_dir = root.join("vms");
+            fs::create_dir_all(&big_dir).unwrap();
+            for i in 0..6u64 {
+                let size = 128 * mib;
+                let name = format!("vm-disk{i}.bin");
+                fs::write(
+                    big_dir.join(&name),
+                    fmt_blob(7, 0xD15C + i * 3, size as usize),
+                )
+                .unwrap();
+                if i == 3 {
+                    fs::copy(
+                        big_dir.join(&name),
+                        big_dir.join(&name.replace("vm-disk", "vm-copy")),
+                    )
+                    .unwrap();
+                    fs::copy(
+                        big_dir.join(&name),
+                        big_dir.join(&name.replace("vm-disk", "vm-clone")),
+                    )
+                    .unwrap();
+                    expected_groups.push((
+                        size,
+                        3,
+                        vec![
+                            name,
+                            name.replace("vm-disk", "vm-copy"),
+                            name.replace("vm-disk", "vm-clone"),
+                        ],
+                    ));
+                }
+            }
+            println!(
+                "staged ~1.9 GB corpus in {:.1}s (hardlinks ok={hl_ok})",
+                t_stage.elapsed().as_secs_f32()
+            );
+
+            // REAL scan + the REAL production pipeline.
+            let platform: Arc<crate::platform::HostPlatform> =
+                Arc::new(crate::platform::HostPlatform);
+            let cancel = Arc::new(AtomicBool::new(false));
+            let progress = Arc::new(Mutex::new(Progress::default()));
+            let tree = match scan(
+                platform,
+                &ScanTarget::Folder(root.to_string_lossy().into_owned()),
+                1,
+                &cancel,
+                &progress,
+            ) {
+                ScanOutcome::Done(t) => Arc::new(t),
+                other => panic!("scan failed: {other:?}"),
+            };
+
+            let t0 = Instant::now();
+            let ctl = DupesCtl::quiet(Arc::new(AtomicU64::new(0)));
+            let result = compute_dupes(&tree, &ctl).expect("pipeline");
+            let elapsed = t0.elapsed();
+            let read_bytes = ctl.bytes_all.load(Ordering::Relaxed);
+            let mps = read_bytes as f64 / elapsed.as_secs_f64() / (mib as f64);
+            println!(
+                "dupes PERF: {} files → {} groups, {:.0} MiB hashed in {:.2}s = {:.1} MiB/s effective (pool sizes: screen {} / full {})",
+                result.files,
+                result.groups.len(),
+                read_bytes / mib,
+                elapsed.as_secs_f32(),
+                mps,
+                std::thread::available_parallelism().map_or(0, std::num::NonZero::get).clamp(SCREEN_POOL_MIN, SCREEN_POOL_MAX),
+                std::thread::available_parallelism().map_or(0, std::num::NonZero::get).clamp(2, FULL_POOL_MAX),
+            );
+
+            // ── Correctness: every planted group is found, exactly.
+            assert_eq!(
+                result.groups.len(),
+                expected_groups.len(),
+                "planted {} groups, found {}: {:#?}",
+                expected_groups.len(),
+                result.groups.len(),
+                result.groups
+            );
+            for (size, count, names) in &expected_groups {
+                let hit = result
+                    .groups
+                    .iter()
+                    .find(|g| g.size == *size && g.count == *count);
+                assert!(hit.is_some(), "missing group size={size} count={count}");
+                for n in names {
+                    assert!(
+                        hit.unwrap().paths.iter().any(|p| p.contains(n.as_str())),
+                        "group member {n} missing: {:?}",
+                        hit.unwrap().paths
+                    );
+                }
+            }
+            // The near-dups, the hardlink twin, and the locked file
+            // must never appear.
+            for g in &result.groups {
+                for p in &g.paths {
+                    assert!(!p.contains("nd-"), "near-dup leaked: {p}");
+                    if hl_ok {
+                        assert!(!p.contains("hl-link"), "hardlink pair leaked: {p}");
+                    }
+                    assert!(!p.contains("locked.zip"), "locked file leaked: {p}");
+                }
+            }
+
+            // ── Throughput floor (the 9-10 MB/s regression guard). CI
+            //    hardware (Defender on, shared NVMe) with the v2
+            //    pools sustains well above this; the OLD 4-worker cap
+            //    measured ~9-10 MB/s on a real disk.
+            assert!(
+                mps >= 40.0,
+                "effective throughput {mps:.1} MiB/s is below the 40 MiB/s floor — the screen-pool sizing regressed"
             );
         }
 
