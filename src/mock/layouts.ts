@@ -126,24 +126,61 @@ function effectiveBranchRoot(tree: MockTree, rootId: number): number {
  * chain levels as ring consumers left shallow maps at ~40-50% of the
  * canvas (the "tiny, off-center mind map" bug).
  */
-function spreadRings(tree: MockTree, node: number, limit: number): number {
-  const kids = childrenSorted(tree, node);
-  if (kids.length === 0) return 0;
-  if (kids.length === 1) {
-    // Chain level: no ring; the child inherits the budget.
-    const kn = tree.nodes[kids[0].node];
-    const descend = !!kn && kn.isDir && kn.children.length > 0;
-    return descend && limit > 0 ? spreadRings(tree, kids[0].node, limit - 1) : 0;
-  }
+/** A child this dominant continues the SPINE (Rust parity: ≥ 0.72 of
+ * the level, a dir, with children) — its children share the parent's
+ * ring; the level only gives sectors when it actually branches. */
+const SPINE_SHARE = 0.72;
+
+function spineChild(tree: MockTree, kids: Item[], atRoot: boolean): number | null {
+  if (kids.length === 0) return null;
+  const total = kids.reduce((a, b) => a + b.v, 0);
+  if (total <= 0) return null;
+  const first = tree.nodes[kids[0].node];
+  const eligible = !!first && first.isDir && first.children.length > 0;
+  // Single-child chains continue at ANY depth; a dominant child
+  // continues only at the layout root's own level (one contextual
+  // unroll — Rust parity).
+  if (kids.length === 1 && eligible) return kids[0].node;
+  if (atRoot && kids[0].v / total >= SPINE_SHARE && eligible) return kids[0].node;
+  return null;
+}
+
+/** The spine HEAD: walk dominant children to the first branching
+ * level — families attach at its children (ring 1). */
+function spineHeadAt(tree: MockTree, node: number, limit: number, atRoot: boolean): number {
+  if (limit <= 0) return node;
+  const kids = childrenSorted(tree, node).filter((k) => k.v > 0);
+  const spine = spineChild(tree, kids, atRoot);
+  return spine === null ? node : spineHeadAt(tree, spine, limit - 1, false);
+}
+
+function spineHead(tree: MockTree, node: number, limit: number): number {
+  return spineHeadAt(tree, node, limit, true);
+}
+
+function spreadRingsAt(tree: MockTree, node: number, limit: number, atRoot: boolean): number {
   if (limit <= 0) return 0;
-  let best = 0;
+  const kids = childrenSorted(tree, node).filter((k) => k.v > 0);
+  if (kids.length === 0) return 0;
+  const spine = spineChild(tree, kids, atRoot);
+  // This level's ring hosts the non-spine children's dots AND the
+  // spine child's children's dots; count what extends below it.
+  let below = 0;
   for (const k of kids) {
     const kn = tree.nodes[k.node];
-    if (kn && kn.isDir && kn.children.length > 0) {
-      best = Math.max(best, spreadRings(tree, k.node, limit - 1));
+    if (!kn || !kn.isDir || kn.children.length === 0) continue;
+    const sub = spreadRingsAt(tree, k.node, limit - 1, false);
+    if (k.node === spine) {
+      below = Math.max(below, Math.max(0, sub - 1));
+    } else {
+      below = Math.max(below, sub);
     }
   }
-  return 1 + best;
+  return 1 + below;
+}
+
+function spreadRings(tree: MockTree, node: number, limit: number): number {
+  return spreadRingsAt(tree, node, limit, true);
 }
 
 /**
@@ -305,6 +342,10 @@ export function buildLayout(
   // footer's "(truncated)" hint must appear in dev exactly as in
   // production).
   let mindmapCulled = false;
+  // Mind-map spine cell indices (re-seated after the scale pass —
+  // Rust parity: the uniform scale can pull a spine dot into its
+  // parent; nudging it back out never clips, spine dots sit deep).
+  const spineCells: number[] = [];
   const root = tree.nodes[rootId];
   const total = root.onDisk || root.logical || 1;
   const kids = childrenSorted(tree, rootId);
@@ -602,31 +643,43 @@ export function buildLayout(
     };
     emitBubble(build(rootId, depth), cx, cy, rootR, 0, 0);
   } else if (mode === "mind-map") {
-    // Faithful port of core/src/layout/mindmap.rs — the old heuristic
-    // (uniform angles + uncapped sqrt(share)*rMax dots) degenerated at
-    // single-branch roots (This PC → C: put a 127 px "child" dot 7 px
-    // from center) and only ever rendered 2 levels. The Rust engine:
-    // angular spans ∝ weight, recursive rings (step_r per level), dot
-    // radius capped at DOT_BASE, alpha tiers at the branch level.
+    // Faithful port of core/src/layout/mindmap.rs (v2 spine design) —
+    // the old heuristic (uniform angles + uncapped sqrt(share)*rMax
+    // dots) degenerated at single-branch roots, and the v1 family rule
+    // turned a dominant drive ("This PC" → C: 95%) into one blue
+    // mega-sector. The v2 SPINE unrolls dominant chains: ring 1 is the
+    // first genuinely branching level, each branch its own family.
     const cx = width / 2;
     const cy = height / 2;
     const DOT_BASE = 26; // core mindmap::DOT_BASE
     const MIN_R = 1.5; // core mindmap::MIN_R
+    const ROOT_DOT_R = 30; // core mindmap::ROOT_DOT_R (label-sized hub)
+    // The mind-map family root is the SPINE HEAD (dominant-chain
+    // descent), not the shared effectiveBranchRoot (area-modes' rule).
+    const mmBranchRoot = spineHead(tree, rootId, Math.max(depth, 1));
+    let mmBranchLevel = 1;
+    for (let cur = mmBranchRoot; cur !== rootId; ) {
+      const p = tree.nodes[cur]?.parent;
+      if (p === undefined || p < 0) break;
+      if (p === rootId) break;
+      mmBranchLevel += 1;
+      cur = p;
+    }
     // Reserve the largest possible dot + air so dots never clip the
     // edge (the deepest ring sits AT r_max); floor keeps tiny windows
     // usable. Mirrors core `r_max` exactly.
     const rMax = Math.max(Math.min(width, height) / 2 - DOT_BASE - 8, 48);
     // Depth of branchRoot below the layout root (+1 → tier index) —
     // computed once at buildLayout entry (shared with bubbles).
-    // Root dot: neutral gray, 14px (label-gate eligible — r ≥ 13 names
-    // the root, anchoring the map), at center; parent link points at
-    // itself.
+    // Root hub: brand coral, sized for the in-disc label (the
+    // renderer draws the root name + total bytes inside it, matching
+    // the sunburst center treatment).
     cells.push({
       id: rootId,
       depth: 0,
       flags: KIND_DOT,
-      rgba: (0x8e8e93 << 8) | 0xff,
-      g: [cx, cy, 14, cx, cy],
+      rgba: (0xff6b4a << 8) | 0xff,
+      g: [cx, cy, ROOT_DOT_R, cx, cy],
     });
     if (depth > 0 && total > 0) {
       // ADAPTIVE ring budget (Rust parity): rings = SPREADING levels
@@ -651,10 +704,9 @@ export function buildLayout(
         const children = childrenSorted(tree, nodeId);
         const sum = children.reduce((a, b) => a + b.v, 0);
         if (sum === 0) return;
-        // Single sizeable child → collapse onto the parent position
-        // (mirrors Rust: the old full-TAU span bent chains toward 6
-        // o'clock, hanging the map below center at single-drive roots).
-        const collapsed = children.length === 1;
+        // The SPINE child: single-child chains at any depth, dominant
+        // continuation only at the layout root's level (Rust parity).
+        const spine = spineChild(tree, children, depthHere === 1);
         const rings = Math.max(ringsLeft, 1);
         const stepR = ringR / rings; // per-spreading-level radius step
         const levelR = ringR - stepR * (rings - 1);
@@ -666,8 +718,21 @@ export function buildLayout(
           if (kn.onDisk === 0) continue;
           const span = (k.v / sum) * (a1 - a0);
           const mid = cursor + span / 2;
-          const x = collapsed ? px : px + levelR * Math.cos(mid);
-          const y = collapsed ? py : py + levelR * Math.sin(mid);
+          const isSpine = spine === k.node;
+          // Normal children sit at the ring radius along their angular
+          // mid; the SPINE child sits just outside the parent near its
+          // sector's LEADING edge (a dominant child owns most of the
+          // circle — anchoring at the sector MID cascades the chain
+          // across the map; the leading edge reads as "the first
+          // branch off the hub"). Rust parity.
+          const spineAng = cursor + Math.min(span * 0.5, (15 * Math.PI) / 180);
+          const spineDist = ROOT_DOT_R + 22;
+          const x = isSpine
+            ? px + spineDist * Math.cos(spineAng)
+            : px + levelR * Math.cos(mid);
+          const y = isSpine
+            ? py + spineDist * Math.sin(spineAng)
+            : py + levelR * Math.sin(mid);
           // Dot radius ∝ sqrt(share of the ROOT) — share-of-parent let a
           // 99%-of-parent child of a small branch render 4× its parent
           // (dwarfed hierarchy inversions over the root hub). Share of
@@ -675,7 +740,12 @@ export function buildLayout(
           // Ring-1 dots also clear the root hub (mirrors Rust).
           let cap = Math.min(Math.max(stepR * 0.8, 10), DOT_BASE);
           if (depthHere === 1) {
-            cap = Math.min(cap, Math.max(levelR - 14 - 2, 6));
+            cap = Math.min(cap, Math.max(levelR - ROOT_DOT_R - 2, 6));
+          }
+          if (isSpine) {
+            // The spine dot is the hub's continuation — compact, not a
+            // full ring dot (it must never crowd ring 1).
+            cap = Math.min(cap, ROOT_DOT_R * 0.62);
           }
           const r = Math.max(Math.sqrt(k.v / rootTotal) * cap, MIN_R);
           // Visibility floor: sub-2.5px dots are invisible noise. The
@@ -686,13 +756,14 @@ export function buildLayout(
             cursor += span;
             continue;
           }
-          // One pastel family per effective top-level branch, inherited
-          // by every descendant (shade still varies by depth + index).
-          const famIdx = nodeId === branchRoot ? i : topIndex;
+          // Family rule (v2, Rust parity): fresh at the spine head's
+          // children (ring 1) AND at the layout root's own children
+          // (a second drive gets its own family); inherited below.
+          const famIdx = nodeId === mmBranchRoot || depthHere === 1 ? i : topIndex;
           const rgb = colorFor(kn, famIdx, depthHere, colorMode, now, i);
-          // Top-level dots (root chain + branches) stay solid; nested
-          // child dots get the slightly translucent tier.
-          const alpha = depthHere <= branchLevel ? 0xff : 0xcc;
+          // The spine chain + ring 1 stay solid; deeper child dots get
+          // the slightly translucent tier.
+          const alpha = depthHere <= mmBranchLevel || isSpine ? 0xff : 0xcc;
           cells.push({
             id: k.node,
             depth: depthHere,
@@ -700,22 +771,27 @@ export function buildLayout(
             rgba: (rgb << 8) | alpha,
             g: [x, y, r, px, py],
           });
+          if (isSpine) spineCells.push(cells.length - 1);
           if (kn.isDir && kn.children.length > 0 && depthLeft > 1) {
             // Child's annulus = the OUTER remainder (this level consumed
             // stepR) — passing stepR decays geometrically and collapses
-            // the map into a concentric blob (fixed both sides). A
-            // collapsed chain node consumed no ring — budget passes
-            // through unchanged (mirrors Rust).
+            // the map into a concentric blob (fixed both sides). A spine
+            // node consumed no ring — budget passes through unchanged
+            // (Rust parity: its children share OUR ring).
             layoutBranches(
               k.node,
-              x,
-              y,
-              collapsed ? ringR : ringR - stepR,
+              // The spine child's children orbit THIS node's center
+              // (the hub/branch anchor), NOT the spine dot's offset
+              // position — orbiting the offset clustered the whole map
+              // around a point off-center (Rust parity).
+              isSpine ? px : x,
+              isSpine ? py : y,
+              isSpine ? ringR : ringR - stepR,
               depthHere + 1,
               depthLeft - 1,
               // Rings decrement ONLY when this level actually spread;
-              // chains pass the budget through (Rust parity).
-              collapsed ? ringsLeft : Math.max(0, ringsLeft - 1),
+              // the spine passes the budget through.
+              isSpine ? ringsLeft : Math.max(0, ringsLeft - 1),
               rootTotal,
               cursor,
               cursor + span,
@@ -747,6 +823,24 @@ export function buildLayout(
             }
             c.g[3] = cx + (c.g[3] - cx) * scale;
             c.g[4] = cy + (c.g[4] - cy) * scale;
+          }
+        }
+        // Re-seat the spine cells clear of their parents (Rust parity).
+        const dotR = new Map<number, number>();
+        for (const c of dots) dotR.set(c.id, c.g[2]);
+        for (const idx of spineCells) {
+          const c = cells[idx];
+          if (!c) continue;
+          const dx = c.g[0] - c.g[3];
+          const dy = c.g[1] - c.g[4];
+          const d = Math.hypot(dx, dy);
+          if (d < 1e-6) continue;
+          const parentId = tree.nodes[c.id]?.parent ?? -1;
+          const parentR = dotR.get(parentId) ?? ROOT_DOT_R;
+          const need = parentR + c.g[2] + 6;
+          if (d < need) {
+            c.g[0] = c.g[3] + (dx / d) * need;
+            c.g[1] = c.g[4] + (dy / d) * need;
           }
         }
       }

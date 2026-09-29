@@ -7,8 +7,7 @@
 
 use crate::error::CoreError;
 use crate::layout::{
-    check_geometry, depth_below, effective_branch_root, node_color, pack_rgba, Cell, ColorMode,
-    LayoutBuffer, LayoutMeta,
+    check_geometry, depth_below, node_color, pack_rgba, Cell, ColorMode, LayoutBuffer, LayoutMeta,
 };
 use crate::scan::node::Tree;
 
@@ -16,10 +15,17 @@ use crate::scan::node::Tree;
 pub(crate) const MIN_R: f32 = 1.5;
 /// Base dot radius at the root's children (scales with viewport).
 pub(crate) const DOT_BASE: f32 = 26.0;
-/// Root hub dot radius (label-gate eligible: the JS names the root).
-pub(crate) const ROOT_DOT_R: f32 = 14.0;
-/// Alpha for top-level dots — the root chain plus the effective
-/// top-level branches: solid, matching the reference's bold branch dots.
+/// Root hub dot radius — sized for the JS label (root name + total
+/// bytes rendered inside the disc, sunburst-center style).
+pub(crate) const ROOT_DOT_R: f32 = 30.0;
+/// A child this dominant (≥ 72% of its level) continues the SPINE:
+/// the hub's story unrolls through it ("This PC" → C: → …) and its
+/// children share the parent's ring — the map only gives sectors to
+/// levels that actually BRANCH. Below the threshold the child takes a
+/// normal sector like its siblings.
+const SPINE_SHARE: f32 = 0.72;
+/// Alpha for top-level dots — the spine chain plus the first
+/// branching level: solid, matching the reference's bold branch dots.
 const ALPHA_TOP: u32 = 0xFF;
 /// Alpha for nested child dots (slight translucency so the hierarchy
 /// reads and links/labels stay legible).
@@ -31,6 +37,7 @@ const ALPHA_NESTED: u32 = 0xCC;
 /// - [`CoreError::InvalidGeometry`] when `width`/`height` are zero.
 /// - [`CoreError::NodeNotFound`] when `node` is not in the arena.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)] // hub + spine bookkeeping + scale + re-seat passes read best together
 pub fn mindmap(
     tree: &Tree,
     node: u32,
@@ -66,18 +73,29 @@ pub fn mindmap(
     let r_max = (width.min(height) / 2.0 - DOT_BASE - 8.0).max(48.0);
     let mut cells: Vec<Cell> = Vec::with_capacity(512);
     let mut truncated = false;
+    // Indices of spine cells (re-seated after the scale pass — see below).
+    let mut spine_cells: Vec<usize> = Vec::new();
     // By-folder families attach at the effective branch root (descend
     // single-sizeable-child chains like "This PC" → "C:"); dots at or
     // above that level form the solid "top-level" alpha tier.
-    let branch_root = effective_branch_root(tree, node);
+    // The mindmap's family root is the SPINE HEAD: descend
+    // single-child chains AND dominant children (≥ [`SPINE_SHARE`]). The
+    // shared `effective_branch_root` (used by the four area modes)
+    // only collapses single-child chains — with a dominant drive
+    // ("This PC" → C: 95%) it hands ring 1 = [C:, D:], every C:
+    // descendant one color family, and 95% of the map renders blue.
+    // The spine unrolls the hub's story instead: ring 1 becomes the
+    // first genuinely BRANCHING level, each branch its own family.
+    let branch_root = spine_head(tree, node, depth.max(1));
     let branch_level = depth_below(tree, branch_root, node) + 1;
-    // Root dot. 14 px (not 12) so the JS label gate (r ≥ 13) names the
-    // root — the map reads as anchored on "This PC", not an anonymous
-    // gray blob.
+    // Root hub: brand coral, sized for the in-disc label (the JS draws
+    // the root name + total bytes inside it, matching the sunburst
+    // center treatment) — the map reads as anchored on "This PC",
+    // not an anonymous gray blob.
     cells.push(Cell::dot(
         node,
         0,
-        pack_rgba(crate::layout::ANCHOR_GRAY),
+        pack_rgba(0xFF6B4A),
         cx,
         cy,
         ROOT_DOT_R,
@@ -104,6 +122,7 @@ pub fn mindmap(
             0,
             branch_root,
             branch_level,
+            &mut spine_cells,
         );
     }
     // Scale-to-fit (session-4 fill fix): the ring budget can under-
@@ -136,6 +155,33 @@ pub fn mindmap(
                 }
             }
         }
+        // Re-seat the SPINE cells clear of their parents: the uniform
+        // scale shrinks offsets (a 0.8 scale pulls a 52 px spine offset
+        // to 42 px) while radii stay size-proportional — the spine dot
+        // could then overlap its parent (the hub or a nested parent
+        // dot). Spine dots sit deep inside the canvas, so nudging them
+        // back out never clips.
+        let dot_r: std::collections::HashMap<u32, f32> =
+            cells.iter().map(|c| (c.id, c.g[2])).collect();
+        for &idx in &spine_cells {
+            let Some(c) = cells.get(idx) else {
+                continue;
+            };
+            let (dx, dy) = (c.g[0] - c.g[3], c.g[1] - c.g[4]);
+            let d = (dx * dx + dy * dy).sqrt();
+            if d < f32::EPSILON {
+                continue;
+            }
+            let parent_id = tree.node(c.id).map_or(u32::MAX, |n| n.parent);
+            let parent_r = dot_r.get(&parent_id).copied().unwrap_or(ROOT_DOT_R);
+            let need = parent_r + c.g[2] + 6.0;
+            if d < need {
+                let (ux, uy) = (dx / d, dy / d);
+                let cell = &mut cells[idx];
+                cell.g[0] = cell.g[3] + ux * need;
+                cell.g[1] = cell.g[4] + uy * need;
+            }
+        }
     }
     Ok(LayoutBuffer {
         cells,
@@ -157,48 +203,112 @@ pub fn mindmap(
 }
 
 /// Rings the map will actually SPREAD over below `node`, with
-/// `limit` levels available: a level with exactly one sizeable child
-/// consumes a level but NO ring (the chain collapses onto the parent
-/// position — see `layout_branches`); a level with ≥ 2 sizeable
-/// children consumes a level AND a ring (its children spread onto it).
-/// Descent mirrors the emission's guards (dirs with children only),
-/// so the budget the top call divides by matches the rings actually
-/// drawn.
+/// `limit` levels available: a spine level (single sizeable child OR
+/// a dominant one, ≥ [`SPINE_SHARE`]) consumes a level but NO ring (its
+/// children share the parent's ring — see `layout_branches`); a level
+/// with ≥ 2 non-spine children consumes a level AND a ring. Descent
+/// mirrors the emission's guards (dirs with children only), so the
+/// budget the top call divides by matches the rings actually drawn.
 fn spread_rings(tree: &Tree, node: u32, limit: u32) -> u32 {
+    spread_rings_at(tree, node, limit, true)
+}
+
+/// [`spread_rings`] with the root-level spine flag threaded.
+fn spread_rings_at(tree: &Tree, node: u32, limit: u32, at_root: bool) -> u32 {
+    if limit == 0 {
+        return 0;
+    }
     let sizeable: Vec<u32> = tree
         .children_sorted(node)
         .iter()
         .copied()
         .filter(|&id| tree.node(id).is_some_and(|c| c.on_disk > 0))
         .collect();
-    match sizeable.len() {
-        0 => 0,
-        1 => {
-            // Chain level: no ring; the child inherits the budget.
-            let only = sizeable[0];
-            let descend = tree
-                .node(only)
-                .is_some_and(|c| c.is_dir() && c.child_count > 0);
-            if descend && limit > 0 {
-                spread_rings(tree, only, limit - 1)
-            } else {
-                0
-            }
+    if sizeable.is_empty() {
+        return 0;
+    }
+    let spine = spine_child(tree, &sizeable, at_root);
+    // This level's ring hosts: the non-spine children's dots AND the
+    // spine child's children's dots (the spine itself floats near the
+    // parent). Count what extends BELOW that ring:
+    //  * a normal (descendable) child starts its children one ring OUT
+    //    (its own spread_rings already counts from there);
+    //  * the spine child's children ride OUR ring, so its contribution
+    //    below it is spread_rings(spine) − 1 (≥ 0: the spine is
+    //    descendable by construction).
+    let mut below = 0u32;
+    for &id in &sizeable {
+        let descendable = tree
+            .node(id)
+            .is_some_and(|c| c.is_dir() && c.child_count > 0);
+        if !descendable {
+            continue;
         }
-        _ => {
-            if limit == 0 {
-                return 0;
-            }
-            1 + sizeable
-                .iter()
-                .filter(|&&id| {
-                    tree.node(id)
-                        .is_some_and(|c| c.is_dir() && c.child_count > 0)
-                })
-                .map(|&id| spread_rings(tree, id, limit - 1))
-                .max()
-                .unwrap_or(0)
+        if Some(id) == spine {
+            below = below.max(spread_rings_at(tree, id, limit - 1, false).saturating_sub(1));
+        } else {
+            below = below.max(spread_rings_at(tree, id, limit - 1, false));
         }
+    }
+    1 + below
+}
+
+/// The spine child of a level: a single-child chain continues at ANY
+/// depth (the folder is visually just its content); a DOMINANT child
+/// (≥ [`SPINE_SHARE`]) continues only at the layout root's own level —
+/// one contextual unroll ("This PC" → C:), never an endless chain. A
+/// deeper dominant child takes a normal sector (proportional to its
+/// weight) so the map always branches; `None` when the level branches.
+fn spine_child(tree: &Tree, sizeable: &[u32], at_root: bool) -> Option<u32> {
+    let (&first, rest) = sizeable.split_first()?;
+    let total: u64 = sizeable
+        .iter()
+        .map(|&id| tree.node(id).map_or(0, |c| c.on_disk))
+        .sum();
+    if total == 0 {
+        return None;
+    }
+    let eligible = |id: u32| {
+        tree.node(id)
+            .is_some_and(|c| c.is_dir() && c.child_count > 0)
+    };
+    if rest.is_empty() {
+        // Single sizeable child (share = 1.0 by definition) — a chain
+        // at any depth.
+        return eligible(first).then_some(first);
+    }
+    if at_root {
+        let share = tree.node(first).map_or(0, |c| c.on_disk) as f32 / total as f32;
+        if share >= SPINE_SHARE && eligible(first) {
+            return Some(first);
+        }
+    }
+    None
+}
+
+/// The spine HEAD: walk spine children from `node` (a dominant step
+/// first — the root's context — then single-child chains) down to the
+/// first level that actually branches. Families attach at ITS children
+/// (ring 1); the hub keeps the chain's story.
+fn spine_head(tree: &Tree, node: u32, limit: u32) -> u32 {
+    spine_head_at(tree, node, limit, true)
+}
+
+/// [`spine_head`] with the root-level flag threaded (the dominant rule
+/// applies only on the first step).
+fn spine_head_at(tree: &Tree, node: u32, limit: u32, at_root: bool) -> u32 {
+    if limit == 0 {
+        return node;
+    }
+    let sizeable: Vec<u32> = tree
+        .children_sorted(node)
+        .iter()
+        .copied()
+        .filter(|&id| tree.node(id).is_some_and(|c| c.on_disk > 0))
+        .collect();
+    match spine_child(tree, &sizeable, at_root) {
+        Some(next) => spine_head_at(tree, next, limit - 1, false),
+        None => node,
     }
 }
 
@@ -206,21 +316,35 @@ fn spread_rings(tree: &Tree, node: u32, limit: u32) -> u32 {
 /// the inherited angular sector `[a0, a1)` — spans ∝ weights, and every
 /// descendant stays inside its ancestor's wedge (children used to start
 /// at 12 o'clock regardless of the parent's direction, letting deep
-/// dots cross back over the root hub). `top_index` is the inherited
-/// by-folder family; `branch_root`'s children re-assign it. Dot radii ∝
-/// sqrt(share of the ROOT total) — share-of-parent let a 99%-of-parent
-/// child of a small branch render 4× its parent's size, floating over
-/// the root hub (dwarfed hierarchy inversions).
+/// dots cross back over the root hub). Dot radii ∝ sqrt(share of the
+/// ROOT total) — share-of-parent let a 99%-of-parent child of a small
+/// branch render 4× its parent's size, floating over the root hub
+/// (dwarfed hierarchy inversions).
+///
+/// Family rule (v2): a child gets a FRESH family when its parent is
+/// the spine head (`node == branch_root` — ring 1, the first genuinely
+/// branching level) OR when the parent is the layout root itself
+/// (`depth_here == 1` — the root's minor branches like a second drive
+/// get their own color instead of inheriting ring 1's first family).
+/// Everyone deeper inherits.
+///
+/// SPINE rule (v2): a dominant child (≥ [`SPINE_SHARE`] of the level, a
+/// dir, with children) does NOT take a sector on this ring — its dot
+/// renders just OUTSIDE the parent along its angular mid (the spine
+/// reads as the hub's continuation), and its CHILDREN share this ring
+/// inside its sector (recursing with the ring budget unchanged). This
+/// is what makes "This PC → C: 95% → [Users, Windows, …]" render as a
+/// colorful ring 1 instead of one blue mega-sector.
 ///
 /// Ring accounting (the session-4 fill fix): `rings_left` counts the
 /// SPREADING levels this subtree still owns; `depth_left` is the hard
 /// level ceiling. A branched level consumes one ring (its children
 /// sit at `level_r = ring_r - step_r × (rings_left - 1)`, reserving
-/// outer rings for descendants); a single-child chain level consumes
-/// no ring and passes the budget through — chain dots collapse onto
-/// the parent's position. Invariant: a call whose children branch
-/// always holds `rings_left ≥ 1`, so `level_r` is well-defined there.
+/// outer rings for descendants); a spine level passes the budget
+/// through. Invariant: a call whose children branch always holds
+/// `rings_left ≥ 1`, so `level_r` is well-defined there.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)] // the ring/spine/family rules form one readable algorithm
 fn layout_branches(
     tree: &Tree,
     node: u32,
@@ -240,6 +364,7 @@ fn layout_branches(
     top_index: usize,
     branch_root: u32,
     branch_level: u32,
+    spine_cells: &mut Vec<usize>,
 ) {
     if depth_left == 0 {
         return;
@@ -252,17 +377,19 @@ fn layout_branches(
     if total == 0 {
         return;
     }
-    // Single sizeable child → collapse onto the parent position: a
-    // folder with one sizeable child is visually just that child. The
-    // old full-TAU span put such a child at exactly 6 o'clock, hanging
-    // the whole map below center at single-drive roots (VLM: "crammed
-    // into the lower-central portion"). The chain keeps the full ring
-    // budget for the real branches below it.
-    let sizeable = children
+    // The spine child (dominant or only): renders just outside the
+    // parent along its angular mid; its children then share THIS ring
+    // (the recursion passes the budget through). A level with no spine
+    // child gives every child a normal sector on the ring.
+    let sizeable_ids: Vec<u32> = children
         .iter()
-        .filter(|&&id| tree.node(id).map_or(0, |c| c.on_disk) > 0)
-        .count();
-    let collapsed = sizeable == 1;
+        .copied()
+        .filter(|&id| tree.node(id).is_some_and(|c| c.on_disk > 0))
+        .collect();
+    // The dominant continuation fires only at the layout root's own
+    // level (one contextual unroll); single-child chains continue at
+    // any depth.
+    let spine = spine_child(tree, &sizeable_ids, depth_here == 1);
     let rings = rings_left.max(1);
     let step_r = ring_r / rings as f32; // per-spreading-level radius step
     let level_r = ring_r - step_r * (rings as f32 - 1.0);
@@ -277,25 +404,39 @@ fn layout_branches(
         }
         let span = c.on_disk as f32 / total as f32 * (a1 - a0);
         let mid = cursor + span / 2.0;
-        let x = if collapsed {
-            cx
+        let is_spine = spine == Some(id);
+        // Position: normal children sit at the ring radius along their
+        // angular mid; the SPINE child sits just outside the parent
+        // near its sector's LEADING edge — a dominant child owns most
+        // of the circle, and anchoring the spine at the sector MID
+        // threw the whole chain across the map (the "everything
+        // cascades to the bottom-right" defect); the leading edge
+        // reads as "the first branch off the hub" while its children
+        // fill the sector from the same edge.
+        let spine_ang = cursor + (span * 0.5).min(15.0_f32.to_radians());
+        let x = if is_spine {
+            cx + (ROOT_DOT_R + 22.0) * spine_ang.cos()
         } else {
             cx + level_r * mid.cos()
         };
-        let y = if collapsed {
-            cy
+        let y = if is_spine {
+            cy + (ROOT_DOT_R + 22.0) * spine_ang.sin()
         } else {
             cy + level_r * mid.sin()
         };
-        // Dot radius: see the signature note — share of the ROOT keeps
-        // every dot's area comparable across the map and monotone down
-        // every chain. The cap scales with the ring step (≈
-        // r_max/rings) so small canvases don't blob adjacent levels
-        // together; ring-1 dots also clear the root hub (largest child
-        // vs hub overlap).
+        // Dot radius: share of the ROOT keeps every dot's area
+        // comparable across the map and monotone down every chain. The
+        // cap scales with the ring step (≈ r_max/rings) so small
+        // canvases don't blob adjacent levels together; ring-1 dots
+        // also clear the root hub (largest child vs hub overlap).
         let mut cap = (step_r * 0.8).clamp(10.0, DOT_BASE);
         if depth_here == 1 {
             cap = cap.min((level_r - ROOT_DOT_R - 2.0).max(6.0));
+        }
+        if is_spine {
+            // The spine dot is the hub's continuation — compact, not a
+            // full ring dot (it must never crowd ring 1).
+            cap = cap.min(ROOT_DOT_R * 0.62);
         }
         // Radius ∝ sqrt(share of the ROOT) — area comparable across the
         // whole map and monotone along every chain (child ≤ parent).
@@ -309,42 +450,57 @@ fn layout_branches(
             cursor += span;
             continue;
         }
-        // One pastel family per effective top-level branch, inherited by
-        // every descendant (shade still varies by depth + sibling index).
-        let fam = crate::layout::family_of(node, branch_root, i, top_index);
+        // Family rule (v2): fresh at the spine head's children (ring 1)
+        // AND at the layout root's own children (a second drive gets
+        // its own family, not ring 1's first); inherited below.
+        let fam = if node == branch_root || depth_here == 1 {
+            i
+        } else {
+            top_index
+        };
         let rgb = match color {
             ColorMode::ByFolder => node_color(tree, id, color, now, fam, depth_here as u16, i),
             ColorMode::ByType => c.category().color(),
             ColorMode::ByAge => node_color(tree, id, color, now, 0, 0, i),
         };
-        // Top-level dots (root chain + branches) stay solid; nested child
-        // dots get the slightly translucent tier.
-        let alpha = if depth_here <= branch_level {
+        // The spine chain + ring 1 stay solid; deeper child dots get
+        // the slightly translucent tier.
+        let alpha = if depth_here <= branch_level || is_spine {
             ALPHA_TOP
         } else {
             ALPHA_NESTED
         };
         let rgba = (rgb << 8) | alpha;
+        let cell_idx = cells.len();
         cells.push(Cell::dot(id, depth_here as u16, rgba, x, y, r, cx, cy));
+        if is_spine {
+            spine_cells.push(cell_idx);
+        }
         if c.is_dir() && c.child_count > 0 && depth_left > 1 {
             layout_branches(
                 tree,
                 id,
-                x,
-                y,
+                // The spine child's children orbit THIS node's center
+                // (the hub/branch anchor), NOT the spine dot's offset
+                // position — orbiting the offset clustered the whole
+                // map around a point off-center (the "center-right
+                // bunch" defect); the spine dot decorates the path.
+                if is_spine { cx } else { x },
+                if is_spine { cy } else { y },
                 // The child's annulus is the OUTER remainder of ours —
-                // this level consumed `step_r` (branched) or nothing
-                // (collapsed chain). Passing `step_r` for chains (the
-                // pre-fix bug) shrank each level geometrically
-                // (r_max/depth → /(depth-1) → …), collapsing the whole
-                // map into a concentric blob around the root and
-                // cutting every level past ~4 at the default depth 7.
-                if collapsed { ring_r } else { ring_r - step_r },
+                // a normal child consumed `step_r`; the SPINE child's
+                // children share OUR ring, so it passes the annulus
+                // through unchanged. (Passing `step_r` for spine nodes —
+                // the pre-v2 chain bug — shrank each level
+                // geometrically, collapsing the map into a concentric
+                // blob around the root.)
+                if is_spine { ring_r } else { ring_r - step_r },
                 depth_here + 1,
                 depth_left - 1,
                 // Rings decrement ONLY when this level actually spread;
-                // chains pass the budget through.
-                if collapsed {
+                // the spine passes the budget through (its children own
+                // the same ring).
+                if is_spine {
                     rings_left
                 } else {
                     rings_left.saturating_sub(1)
@@ -359,6 +515,7 @@ fn layout_branches(
                 fam,
                 branch_root,
                 branch_level,
+                spine_cells,
             );
         }
         cursor += span;
@@ -407,8 +564,10 @@ mod tests {
         let buf = mindmap(&t, 0, 900.0, 700.0, 3, ColorMode::ByType, 1).unwrap();
         let l1: Vec<&Cell> = buf.cells.iter().filter(|c| c.depth == 1).collect();
         assert_eq!(l1.len(), 2);
-        // a=100, b=30 → angular span ratio 100/30.
-        let (a, b) = (l1[0], l1[1]);
+        // a=100 (77% of the level — DOMINANT, ≥ [`SPINE_SHARE`]) renders as
+        // the spine continuation near the hub; b=30 takes a ring sector.
+        let spine_dot = l1.iter().find(|c| c.id == 1).expect("a (id 1)");
+        let ring_dot = l1.iter().find(|c| c.id == 2).expect("b (id 2)");
         // Positions radiate from center; parent link points at the center.
         for c in &l1 {
             let d = ((c.g[0] - 450.0).powi(2) + (c.g[1] - 350.0).powi(2)).sqrt();
@@ -418,11 +577,25 @@ mod tests {
                 "dot parent link should point at the root center"
             );
         }
-        // Dot radii ∝ sqrt(share): share a=0.769, b=0.231.
-        let ra = a.g[2] / DOT_BASE;
-        let rb = b.g[2] / DOT_BASE;
-        assert!((ra * ra - 100.0 / 130.0).abs() < 0.01);
+        // The spine dot is COMPACT (the hub's continuation, capped at
+        // 0.62 × ROOT_DOT_R — it must never crowd ring 1).
+        assert!(
+            spine_dot.g[2] <= ROOT_DOT_R * 0.62 + 0.01,
+            "spine dot must be compact ({} > {})",
+            spine_dot.g[2],
+            ROOT_DOT_R * 0.62
+        );
+        // Ring dots keep the sqrt(share-of-root) law: b share = 30/130.
+        let rb = ring_dot.g[2] / DOT_BASE;
         assert!((rb * rb - 30.0 / 130.0).abs() < 0.01);
+        // And the spine dot sits clear of the (30 px) hub.
+        let d_spine = ((spine_dot.g[0] - 450.0).powi(2) + (spine_dot.g[1] - 350.0).powi(2)).sqrt();
+        assert!(
+            d_spine >= ROOT_DOT_R + spine_dot.g[2] - 1.0,
+            "spine dot must clear the hub ({d_spine} vs {}+{})",
+            ROOT_DOT_R,
+            spine_dot.g[2]
+        );
     }
 
     #[test]

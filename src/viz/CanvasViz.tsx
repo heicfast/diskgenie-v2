@@ -666,7 +666,15 @@ function drawCells(
   // Mind-map dot labels defer to a collision-aware pass (biggest dot
   // first, overlapping labels dropped — the engine docs' "biggest-first,
   // skipping collisions" promise; the inline draw collided freely).
-  const pendingDotLabels: { x: number; y: number; w: number; r: number; text: string }[] = [];
+  const pendingDotLabels: {
+    x: number;
+    y: number;
+    w: number;
+    r: number;
+    text: string;
+    /** Optional second line (the size, for big dots). */
+    text2?: string;
+  }[] = [];
   // Bubble labels defer the same way: mid bubbles cluster tangentially
   // and their centered labels collided across bubbles (VLM merged
   // "Program Files" + "JetBrains" into "Pro Jet..."). Bigger bubbles win.
@@ -690,11 +698,14 @@ function drawCells(
       const lr = (c.rgba >>> 24) & 0xff;
       const lg = (c.rgba >>> 16) & 0xff;
       const lb = (c.rgba >>> 8) & 0xff;
-      ctx.strokeStyle = `rgba(${lr},${lg},${lb},0.55)`;
+      ctx.strokeStyle = `rgba(${lr},${lg},${lb},0.42)`;
       // Weight ∝ child dot radius (structure reads at a glance), and
       // links TERMINATE at the dot edges instead of passing through
-      // the bodies (trimmed along the parent→child direction).
-      ctx.lineWidth = Math.min(3.5, Math.max(0.8, 0.8 + r / 10));
+      // the bodies (trimmed along the parent→child direction). v2:
+      // 0.42 alpha + a tighter width cap — the old 0.55/3.5 read as a
+      // "spiderweb" over dense sectors (VLM: "lines crossing the dots
+      // add noise").
+      ctx.lineWidth = Math.min(2.5, Math.max(0.8, 0.8 + r / 12));
       const dx = x - px;
       const dy = y - py;
       const len = Math.hypot(dx, dy) || 1;
@@ -1072,7 +1083,7 @@ function drawCells(
         }
       }
     } else if (kind === CELL_KIND.DOT) {
-      const [x, y, r] = c.g;
+      const [x, y, r, px, py] = c.g;
       ctx.fillStyle = fill;
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -1080,33 +1091,60 @@ function drawCells(
       ctx.strokeStyle = "rgba(29,29,31,0.28)";
       ctx.lineWidth = 1.4;
       ctx.stroke();
-      if (r >= 13) {
+      // (Root-hub label drawn in the dedicated hub pass below — its
+      // name+size live INSIDE the coral disc.)
+      if (c.id !== layout.meta.node && r >= 9) {
         const name = names.get(c.id);
         if (name) {
           const label = props.abbreviateLabels ? abbreviate(name) : name;
-          ctx.fillStyle = ON_PASTEL;
-          ctx.font = "600 10px " + fontUi;
-          ctx.textBaseline = "middle";
-          const left = x > w / 2;
-          ctx.textAlign = left ? "right" : "left";
-          // In-bounds clamp: dots near an edge used to push their label
-          // straight through the canvas boundary (VLM: fragments like
-          // "...iberf..."). Resolve to an absolute LEFT edge (the
-          // collision pass draws left-anchored) and side-swap when the
-          // label would cross back over its own dot.
-          const text = clipLabel(ctx, label, 110);
-          if (text) {
-            const tw = ctx.measureText(text).width;
-            let le = left ? x - r - 5 - tw : x + r + 5;
-            if (left ? le < 2 : le + tw > w - 2) {
-              // Swap sides instead of clipping through the canvas edge.
-              le = left ? x + r + 5 : x - r - 5 - tw;
-              le = left ? Math.min(w - tw - 2, le) : Math.max(2, le);
-            }
-            const ly = Math.max(8, Math.min(h - 8, y - 6));
-            pendingDotLabels.push({ x: le, y: ly, w: tw, r, text });
+          // OUTWARD RADIAL placement (the v2 redesign): the label
+          // anchors just past the dot edge along the hub→dot direction
+          // and flows outward — away from the busy center where the
+          // links live. The old side-placement put text across the
+          // link fan (VLM: "labels crammed on the nodes").
+          const hubX = cx;
+          const hubY = cy;
+          let dx = x - hubX;
+          let dy = y - hubY;
+          let d = Math.hypot(dx, dy);
+          if (d < 1) {
+            // Dot at the hub (spine continuation): use the parent-link
+            // direction instead.
+            dx = x - px;
+            dy = y - py;
+            d = Math.hypot(dx, dy) || 1;
           }
-          ctx.textAlign = "left";
+          const ux = dx / d;
+          const uy = dy / d;
+          const two = r >= 16 && c.size > 0;
+          ctx.font = "600 10px " + fontUi;
+          const text = clipLabel(ctx, label, 120);
+          if (text) {
+            let text2: string | undefined;
+            if (two) {
+              ctx.font = "600 9.5px " + fontUi;
+              text2 = bytes(c.size);
+            }
+            const tw = Math.max(
+              ctx.measureText(text).width,
+              text2 ? ctx.measureText(text2).width : 0,
+            );
+            // Anchor past the dot edge along the outward direction.
+            const ax = x + ux * (r + 6);
+            const ay = y + uy * (r + 6);
+            const leftHalf = ax > w / 2;
+            // Left-anchored coordinates for the collision pass:
+            let le = leftHalf ? ax - tw : ax;
+            let ly = two ? ay - 6 : ay;
+            // In-bounds clamp: dots near an edge must not push their
+            // label out of the canvas (VLM: fragments like
+            // "...iberf..."). Side-swap when the label would cross the
+            // edge back over its own dot.
+            if (le < 2) le = 2;
+            if (le + tw > w - 2) le = w - 2 - tw;
+            ly = Math.max(two ? 14 : 8, Math.min(h - (two ? 14 : 8), ly));
+            pendingDotLabels.push({ x: le, y: ly, w: tw, r, text, text2 });
+          }
         }
       }
     }
@@ -1150,21 +1188,56 @@ function drawCells(
     }
   }
 
-  // ── Mind-map hub emphasis: the root dot renders in cell order like
-  // any branch — buried. Redraw LAST with a white+ink double ring so
-  // the anchor of the map reads instantly.
+  // ── Mind-map hub: the anchor of the map, drawn LAST so it reads
+  // above every link. Brand-coral disc (theme-aware via the cell's
+  // rgba) with the root NAME + TOTAL SIZE inside — the same center
+  // treatment as the sunburst (reference: "Macintosh HD · 162 GB").
   if (mode === "mind-map") {
     for (const c of layout.cells) {
       if (c.id !== layout.meta.node) continue;
       if ((c.flags & 0b111) !== CELL_KIND.DOT) continue;
       const [x, y, r] = c.g;
+      // Soft lift so the hub separates from the link fan.
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,0.22)";
+      ctx.shadowBlur = 10;
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.fillStyle = cssRgbaTheme(c.rgba, darkCells);
       ctx.fill();
-      ctx.strokeStyle = "rgba(29,29,31,0.85)";
-      ctx.lineWidth = 2;
+      ctx.restore();
+      // Hairline ring: crisp edge over the glow.
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(29,29,31,0.35)";
+      ctx.lineWidth = 1.5;
       ctx.stroke();
+      // In-disc label: name + size, white on coral (shadowed like the
+      // sunburst center text). Two lines when both fit, size-only when
+      // the name is too long.
+      const rootName = names.get(c.id);
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.shadowColor = "rgba(0,0,0,0.28)";
+      ctx.shadowBlur = 4;
+      ctx.fillStyle = "#FFFFFF";
+      if (rootName && r >= 22) {
+        ctx.font = "600 10px " + uiFont();
+        const nameText = clipLabel(ctx, rootName, r * 1.66);
+        if (nameText) {
+          ctx.fillText(nameText, x, y - 7);
+          ctx.font = "700 12px " + uiFont();
+          ctx.fillText(bytes(layout.meta.totalBytes), x, y + 8);
+        } else {
+          ctx.font = "700 12px " + uiFont();
+          ctx.fillText(bytes(layout.meta.totalBytes), x, y);
+        }
+      } else {
+        ctx.font = "700 12px " + uiFont();
+        ctx.fillText(bytes(layout.meta.totalBytes), x, y);
+      }
+      ctx.restore();
       break;
     }
   }
@@ -1193,20 +1266,22 @@ function drawCells(
   }
 
   // Mind-map dot labels: biggest-first with rect-collision skipping
-  // (dense levels used to render label word-clouds — VLM audits).
+  // (dense levels used to render label word-clouds — VLM audits). The
+  // v2 outward-radial placement keeps labels off the link fan; the
+  // second line (size, big dots) grows the collision box vertically.
   if (pendingDotLabels.length) {
     pendingDotLabels.sort((a, b) => b.r - a.r);
     const placed: Array<[number, number, number, number]> = [];
     const pad = 2;
-    ctx.font = "600 10px " + uiFont();
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
     for (const L of pendingDotLabels) {
+      const boxH = L.text2 ? 27 : 14;
       const rect: [number, number, number, number] = [
         L.x - pad,
         L.y - 7 - pad,
         L.w + pad * 2,
-        14 + pad * 2,
+        boxH + pad * 2,
       ];
       const collide = placed.some(
         ([px, py, pw, ph]) =>
@@ -1214,7 +1289,12 @@ function drawCells(
       );
       if (collide) continue;
       placed.push(rect);
+      ctx.font = "600 10px " + uiFont();
       haloText(ctx, L.text, L.x, L.y, ON_PASTEL);
+      if (L.text2) {
+        ctx.font = "600 9.5px " + uiFont();
+        haloText(ctx, L.text2, L.x, L.y + 13, ON_PASTEL_2);
+      }
     }
   }
 
