@@ -216,6 +216,10 @@ impl LicenseError {
 /// re-match after upgrade); the components give support swap
 /// forensics (disk swap vs machine swap) and the admin panel a real
 /// device census.
+///
+/// v3 (additive): baseboard serial, firmware UUID, BIOS build, CPU
+/// core count, arch + the board/firmware component hashes — deep
+/// hardware forensics (motherboard RMA vs machine swap vs VM).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceFacts {
@@ -247,6 +251,27 @@ pub struct DeviceFacts {
     /// Machine model for display ("Dell Inc. XPS 15 9520" / "MacBookPro18,3").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine_model: Option<String>,
+    /// v3: baseboard serial (SMBIOS Type 2 / IOPlatformSerialNumber).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseboard_serial: Option<String>,
+    /// v3: firmware UUID (SMBIOS Type 1 / IOPlatformUUID), canonical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firmware_uuid: Option<String>,
+    /// v3: BIOS/firmware build string (display-only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bios_version: Option<String>,
+    /// v3: logical CPU count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_cores: Option<u32>,
+    /// v3: CPU architecture ("x86_64" / "aarch64").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+    /// v3: sha256("board:" + baseboard serial) — component.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comp_board: Option<String>,
+    /// v3: sha256("firmware:" + firmware UUID) — component.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comp_firmware: Option<String>,
 }
 
 /// The server's success envelope (serde mirror of the Worker response).
@@ -480,21 +505,95 @@ pub fn component_hash(label: &str, value: Option<String>) -> Option<String> {
     Some(hex_of(&hasher.finalize()))
 }
 
-/// The per-component identity hashes (v2 device claim): each binding
+/// The per-component identity hashes (v2/v3 device claim): each binding
 /// input hashed SEPARATELY so the server can tell WHICH component
 /// changed when a device shows up with a new composite (disk swap vs
 /// machine swap vs CPU swap — swap forensics, not a new binding).
-/// Returns `None` per component when that input is unreadable.
+/// Each field is `None` when that input is unreadable; v3 adds the
+/// board + firmware components (motherboard RMA vs machine swap).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ComponentHashes {
+    /// sha256("machine:" + MachineGuid / IOPlatformUUID).
+    pub machine: Option<String>,
+    /// sha256("volume:" + system-drive serial / root fsid).
+    pub volume: Option<String>,
+    /// sha256("cpu:" + CPUID brand).
+    pub cpu: Option<String>,
+    /// sha256("board:" + baseboard serial) — v3.
+    pub board: Option<String>,
+    /// sha256("firmware:" + firmware UUID) — v3.
+    pub firmware: Option<String>,
+}
+
+/// Collect the FULL device claim for this machine (v2/v3): the hard
+/// composite fingerprint first (its failure is an activation error),
+/// then every best-effort descriptive fact — each independently
+/// `None` when unreadable (the server COALESCEs; a missing fact never
+/// blanks a stored one). The command layer AND the live E2E both use
+/// this exact path, so what CI proves is what production sends.
+///
+/// # Errors
+/// String error when the composite [`hardware_id`] inputs are
+/// unreadable (activation must not proceed with a soft identity).
+pub fn collect_device_facts() -> Result<DeviceFacts, String> {
+    let hardware_hash = hardware_id()?;
+    let hostname = crate::platform::os::hostname()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                "Mac".to_string()
+            } else {
+                "PC".to_string()
+            }
+        });
+    let comp = component_hashes();
+    Ok(DeviceFacts {
+        platform: platform_string().to_string(),
+        hardware_hash,
+        hostname,
+        os_version: crate::platform::os::os_version(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        comp_machine: comp.machine,
+        comp_volume: comp.volume,
+        comp_cpu: comp.cpu,
+        cpu_brand: crate::platform::os::cpuid_brand(),
+        ram_mb: crate::platform::os::ram_mb(),
+        machine_model: crate::platform::os::machine_model(),
+        baseboard_serial: crate::platform::os::baseboard_serial(),
+        firmware_uuid: crate::platform::os::firmware_uuid(),
+        bios_version: crate::platform::os::firmware_version(),
+        cpu_cores: crate::platform::os::cpu_cores(),
+        arch: Some(crate::platform::os::arch().to_string()),
+        comp_board: comp.board,
+        comp_firmware: comp.firmware,
+    })
+}
+
+/// The platform identifier the server binds slots by.
+fn platform_string() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "windows"
+    }
+}
+
+/// Collect this machine's [`ComponentHashes`].
 #[must_use]
-pub fn component_hashes() -> (Option<String>, Option<String>, Option<String>) {
-    (
-        component_hash("machine:", crate::platform::os::machine_guid()),
-        component_hash(
+pub fn component_hashes() -> ComponentHashes {
+    ComponentHashes {
+        machine: component_hash("machine:", crate::platform::os::machine_guid()),
+        volume: component_hash(
             "volume:",
             crate::platform::os::system_drive_serial().map(|s| s.to_string()),
         ),
-        component_hash("cpu:", crate::platform::os::cpuid_brand()),
-    )
+        cpu: component_hash("cpu:", crate::platform::os::cpuid_brand()),
+        board: component_hash("board:", crate::platform::os::baseboard_serial()),
+        firmware: component_hash("firmware:", crate::platform::os::firmware_uuid()),
+    }
 }
 
 /// sha256 hex of a string (key-hash binding; public for the command
@@ -1156,6 +1255,13 @@ mod tests {
             cpu_brand: Some("Intel Core i7-1260P".into()),
             ram_mb: Some(16_384),
             machine_model: Some("Dell Inc. XPS 15 9520".into()),
+            baseboard_serial: Some("BX24RTK81".into()),
+            firmware_uuid: Some("4c4c4544-0042-4e10-8032-b2c04f475030".into()),
+            bios_version: Some("DELL A08".into()),
+            cpu_cores: Some(16),
+            arch: Some("x86_64".into()),
+            comp_board: Some("d".repeat(64)),
+            comp_firmware: Some("f".repeat(64)),
         }
     }
 
@@ -1249,6 +1355,13 @@ mod tests {
         assert_eq!(v["cpuBrand"], "Intel Core i7-1260P");
         assert_eq!(v["ramMb"], 16_384);
         assert_eq!(v["machineModel"], "Dell Inc. XPS 15 9520");
+        assert_eq!(v["baseboardSerial"], "BX24RTK81");
+        assert_eq!(v["firmwareUuid"], "4c4c4544-0042-4e10-8032-b2c04f475030");
+        assert_eq!(v["biosVersion"], "DELL A08");
+        assert_eq!(v["cpuCores"], 16);
+        assert_eq!(v["arch"], "x86_64");
+        assert_eq!(v["compBoard"], "d".repeat(64));
+        assert_eq!(v["compFirmware"], "f".repeat(64));
 
         // Sparse claim: absent optional fields stay OFF the wire.
         let sparse = DeviceFacts {
@@ -1258,6 +1371,13 @@ mod tests {
             cpu_brand: None,
             ram_mb: None,
             machine_model: None,
+            baseboard_serial: None,
+            firmware_uuid: None,
+            bios_version: None,
+            cpu_cores: None,
+            arch: None,
+            comp_board: None,
+            comp_firmware: None,
             ..facts()
         };
         let body = claim_body("DBK", &sparse);
@@ -1265,6 +1385,12 @@ mod tests {
         assert!(v.get("compMachine").is_none());
         assert!(v.get("ramMb").is_none());
         assert!(v.get("machineModel").is_none());
+        assert!(v.get("baseboardSerial").is_none());
+        assert!(v.get("firmwareUuid").is_none());
+        assert!(v.get("cpuCores").is_none());
+        assert!(v.get("arch").is_none());
+        assert!(v.get("compBoard").is_none());
+        assert!(v.get("compFirmware").is_none());
         assert_eq!(v["hostname"], "DEV-PC");
     }
 

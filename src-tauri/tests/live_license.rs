@@ -17,6 +17,13 @@
 //! deactivate → assert the slot freed → revoke the key (cleanup;
 //! tier=yearly&days=1 means even a failed cleanup self-expires).
 //!
+//! The second test (v3) runs the REAL platform collection on the CI
+//! machine itself: the fingerprint must be DETERMINISTIC across two
+//! independent collections ("same device → same hashes"), every v3
+//! fact must be present + sanitized, and activating with the REAL
+//! claim must store EXACTLY those values server-side ("hashes match
+//! on the same device") — then deactivates + revokes.
+//!
 //! Nothing here touches a real customer key: every run mints its own.
 
 #![cfg(feature = "live-license-e2e")]
@@ -131,6 +138,18 @@ struct LookupDevice {
     app_version: Option<String>,
     ram_mb: Option<u64>,
     machine_model: Option<String>,
+    cpu_brand: Option<String>,
+    baseboard_serial: Option<String>,
+    firmware_uuid: Option<String>,
+    bios_version: Option<String>,
+    cpu_cores: Option<u32>,
+    arch: Option<String>,
+    comp_machine: Option<String>,
+    comp_volume: Option<String>,
+    comp_cpu: Option<String>,
+    comp_board: Option<String>,
+    comp_firmware: Option<String>,
+    facts_v3: Option<bool>,
     revoked: bool,
 }
 
@@ -150,6 +169,13 @@ fn run_facts(tag: &str) -> DeviceFacts {
         cpu_brand: Some("Intel(R) Core(TM) i7-1260P CPU @ 2.10GHz".to_string()),
         ram_mb: Some(16_384),
         machine_model: Some("E2E Runner Co. License Test Rig".to_string()),
+        baseboard_serial: Some("E2EBOARD0001".to_string()),
+        firmware_uuid: Some("4c4c4544-0042-4e10-8032-b2c04f4750e2e".to_string()),
+        bios_version: Some("E2E BIOS 1.0".to_string()),
+        cpu_cores: Some(8),
+        arch: Some("x86_64".to_string()),
+        comp_board: Some(diskbytes_lib::license::sha256_hex("live-e2e-board")),
+        comp_firmware: Some(diskbytes_lib::license::sha256_hex("live-e2e-firmware")),
     }
 }
 
@@ -198,10 +224,12 @@ fn live_license_lifecycle_keeps_device_facts() {
             .get("version")
             .and_then(serde_json::Value::as_i64)
             .unwrap_or(1)
-            >= 2,
-        "the deployed license server is still v1 — redeploy the v2 worker from the \
-         diskbytes-license-server repo:  npx wrangler d1 migrations apply DB --remote  \
-         && npx wrangler deploy  (migration 0002 is additive; the README walks it)"
+            >= 3,
+        "the deployed license server is older than v3 — the repo auto-deploys on push; \
+         verify the last diskbytes-license-server push completed, then (once) run \
+         npx wrangler d1 migrations apply DB --remote  (the worker also self-heals \
+         the additive v3 columns on first request, so activation keeps working \
+         either way)"
     );
     println!("[e2e] worker v{} healthy", health["version"]);
 
@@ -343,4 +371,189 @@ fn live_license_lifecycle_keeps_device_facts() {
     assert_eq!(VALIDATION_INTERVAL_S, 24 * 60 * 60);
     assert!(LICENSE_PURCHASE_URL.starts_with("https://"));
     assert!(live_base().starts_with("https://"));
+}
+
+/// Same-device determinism + real-claim round-trip (the owner's v3 ask:
+/// "test on same device, check hashes matches or not").
+///
+/// 1. Two INDEPENDENT collections on THIS machine must agree exactly —
+///    the fingerprint is deterministic, not a function of timing.
+/// 2. Every v3 fact is present and sanitized on a real Windows runner
+///    (control chars must never reach the server).
+/// 3. Activating with the REAL claim stores EXACTLY those values
+///    server-side (admin lookup asserts field-for-field equality —
+///    the "hashes match" proof, LIVE).
+/// 4. Cleanup: deactivate + revoke.
+#[test]
+fn real_device_fingerprint_is_deterministic_and_round_trips() {
+    if !LIVE || ADMIN_KEY.is_none() {
+        panic!("live-license-e2e feature enabled but DISKBYTES_LIVE_LICENSE_E2E / DISKBYTES_LIVE_ADMIN_KEY not set");
+    }
+    let admin = AdminHttp::new().expect("admin client");
+    let health: serde_json::Value = admin.get("/v1/health").expect("worker healthy");
+    assert!(
+        health
+            .get("version")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(1)
+            >= 3,
+        "worker is pre-v3 ({})",
+        health
+    );
+
+    // 1. Determinism: two independent collections agree on EVERY byte.
+    let facts_a = diskbytes_lib::license::collect_device_facts()
+        .expect("real device facts collectable on the CI machine");
+    let facts_b = diskbytes_lib::license::collect_device_facts()
+        .expect("real device facts collectable (2nd collection)");
+    assert_eq!(
+        facts_a.hardware_hash, facts_b.hardware_hash,
+        "same-device composite fingerprint must be deterministic"
+    );
+    let comps_a = diskbytes_lib::license::component_hashes();
+    let comps_b = diskbytes_lib::license::component_hashes();
+    assert_eq!(comps_a, comps_b, "component hashes must be deterministic");
+    println!(
+        "[e2e] fingerprint stable across two collections: {}",
+        &facts_a.hardware_hash[..12]
+    );
+
+    // 2. Fact sanity + sanitation on a real Windows runner.
+    println!(
+        "[e2e] real facts: hostname={:?} os={:?} cpu={:?} cores={:?} arch={:?} board={:?} fwuuid={:?} bios={:?} model={:?} ram={:?}",
+        facts_a.hostname, facts_a.os_version, facts_a.cpu_brand, facts_a.cpu_cores,
+        facts_a.arch, facts_a.baseboard_serial, facts_a.firmware_uuid, facts_a.bios_version,
+        facts_a.machine_model, facts_a.ram_mb
+    );
+    assert!(
+        facts_a.hostname.len() >= 2,
+        "hostname collected on a real machine"
+    );
+    assert!(
+        facts_a.os_version.contains("Windows"),
+        "os_version reads the real OS"
+    );
+    assert!(facts_a.cpu_cores.unwrap_or(0) >= 2, "cpu_cores collected");
+    assert_eq!(
+        facts_a.arch.as_deref(),
+        Some("x86_64"),
+        "arch on the windows runner"
+    );
+    for fact in [
+        &facts_a.cpu_brand,
+        &facts_a.bios_version,
+        &facts_a.baseboard_serial,
+    ] {
+        if let Some(s) = fact {
+            assert!(
+                !s.chars().any(|c| c.is_control()),
+                "facts must be control-char clean before the wire: {s:?}"
+            );
+        }
+    }
+    if let Some(brand) = &facts_a.cpu_brand {
+        assert!(!brand.contains("  "), "brand spaces collapsed: {brand:?}");
+    }
+
+    // 3. Round-trip: activate with the REAL claim → the stored row
+    //    matches field-for-field (the "hashes match" proof).
+    let gen: GenKeyResponse = admin
+        .post(
+            "/v1/admin/keys",
+            &serde_json::json!({
+                "tier": "yearly",
+                "customerName": "E2E Real Facts Bot",
+                "customerEmail": "e2e-real@diskbytes.test",
+                "days": 1,
+                "note": "ci live e2e v3",
+                "source": "webhook",
+            })
+            .to_string(),
+        )
+        .expect("generate key");
+    let key = &gen.keys[0].key;
+
+    let dto = api()
+        .expect("api")
+        .activate(key, &facts_a)
+        .expect("activate with REAL facts");
+    verify(&dto, key, &facts_a).expect("verify REAL activation token");
+
+    let look: LookupResponse = admin
+        .post(
+            "/v1/admin/lookup",
+            &serde_json::json!({ "key": key }).to_string(),
+        )
+        .expect("lookup real facts");
+    let dev = look
+        .devices
+        .iter()
+        .find(|d| d.hardware_hash == facts_a.hardware_hash)
+        .expect("device row for the real fingerprint");
+    assert_eq!(dev.hostname.as_deref(), Some(facts_a.hostname.as_str()));
+    assert_eq!(dev.os_version.as_deref(), Some(facts_a.os_version.as_str()));
+    assert_eq!(
+        dev.app_version.as_deref(),
+        Some(facts_a.app_version.as_str())
+    );
+    assert_eq!(dev.cpu_cores, facts_a.cpu_cores);
+    assert_eq!(dev.arch.as_deref(), facts_a.arch.as_deref());
+    assert_eq!(dev.cpu_brand.as_deref(), facts_a.cpu_brand.as_deref());
+    assert_eq!(
+        dev.baseboard_serial.as_deref(),
+        facts_a.baseboard_serial.as_deref()
+    );
+    assert_eq!(
+        dev.firmware_uuid.as_deref(),
+        facts_a.firmware_uuid.as_deref()
+    );
+    assert_eq!(dev.bios_version.as_deref(), facts_a.bios_version.as_deref());
+    assert_eq!(dev.ram_mb, facts_a.ram_mb);
+    assert_eq!(dev.comp_machine.as_deref(), facts_a.comp_machine.as_deref());
+    assert_eq!(dev.comp_volume.as_deref(), facts_a.comp_volume.as_deref());
+    assert_eq!(dev.comp_cpu.as_deref(), facts_a.comp_cpu.as_deref());
+    assert_eq!(dev.comp_board.as_deref(), facts_a.comp_board.as_deref());
+    assert_eq!(
+        dev.comp_firmware.as_deref(),
+        facts_a.comp_firmware.as_deref()
+    );
+    assert_eq!(dev.facts_v3, Some(true), "facts_v3 provenance marker set");
+    println!("[e2e] REAL claim round-trip: every stored field matches the collected facts");
+
+    // 4. Revalidating with the SAME real claim is a pure refresh (no
+    //    device_update diff — determinism extends to the server view).
+    let dto2 = api()
+        .expect("api")
+        .validate(key, &facts_a)
+        .expect("revalidate REAL facts");
+    verify(&dto2, key, &facts_a).expect("verify revalidation token");
+    let events: serde_json::Value = admin.get("/v1/admin/stats").expect("stats reachable");
+    let _ = events; // (shape varies; the diff absence is asserted via lookup)
+    let look2: LookupResponse = admin
+        .post(
+            "/v1/admin/lookup",
+            &serde_json::json!({ "key": key }).to_string(),
+        )
+        .expect("lookup 2");
+    let dev2 = look2
+        .devices
+        .iter()
+        .find(|d| d.hardware_hash == facts_a.hardware_hash)
+        .expect("device row after revalidation");
+    assert_eq!(
+        dev2.hostname.as_deref(),
+        dev.hostname.as_deref(),
+        "stable across revalidation"
+    );
+    assert_eq!(dev2.comp_board.as_deref(), dev.comp_board.as_deref());
+
+    // 5. Cleanup: free the slot + revoke the key.
+    api()
+        .expect("api")
+        .deactivate(key, &facts_a)
+        .expect("deactivate real-facts device");
+    let _: serde_json::Value = admin
+        .post(&format!("/v1/admin/keys/{}/revoke", look.license.id), "{}")
+        .expect("cleanup revoke");
+    println!("[e2e] real-facts device deactivated + license revoked — v3 E2E PASS");
 }

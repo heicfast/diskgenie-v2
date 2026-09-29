@@ -128,35 +128,6 @@ pub fn normalize_key(raw: &str) -> Option<String> {
 /// Collection order: the composite fingerprint first (the hard
 /// identity — its failure aborts activation), then the best-effort
 /// descriptive facts (each falls back to `None` independently; the
-/// server COALESCEs so a missing fact never blanks a stored one).
-fn device_facts(hardware_hash: String) -> DeviceFacts {
-    let hostname = crate::platform::os::hostname()
-        .or_else(|| std::env::var("COMPUTERNAME").ok())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| {
-            if cfg!(target_os = "macos") {
-                "Mac".to_string()
-            } else {
-                "PC".to_string()
-            }
-        });
-    let (comp_machine, comp_volume, comp_cpu) = crate::license::component_hashes();
-    DeviceFacts {
-        platform: platform_string().to_string(),
-        hardware_hash,
-        hostname,
-        os_version: crate::platform::os::os_version(),
-        app_version: env!("CARGO_PKG_VERSION").to_string(),
-        comp_machine,
-        comp_volume,
-        comp_cpu,
-        cpu_brand: crate::platform::os::cpuid_brand(),
-        ram_mb: crate::platform::os::ram_mb(),
-        machine_model: crate::platform::os::machine_model(),
-    }
-}
 
 /// The platform identifier the server binds slots by.
 fn platform_string() -> &'static str {
@@ -199,8 +170,8 @@ pub fn activate_license(
     let Some(normalized) = normalize_key(key) else {
         return Err(LicenseError::InvalidKey.to_string());
     };
-    let hw = license::hardware_id()?;
-    let facts = device_facts(hw.clone());
+    let facts = license::collect_device_facts()?;
+    let hw = facts.hardware_hash.clone();
     let http = ReqwestLicense::new()?;
     let api = LicenseApi::new(http);
 
@@ -321,8 +292,7 @@ pub fn deactivate_license(mgr: State<'_, LicenseManager>, app: AppHandle) -> Res
         return Ok(());
     }
     if !state.simulated {
-        if let (Ok(hw), Ok(http)) = (license::hardware_id(), ReqwestLicense::new()) {
-            let facts = device_facts(hw);
+        if let (Ok(facts), Ok(http)) = (license::collect_device_facts(), ReqwestLicense::new()) {
             let api = LicenseApi::new(http);
             if let Err(e) = api.deactivate(&state.license_key, &facts) {
                 if e.is_hard() {
@@ -379,8 +349,8 @@ fn validate_and_apply(
         return (view(&state, now), None);
     }
     let mut error = None;
-    let hw = match license::hardware_id() {
-        Ok(hw) => hw,
+    let (facts, hw) = match license::collect_device_facts() {
+        Ok(f) => (f.clone(), f.hardware_hash),
         Err(e) => {
             // Fingerprint unreadable (WMI-hobbled machine?): keep the
             // grace path; the token expiry is the backstop.
@@ -388,7 +358,6 @@ fn validate_and_apply(
             return (view(&state, now), None);
         }
     };
-    let facts = device_facts(hw.clone());
     let result = match ReqwestLicense::new() {
         Ok(http) => LicenseApi::new(http).validate(&state.license_key, &facts),
         Err(_) => Err(LicenseError::Network),

@@ -263,11 +263,15 @@ pub fn cpuid_brand() -> Option<String> {
                 brand.push_str(&String::from_utf8_lossy(&chunk));
             }
         }
-        let trimmed = brand.trim();
-        if trimmed.is_empty() {
+        // v3 fix: CPUID brand strings carry NUL padding between/after
+        // the leaf fragments on QEMU/VMware-style virtual CPUs — a raw
+        // .trim() keeps the NULs and the SERVER then has to drop the
+        // whole field. Clean controls + collapse spaces client-side.
+        let cleaned = clean_hw_string(&brand);
+        if cleaned.is_empty() {
             None
         } else {
-            Some(trimmed.to_string())
+            Some(cleaned)
         }
     }
 }
@@ -390,4 +394,193 @@ pub fn os_version() -> String {
     } else {
         "Windows".to_string()
     }
+}
+
+// ============================================================================
+// v3 device facts: SMBIOS baseboard / firmware UUID / BIOS build / cores / arch
+// ============================================================================
+
+/// SMBIOS baseboard serial (v3 device fact): the registry mirror of the
+/// Type 2 (Baseboard) structure, straight from the HARDWARE hive the
+/// kernel rebuilds from firmware at every boot (readable without
+/// admin). `None` when the OEM left it blank ("To be filled by O.E.M."
+/// is treated as absent).
+#[must_use]
+pub fn baseboard_serial() -> Option<String> {
+    let raw = reg_sz(r"HARDWARE\DESCRIPTION\System\BIOS", "BaseBoardSerialNumber")?;
+    let cleaned = clean_hw_string(&raw);
+    absent_marker(&cleaned).then_some(cleaned)
+}
+
+/// BIOS/firmware build string (v3 device fact, display-only):
+/// e.g. "DELL   - 1072009", "American Megatrends Inc. 5.17". `None`
+/// when blank.
+#[must_use]
+pub fn firmware_version() -> Option<String> {
+    let raw = reg_sz(r"HARDWARE\DESCRIPTION\System\BIOS", "BIOSVersion")?;
+    let cleaned = clean_hw_string(&raw);
+    absent_marker(&cleaned).then_some(cleaned)
+}
+
+/// SMBIOS System UUID (v3 device fact): parsed straight from the raw
+/// `GetSystemFirmwareTable("RSMB")` table — the Type 1 (System
+/// Information) structure's UUID field at offset 8. This is the
+/// hardware identity Windows Autopilot hashes; it survives OS
+/// reinstall and drive swaps. `None` when the table is unreadable or
+/// the UUID is the "not present / not set" sentinel.
+#[must_use]
+pub fn firmware_uuid() -> Option<String> {
+    let table = raw_smbios()?;
+    parse_smbios_uuid(&table)
+}
+
+/// Logical CPU count (v3 device fact). Windows groups/reservations can
+/// make `available_parallelism` report less than the physical logical
+/// count in exotic processor-group cases, but on consumer SKUs it is
+/// the logical processor count.
+#[must_use]
+pub fn cpu_cores() -> Option<u32> {
+    std::thread::available_parallelism()
+        .ok()
+        .map(|n| n.get() as u32)
+}
+
+/// CPU architecture (v3 device fact): `std::env::consts::ARCH`
+/// ("x86_64" / "aarch64") — the Rust target triple's arch segment.
+#[must_use]
+pub fn arch() -> &'static str {
+    std::env::consts::ARCH
+}
+
+/// The raw SMBIOS table via `GetSystemFirmwareTable` with provider
+/// 'RSMB'. The buffer starts with the `RawSMBIOSData` header
+/// (calling method, major, minor, dmi revision, length) followed by
+/// the structure stream.
+fn raw_smbios() -> Option<Vec<u8>> {
+    use windows::Win32::System::SystemInformation::GetSystemFirmwareTable;
+    const RSMB: u32 = u32::from_le_bytes(*b"RSMB");
+    // Size probe: NULL buffer returns the required size.
+    // SAFETY: size-only probe per the API contract.
+    let need = unsafe { GetSystemFirmwareTable(RSMB, 0, None, 0) };
+    if need == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; need as usize];
+    // SAFETY: buffer sized by the probe; length passed.
+    let got = unsafe {
+        GetSystemFirmwareTable(
+            RSMB,
+            0,
+            Some(buf.as_mut_ptr()),
+            u32::try_from(buf.len()).unwrap_or(0),
+        )
+    };
+    if got == 0 || got as usize > buf.len() {
+        return None;
+    }
+    buf.truncate(got as usize);
+    Some(buf)
+}
+
+/// Walk the SMBIOS structure stream and extract the Type 1 (System
+/// Information) UUID, formatted in the canonical 8-4-4-4-12 form.
+/// All-zero ("not set") and all-0xFF ("not present") UUIDs are treated
+/// as absent. Handles SMBIOS 2.x/3.x (both table encodings keep the
+/// same structure-stream layout after the 8-byte header).
+fn parse_smbios_uuid(table: &[u8]) -> Option<String> {
+    // RawSMBIOSData header: 1+1+1+1+4 = 8 bytes before the stream.
+    const HEADER: usize = 8;
+    if table.len() <= HEADER {
+        return None;
+    }
+    let mut stream = &table[HEADER..];
+    let mut type1_uuid: Option<[u8; 16]> = None;
+    while stream.len() >= 4 {
+        let hdr = &stream[..4];
+        let struct_type = hdr[0];
+        let length = hdr[1] as usize; // formatted area + header
+        if length < 4 || stream.len() < length {
+            break; // corrupt table — bail out honestly
+        }
+        if struct_type == 1 && length >= 0x1A && type1_uuid.is_none() {
+            // Type 1 formatted area: UUID occupies [8, 24).
+            let mut uuid = [0u8; 16];
+            uuid.copy_from_slice(&stream[8..24]);
+            type1_uuid = Some(uuid);
+        }
+        // Skip the formatted area, then the string area (terminated by
+        // a double NUL — walk until two consecutive zeros).
+        let mut pos = length;
+        while pos + 1 < stream.len() {
+            if stream[pos] == 0 && stream[pos + 1] == 0 {
+                pos += 2;
+                break;
+            }
+            pos += 1;
+        }
+        if pos >= stream.len() {
+            break;
+        }
+        stream = &stream[pos..];
+        // Type 127 = end-of-table marker.
+        if struct_type == 127 {
+            break;
+        }
+    }
+    let uuid = type1_uuid?;
+    // SMBIOS UUIDs are "not set" (all zero) or "not present" (all 0xFF)
+    // on many consumer boards / VMs — not an identity.
+    if uuid.iter().all(|&b| b == 0) || uuid.iter().all(|&b| b == 0xFF) {
+        return None;
+    }
+    // Canonical text form (network-byte order for the first three
+    // fields matches how Windows displays it, since SMBIOS ≥ 2.6
+    // defines the UUID as little-endian on the wire and tools show the
+    // canonical RFC form).
+    let hexs = |b: &[u8]| -> String { b.iter().map(|x| format!("{x:02x}")).collect() };
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        hexs(&uuid[0..4]),
+        hexs(&uuid[4..6]),
+        hexs(&uuid[6..8]),
+        hexs(&uuid[8..10]),
+        hexs(&uuid[10..16])
+    ))
+}
+
+/// Strip control characters (NUL padding, stray CR/LF) and collapse
+/// runs of spaces — SMBIOS/registry strings frequently arrive padded.
+fn clean_hw_string(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut last_space = false;
+    for ch in raw.chars() {
+        if ch.is_control() {
+            last_space = out.ends_with(' ');
+            continue;
+        }
+        if ch == ' ' {
+            if !last_space && !out.is_empty() {
+                out.push(' ');
+            }
+            last_space = true;
+        } else {
+            out.push(ch);
+            last_space = false;
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// True when the string is a placeholder the OEM never filled in —
+/// "To be filled by O.E.M." and friends carry no identity.
+fn absent_marker(s: &str) -> bool {
+    const MARKERS: [&str; 5] = [
+        "to be filled",
+        "default string",
+        "not specified",
+        "not applicable",
+        "none",
+    ];
+    let lower = s.to_ascii_lowercase();
+    !lower.is_empty() && !MARKERS.iter().any(|m| lower.contains(m))
 }

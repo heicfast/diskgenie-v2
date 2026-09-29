@@ -324,3 +324,111 @@ pub fn os_version() -> String {
         "macOS".to_string()
     }
 }
+
+// ============================================================================
+// v3 device facts: platform serial / firmware UUID / cores / arch
+// ============================================================================
+
+/// Read one string property off the IOPlatformExpertDevice service
+/// (the root of the platform device tree — machine serial, platform
+/// UUID, firmware build all live here). Shared by
+/// [`machine_guid`]/[`baseboard_serial`]/[`firmware_uuid`].
+fn iokit_platform_property(key: &[u8]) -> Option<String> {
+    // `key` must be NUL-terminated for CFStringCreateWithCString.
+    let mut owned = Vec::with_capacity(key.len() + 1);
+    owned.extend_from_slice(key);
+    owned.push(0);
+    unsafe {
+        let name = CString::new("IOPlatformExpertDevice").ok()?;
+        // SAFETY: IOServiceMatching returns a CF dictionary consumed by
+        // IOServiceGetMatchingService.
+        let matching = IOServiceMatching(name.as_ptr());
+        if matching.is_null() {
+            return None;
+        }
+        // SAFETY: matching consumed by the lookup (release-on-consume);
+        // port 0 = kIOMainPortDefault (macOS 12+).
+        let service = IOServiceGetMatchingService(0, matching);
+        if service == 0 {
+            return None;
+        }
+        // SAFETY: create-rule CFString over the NUL-terminated key.
+        let key_cf = CFStringCreateWithCString(
+            std::ptr::null(),
+            owned.as_ptr(),
+            0x0800_0100, // kCFStringEncodingUTF8
+        );
+        if key_cf.is_null() {
+            // SAFETY: release the service on the failure path.
+            let _ = IOObjectRelease(service);
+            return None;
+        }
+        // SAFETY: property read from the live service object.
+        let prop = IORegistryEntryCreateCFProperty(service, key_cf, std::ptr::null(), 0);
+        // SAFETY: release the key after the query.
+        cf_release(key_cf);
+        let _ = IOObjectRelease(service);
+        if prop.is_null() {
+            return None;
+        }
+        let s = cf_string_to_string(prop);
+        // SAFETY: release the property object.
+        cf_release(prop);
+        s.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+}
+
+/// SMBIOS baseboard-serial analogue (v3 device fact):
+/// IOPlatformSerialNumber — the Mac's chassis serial etched at
+/// manufacture. Survives reinstalls and drive swaps; changes only with
+/// a logic-board replacement.
+#[must_use]
+pub fn baseboard_serial() -> Option<String> {
+    iokit_platform_property(b"IOPlatformSerialNumber")
+}
+
+/// Firmware UUID (v3 device fact): IOPlatformUUID — the same identity
+/// [`machine_guid`] hashes, exposed in its raw canonical form for the
+/// server's component forensics (a changed UUID with a stable serial
+/// is a logic-board swap; both changed = different machine).
+#[must_use]
+pub fn firmware_uuid() -> Option<String> {
+    iokit_platform_property(b"IOPlatformUUID")
+}
+
+/// Firmware build string (v3 device fact, display-only): Apple exposes
+/// it as the `firmware-version` IORegistry string on the platform
+/// device ("2091.40.5.0.0", "iBoot:1234.56.7"). `None` when absent.
+#[must_use]
+pub fn firmware_version() -> Option<String> {
+    iokit_platform_property(b"firmware-version")
+}
+
+/// Logical CPU count (v3 device fact) via `hw.logicalcpu`.
+#[must_use]
+pub fn cpu_cores() -> Option<u32> {
+    use super::ffi::sysctlbyname;
+    let Ok(name) = CString::new("hw.logicalcpu") else {
+        return None;
+    };
+    let mut value: u32 = 0;
+    let mut len = std::mem::size_of::<u32>();
+    // SAFETY: sysctlbyname into a fixed u32 slot.
+    let rc = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            &mut value as *mut u32 as *mut core::ffi::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (rc == 0 && value > 0).then_some(value)
+}
+
+/// CPU architecture (v3 device fact): `std::env::consts::ARCH`
+/// ("x86_64" on Intel / "aarch64" on Apple Silicon).
+#[must_use]
+pub fn arch() -> &'static str {
+    std::env::consts::ARCH
+}
