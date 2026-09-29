@@ -1381,10 +1381,17 @@ mod tests {
             }
 
             // ── Unicode + deep nesting: files the scanner must still
-            //    walk (2 more small groups).
+            //    walk (2 more small groups). LEADING space in the dir
+            //    name is a legal NTFS name and a genuine scanner edge
+            //    case; a TRAILING space is not — Win32 strips it per
+            //    component, so the on-disk name differs from every
+            //    later lookup of the middle component and mkdir
+            //    answers NotFound (Naming Files, Paths, and
+            //    Namespaces). This test has never run green anywhere —
+            //    the CI round surfaced it.
             let deep = root
                 .join("备份")
-                .join(" archival ")
+                .join(" archival")
                 .join("ännu")
                 .join("-depth-")
                 .join("₄");
