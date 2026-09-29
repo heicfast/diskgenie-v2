@@ -9,3 +9,6 @@ tool-results/
 Refrences-Screenshots/
 upload/
 .claude/
+
+# Local visual-audit captures (agent-browser sessions) — not CI artifacts
+ci-artifacts/local-audit/
