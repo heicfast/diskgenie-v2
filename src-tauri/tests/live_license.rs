@@ -171,7 +171,8 @@ struct LookupDevice {
 /// sha256 of the run stamp, so reruns never collide on slots but the
 /// hash is STABLE within a run, exactly like real hardware).
 fn run_facts(tag: &str) -> DeviceFacts {
-    let hw = diskbytes_lib::license::sha256_hex(&format!("live-e2e-{tag}-{run_stamp()}"));
+    let stamp = run_stamp();
+    let hw = diskbytes_lib::license::sha256_hex(&format!("live-e2e-{tag}-{stamp}"));
     DeviceFacts {
         platform: "windows".to_string(),
         hardware_hash: hw,
