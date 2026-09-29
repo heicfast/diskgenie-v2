@@ -1355,7 +1355,7 @@ mod tests {
             let mut expected_groups: Vec<(u64, u64, Vec<String>)> = Vec::new();
 
             // ── SMALL: 300 files (64–192 KiB) across the 8 formats,
-            //    30 exact-duplicate pairs. ~45 MB.
+            //    29 exact-duplicate pairs (i%10==0, i>0). ~45 MB.
             let small_dir = root.join("photos");
             fs::create_dir_all(&small_dir).unwrap();
             for i in 0..300u64 {
@@ -1369,14 +1369,19 @@ mod tests {
                 .unwrap();
                 if i % 10 == 0 && i > 0 {
                     // Duplicate of the PREVIOUS file (same content, same
-                    // size) → an exact group of 2.
+                    // size) → an exact group of 2. The pair's size is the
+                    // PREVIOUS index's (the copied file), not the current
+                    // one — after the %129 wrap the two differ by 128 KiB,
+                    // and the recorded size picked the wrong group in the
+                    // assertion's (size, count) lookup.
                     let prev = format!("shot_{:03}.{}", i - 1, FORMATS[((i - 1) % 8) as usize].0);
+                    let pair_size = (64 + (i - 1) % 129) * kib;
                     fs::copy(
                         small_dir.join(&prev),
                         small_dir.join(name.replace("shot", "copy")),
                     )
                     .unwrap();
-                    expected_groups.push((size, 2, vec![prev, name.replace("shot", "copy")]));
+                    expected_groups.push((pair_size, 2, vec![prev, name.replace("shot", "copy")]));
                 }
             }
 
