@@ -14,9 +14,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::license::{
-    self, DeviceFacts, EntitlementDto, LicenseApi, LicenseError, LicensePosture, LicenseState,
-    ReqwestLicense, TokenClaims, GRACE_DAYS, LICENSE_PUBLIC_KEY_HEX, LICENSE_PURCHASE_URL,
-    VALIDATION_INTERVAL_S,
+    self, EntitlementDto, LicenseApi, LicenseError, LicensePosture, LicenseState, ReqwestLicense,
+    TokenClaims, GRACE_DAYS, LICENSE_PUBLIC_KEY_HEX, LICENSE_PURCHASE_URL, VALIDATION_INTERVAL_S,
 };
 
 /// Error marker prefix the command layer appends so the WebView can
@@ -119,15 +118,6 @@ pub fn normalize_key(raw: &str) -> Option<String> {
             .all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c));
     ok.then_some(normalized)
 }
-
-/// Collect the device facts for activation (doc §6 + the v2 claim:
-/// platform + binding fingerprint + component hashes + descriptive
-/// facts — exactly what the server stores; no telemetry beyond the
-/// license layer's own events).
-///
-/// Collection order: the composite fingerprint first (the hard
-/// identity — its failure aborts activation), then the best-effort
-/// descriptive facts (each falls back to `None` independently; the
 
 /// The platform identifier the server binds slots by.
 fn platform_string() -> &'static str {

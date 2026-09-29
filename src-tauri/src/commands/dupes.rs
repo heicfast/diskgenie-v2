@@ -1423,10 +1423,14 @@ mod tests {
                 if i % 6 == 5 {
                     fs::copy(
                         media_dir.join(&name),
-                        media_dir.join(&name.replace("clip", "mirror")),
+                        media_dir.join(name.replace("clip", "mirror")),
                     )
                     .unwrap();
-                    expected_groups.push((size, 2, vec![name, name.replace("clip", "mirror")]));
+                    expected_groups.push((
+                        size,
+                        2,
+                        vec![name.clone(), name.replace("clip", "mirror")],
+                    ));
                 }
             }
 
@@ -1482,19 +1486,19 @@ mod tests {
                 if i == 3 {
                     fs::copy(
                         big_dir.join(&name),
-                        big_dir.join(&name.replace("vm-disk", "vm-copy")),
+                        big_dir.join(name.replace("vm-disk", "vm-copy")),
                     )
                     .unwrap();
                     fs::copy(
                         big_dir.join(&name),
-                        big_dir.join(&name.replace("vm-disk", "vm-clone")),
+                        big_dir.join(name.replace("vm-disk", "vm-clone")),
                     )
                     .unwrap();
                     expected_groups.push((
                         size,
                         3,
                         vec![
-                            name,
+                            name.clone(),
                             name.replace("vm-disk", "vm-copy"),
                             name.replace("vm-disk", "vm-clone"),
                         ],

@@ -457,24 +457,17 @@ pub fn arch() -> &'static str {
 /// (calling method, major, minor, dmi revision, length) followed by
 /// the structure stream.
 fn raw_smbios() -> Option<Vec<u8>> {
-    use windows::Win32::System::SystemInformation::GetSystemFirmwareTable;
-    const RSMB: u32 = u32::from_le_bytes(*b"RSMB");
+    use windows::Win32::System::SystemInformation::{GetSystemFirmwareTable, RSMB};
     // Size probe: NULL buffer returns the required size.
     // SAFETY: size-only probe per the API contract.
-    let need = unsafe { GetSystemFirmwareTable(RSMB, 0, None, 0) };
+    let need = unsafe { GetSystemFirmwareTable(RSMB, 0, None) };
     if need == 0 {
         return None;
     }
     let mut buf = vec![0u8; need as usize];
-    // SAFETY: buffer sized by the probe; length passed.
-    let got = unsafe {
-        GetSystemFirmwareTable(
-            RSMB,
-            0,
-            Some(buf.as_mut_ptr()),
-            u32::try_from(buf.len()).unwrap_or(0),
-        )
-    };
+    // SAFETY: buffer sized by the probe; the windows-rs 0.62 binding
+    // takes `Option<&mut [u8]>` and derives (ptr, len) from the slice.
+    let got = unsafe { GetSystemFirmwareTable(RSMB, 0, Some(&mut buf)) };
     if got == 0 || got as usize > buf.len() {
         return None;
     }

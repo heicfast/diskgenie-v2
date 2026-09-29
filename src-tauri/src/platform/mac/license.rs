@@ -352,10 +352,11 @@ fn iokit_platform_property(key: &[u8]) -> Option<String> {
         if service == 0 {
             return None;
         }
-        // SAFETY: create-rule CFString over the NUL-terminated key.
+        // SAFETY: create-rule CFString over the NUL-terminated key
+        // (the FFI takes `*const c_char` — a signed-char pointer).
         let key_cf = CFStringCreateWithCString(
             std::ptr::null(),
-            owned.as_ptr(),
+            owned.as_ptr().cast::<std::os::raw::c_char>(),
             0x0800_0100, // kCFStringEncodingUTF8
         );
         if key_cf.is_null() {
