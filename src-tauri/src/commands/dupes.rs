@@ -1446,7 +1446,14 @@ mod tests {
             let nd_dir = root.join("near-dups");
             fs::create_dir_all(&nd_dir).unwrap();
             for i in 0..6u64 {
-                let base = fmt_blob(3, 0x51DE + i, 8 * mib as usize);
+                // Seed stride 2, never consecutive: fmt_blob folds the
+                // seed with `| 1`, so 0x51DE+i for consecutive i
+                // COLLAPSED into one xorshift stream — the CI round
+                // found the a-pairs and b-pairs as six REAL duplicate
+                // groups (the pipeline was right; the fixture planted
+                // twins it never meant to). Stride-2 seeds stay
+                // distinct after the fold.
+                let base = fmt_blob(3, 0x51DE + i * 2, 8 * mib as usize);
                 let mut twin = base.clone();
                 twin[(PREFIX + mib / 2) as usize] ^= 0xA5;
                 fs::write(nd_dir.join(format!("nd-a{i}.zip")), &base).unwrap();
