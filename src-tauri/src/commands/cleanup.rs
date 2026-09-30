@@ -63,6 +63,7 @@ pub struct CleanupCommitted {
 /// per-item problems land in the response's `failed` list.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
+#[allow(clippy::too_many_arguments)] // the tauri command contract: 4 caller args + 4 framework States
 pub async fn commit_cleanup(
     generation: u64,
     items: Vec<CommitItem>,
@@ -96,6 +97,7 @@ pub async fn commit_cleanup(
 /// per-item problems land in the response's `failed` list.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
+#[allow(clippy::too_many_arguments)] // the tauri command contract: 4 caller args + 4 framework States
 pub async fn delete_permanently(
     generation: u64,
     items: Vec<CommitItem>,
@@ -125,6 +127,8 @@ pub async fn delete_permanently(
 /// The ordering invariants are documented in-body (same posture as
 /// start_scan/start_scan_turbo).
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
+// the shared lifecycle: 5 inputs + 4 framework States (bundling them would split the ordering invariants across a struct for no reader)
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
 async fn commit_shell_delete(
     generation: u64,

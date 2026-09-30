@@ -181,6 +181,22 @@ pub fn icon_png_data_url(_icon_path: &str) -> Option<String> {
     None
 }
 
+/// DisplayIcon-absent fallback (Windows probes the main executable):
+/// on macOS the .app bundle icon lives in Info.plist — a follow-up
+/// alongside `icon_png_data_url`; `None` keeps the honest glyph.
+#[must_use]
+pub fn find_main_exe(_install_location: &str, _app_name: &str) -> Option<String> {
+    None
+}
+
+/// MSIX/Store logos (the Windows shell Apps-folder pipeline): macOS
+/// has no Store-package namespace — every family honestly gets no
+/// icon (the fallback glyph), never a fake.
+#[must_use]
+pub fn msix_icon_data_urls(_families: &[String]) -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::new()
+}
+
 /// Cluster size (statfs f_bsize).
 #[must_use]
 pub fn cluster_size(path: &str) -> u32 {

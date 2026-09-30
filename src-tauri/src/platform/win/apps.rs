@@ -511,7 +511,8 @@ pub fn msix_icon_data_urls(families: &[String]) -> std::collections::HashMap<Str
     if families.is_empty() {
         return out;
     }
-    let wanted: HashMap<String, ()> = families.iter().map(|f| (f.to_lowercase(), ())).collect();
+    let wanted: std::collections::HashSet<String> =
+        families.iter().map(|f| f.to_lowercase()).collect();
 
     // SAFETY: known-folder item creation; default flags; the returned
     // IShellItem owns its references.
@@ -532,16 +533,15 @@ pub fn msix_icon_data_urls(families: &[String]) -> std::collections::HashMap<Str
     };
 
     // SAFETY: enum over the array; every Next hands us owned items.
-    let enum_items = match unsafe { items.EnumItems() } {
-        Ok(e) => e,
-        Err(_) => return out,
+    let Ok(enum_items) = (unsafe { items.EnumItems() }) else {
+        return out;
     };
     // SAFETY: pull in fixed batches; the slice length is the requested
     // count and `fetched` carries the actual yield.
     loop {
         let mut batch: [Option<IShellItem>; 16] = Default::default();
         let mut fetched: u32 = 0;
-        let hr = unsafe { enum_items.Next(&mut batch, Some(&mut fetched as *mut u32)) };
+        let hr = unsafe { enum_items.Next(&mut batch, Some(std::ptr::addr_of_mut!(fetched))) };
         if hr.is_err() || fetched == 0 {
             break;
         }
@@ -564,14 +564,13 @@ pub fn msix_icon_data_urls(families: &[String]) -> std::collections::HashMap<Str
                 continue;
             };
             let family = family_raw.to_lowercase();
-            if !wanted.contains_key(&family) || out.contains_key(&family) {
+            if !wanted.contains(&family) || out.contains_key(&family) {
                 continue;
             }
             // SAFETY: QI for the image factory on the same item; the
             // HBITMAP returned by GetImage is ours to delete.
-            let factory: IShellItemImageFactory = match item.cast() {
-                Ok(f) => f,
-                Err(_) => continue,
+            let Ok(factory) = item.cast::<IShellItemImageFactory>() else {
+                continue;
             };
             let size = windows::Win32::Foundation::SIZE { cx: 48, cy: 48 };
             let hbm = match unsafe { factory.GetImage(size, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK) }
@@ -665,14 +664,16 @@ fn hbitmap_png_data_url(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<S
     unsafe {
         let dc = CreateCompatibleDC(None);
         let old = SelectObject(dc, hbm.into());
-        let mut bmi = BITMAPINFO::default();
-        bmi.bmiHeader = BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w as i32,
-            biHeight: -(h as i32), // top-down
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: 0, // BI_RGB
+        let mut bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w as i32,
+                biHeight: -(h as i32), // top-down
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: 0, // BI_RGB
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut pixels = vec![0u8; w * h * 4];

@@ -316,7 +316,7 @@ fn enumerate_apps(platform: HostPlatform) -> Vec<AppEntry> {
             if app.source == AppSource::Msix && app.icon.is_empty() {
                 if let Some(family) = msix_family_of.get(&app.id) {
                     if let Some(url) = msix_icons.get(&family.to_lowercase()) {
-                        app.icon = url.clone();
+                        app.icon.clone_from(url);
                     }
                 }
             }

@@ -47,8 +47,7 @@ pub enum OnDisk {
 #[must_use]
 pub fn path_on_disk_truth(display_path: &str) -> OnDisk {
     use windows::Win32::Foundation::{
-        GetLastError, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
-        ERROR_SHARING_VIOLATION, WIN32_ERROR,
+        GetLastError, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, WIN32_ERROR,
     };
     let wide_path = wide(display_path);
     // SAFETY: NUL-terminated path.
@@ -61,12 +60,12 @@ pub fn path_on_disk_truth(display_path: &str) -> OnDisk {
     let err: WIN32_ERROR = unsafe { GetLastError() };
     match err {
         ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => OnDisk::Gone,
-        // Access denied / sharing violation means the item EXISTS but
-        // cannot be probed — the conservative read is "still there".
-        ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION => OnDisk::Present,
-        // Everything else (invalid parameter, bad name): the safest
-        // posture for a VERIFICATION pass is Present (never claim a
-        // delete we can't prove).
+        // Everything else — access denied / sharing violation (the
+        // item EXISTS but cannot be probed: a locked file that FAILED
+        // to delete reads the same as a missing one to the INVALID
+        // sentinel), invalid names, any unresolvable case — reads as
+        // Present: a verification pass never claims a delete it
+        // cannot prove.
         _ => OnDisk::Present,
     }
 }

@@ -96,6 +96,7 @@ pub struct StagedPath {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrashedItem {
+    /// The item's display path (as staged).
     pub path: String,
     /// The item was already gone (counted as recycled, no-op).
     pub already_gone: bool,
@@ -107,7 +108,9 @@ pub struct TrashedItem {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FailedItem {
+    /// The refused item's display path.
     pub path: String,
+    /// User-readable refusal reason.
     pub reason: String,
 }
 
@@ -115,7 +118,9 @@ pub struct FailedItem {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecycleOutcome {
+    /// Items that left the disk (incl. already-gone + nested).
     pub trashed: Vec<TrashedItem>,
+    /// Items refused with reasons (still on disk).
     pub failed: Vec<FailedItem>,
 }
 
@@ -329,6 +334,10 @@ mod windows_pass {
         clippy::ref_as_ptr,
         clippy::inline_always
     )]
+    // The COM pass is one reviewed unit: flags → queueing →
+    // PerformOperations → sink reconciliation → the disk-verification
+    // loop; splitting it would scatter the ownership/Safety contract.
+    #![allow(clippy::too_many_lines)]
     use super::{
         path_on_disk_truth, recycle_seam, Arc, ComApartment, FailedItem, Mutex, StagedPath,
         TrashedItem,
