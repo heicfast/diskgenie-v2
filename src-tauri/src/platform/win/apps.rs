@@ -573,10 +573,10 @@ pub fn msix_icon_data_urls(families: &[String]) -> std::collections::HashMap<Str
                 continue;
             };
             let size = windows::Win32::Foundation::SIZE { cx: 48, cy: 48 };
-            let hbm = match unsafe { factory.GetImage(size, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK) }
-            {
-                Ok(b) => b,
-                Err(_) => continue,
+            let Ok(hbm) =
+                (unsafe { factory.GetImage(size, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK) })
+            else {
+                continue;
             };
             let png = hbitmap_png_data_url(hbm);
             // SAFETY: GetImage's HBITMAP is caller-owned.
@@ -648,7 +648,7 @@ fn hbitmap_png_data_url(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<S
         GetObjectW(
             hbm.into(),
             std::mem::size_of::<BITMAP>() as i32,
-            Some(&mut bm as *mut _ as *mut std::ffi::c_void),
+            Some(std::ptr::addr_of_mut!(bm).cast::<std::ffi::c_void>()),
         )
     } == 0
     {
