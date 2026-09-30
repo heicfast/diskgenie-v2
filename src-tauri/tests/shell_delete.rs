@@ -27,8 +27,23 @@
 #![allow(unsafe_code)]
 
 use diskbytes_lib::recycle::{delete_permanently, move_to_recycle_bin, StagedPath};
+use std::sync::{Mutex, MutexGuard};
 use windows::core::PCWSTR;
 use windows::Win32::UI::Shell::{SHQueryRecycleBinW, SHQUERYRBINFO};
+
+/// The destructive-pipeline tests share ONE physical Recycle Bin and
+/// ONE probe API — parallel execution raced the count probes (the
+/// permanent test's "unchanged" assertion saw a sibling test's
+/// recycled item land mid-window). Serial execution is the honest
+/// contract for destructive integration tests anyway; the whole file
+/// runs in ~2 s.
+static BIN_SERIAL: Mutex<()> = Mutex::new(());
+
+/// Take the shared serial lock (held for the test's body).
+fn lock_bin() -> MutexGuard<'static, ()> {
+    BIN_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn staged(id: u32, path: &str, size: u64, protected: bool) -> StagedPath {
     StagedPath {
         id,
@@ -77,6 +92,7 @@ fn write_file(path: &std::path::Path, bytes: usize) {
 
 #[test]
 fn recycle_moves_a_real_file_to_the_real_bin() {
+    let _serial = lock_bin();
     let root = scratch("recycle-file");
     let file = root.join("recycle-me.bin");
     write_file(&file, 4096);
@@ -108,6 +124,7 @@ fn recycle_moves_a_real_file_to_the_real_bin() {
 
 #[test]
 fn permanent_delete_removes_without_touching_the_bin() {
+    let _serial = lock_bin();
     let root = scratch("permanent-file");
     let file = root.join("gone-forever.bin");
     write_file(&file, 8192);
@@ -135,6 +152,7 @@ fn permanent_delete_removes_without_touching_the_bin() {
 
 #[test]
 fn recycle_moves_a_real_folder_with_its_children() {
+    let _serial = lock_bin();
     let root = scratch("recycle-folder");
     let folder = root.join("staged-folder");
     std::fs::create_dir_all(&folder).expect("folder");
@@ -171,6 +189,7 @@ fn recycle_moves_a_real_folder_with_its_children() {
 
 #[test]
 fn the_same_file_staged_twice_is_moved_once() {
+    let _serial = lock_bin();
     let root = scratch("dupe-stage");
     let file = root.join("twice.bin");
     write_file(&file, 512);
@@ -202,6 +221,7 @@ fn the_same_file_staged_twice_is_moved_once() {
 
 #[test]
 fn a_missing_file_counts_as_already_gone() {
+    let _serial = lock_bin();
     let root = scratch("missing");
     let path = root
         .join("never-existed.bin")
@@ -218,6 +238,7 @@ fn a_missing_file_counts_as_already_gone() {
 
 #[test]
 fn protected_items_are_refused_before_any_shell_move() {
+    let _serial = lock_bin();
     let root = scratch("protected");
     let file = root.join("protected.bin");
     write_file(&file, 256);
