@@ -27,7 +27,7 @@
 #![allow(unsafe_code)]
 
 use diskbytes_lib::recycle::{delete_permanently, move_to_recycle_bin, StagedPath};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use windows::core::PCWSTR;
 use windows::Win32::UI::Shell::{SHQueryRecycleBinW, SHQUERYRBINFO};
 
@@ -41,7 +41,7 @@ static BIN_SERIAL: Mutex<()> = Mutex::new(());
 
 /// Take the shared serial lock (held for the test's body).
 fn lock_bin() -> MutexGuard<'static, ()> {
-    BIN_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    BIN_SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn staged(id: u32, path: &str, size: u64, protected: bool) -> StagedPath {

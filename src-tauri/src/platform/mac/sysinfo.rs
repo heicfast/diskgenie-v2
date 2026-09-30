@@ -66,11 +66,11 @@ pub enum OnDisk {
 #[must_use]
 pub fn path_on_disk_truth(display_path: &str) -> OnDisk {
     match std::fs::symlink_metadata(display_path) {
-        Ok(_) => OnDisk::Present,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => OnDisk::Gone,
-        // Permission errors on an EXISTING item read as errors here —
-        // the conservative read is "still there".
-        Err(_) => OnDisk::Present,
+        // Everything else — present, or unreadable (permission denied
+        // on an existing item) — conservatively reads as "still
+        // there": never claim a delete you cannot prove.
+        _ => OnDisk::Present,
     }
 }
 

@@ -59,9 +59,14 @@ use std::sync::Arc;
 #[cfg(windows)]
 use parking_lot::Mutex;
 
-use crate::platform::os::{
-    bin_policy_for, path_missing, path_on_disk_truth, path_on_fixed_drive, OnDisk,
-};
+use crate::platform::os::{bin_policy_for, path_missing, path_on_fixed_drive, OnDisk};
+
+// Windows-only: the shared pre-flight uses the cheaper `path_missing`
+// probe; only the Windows COM pass's disk-verification loop consumes
+// `path_on_disk_truth` (re-imported from `super` inside `windows_pass`).
+// The macOS pass imports its own directly from `platform::os`.
+#[cfg(windows)]
+use crate::platform::os::path_on_disk_truth;
 
 #[cfg(windows)]
 use crate::platform::os::recycle_seam;
@@ -685,10 +690,7 @@ mod mac_pass {
         if mode == super::DeleteMode::Permanent {
             for c in candidates {
                 // R7.1-allow: owner-sanctioned permanent-delete
-                let removed = if std::fs::symlink_metadata(&c.path)
-                    .map(|m| m.is_dir())
-                    .unwrap_or(false)
-                {
+                let removed = if std::fs::symlink_metadata(&c.path).is_ok_and(|m| m.is_dir()) {
                     std::fs::remove_dir_all(&c.path) // R7.1-allow: owner-sanctioned permanent-delete
                 } else {
                     std::fs::remove_file(&c.path) // R7.1-allow: owner-sanctioned permanent-delete
