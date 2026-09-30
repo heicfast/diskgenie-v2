@@ -488,6 +488,73 @@ export function stripItems(c: QwCat): Record<string, unknown> {
   };
 }
 
+/** The shared cleanup-commit body (mock parity with
+ * `recycle::shell_delete` + `plan_commit`): shortest-first, nested and
+ * duplicate paths absorbed, protected items refused with a reason, the
+ * tree surgered without a rescan, the `cleanup-committed` event fired.
+ * The mock has no real shell — the Windows CI integration test owns
+ * the real IFileOperation proof. */
+function commitShellDeleteMock(
+  a: Record<string, unknown>,
+  _mode: "recycle" | "permanent",
+): Record<string, unknown> {
+  licenseGate();
+  const items = (a.items ?? []) as { id: number; path: string; size: number }[];
+  // plan_commit: sort shortest-first, absorb nested + same-path rows.
+  const sorted = [...items].sort((x, y) =>
+    x.path.length === y.path.length ? x.path.localeCompare(y.path) : x.path.length - y.path.length,
+  );
+  const keep: { id: number; path: string; size: number }[] = [];
+  const absorbed: { id: number; path: string }[] = [];
+  for (const it of sorted) {
+    const hit = keep.find(
+      (k) =>
+        k.path.toLowerCase() === it.path.toLowerCase() ||
+        (it.path.length > k.path.length &&
+          it.path.toLowerCase().startsWith(k.path.toLowerCase()) &&
+          it.path[k.path.length] === "\\"),
+    );
+    if (hit) absorbed.push({ id: it.id, path: it.path });
+    else keep.push(it);
+  }
+  const failed: { path: string; reason: string }[] = [];
+  const removed: { id: number; path: string }[] = [];
+  const removedIds: number[] = [];
+  for (const it of keep) {
+    if (it.id > 0 && tree.nodes[it.id]?.protected) {
+      failed.push({ path: it.path, reason: "Windows manages this item" });
+    } else {
+      if (it.id > 0 && it.id < tree.nodes.length) removedIds.push(it.id);
+      removed.push({ id: it.id, path: it.path });
+    }
+  }
+  tree.removeSubtrees(removedIds);
+  const st = tree.stats(0);
+  // Navigation fixup parity: a commit that removes the ON-SCREEN
+  // folder lands the view on a survivor (the real engine walks the
+  // parent chain; the mock's root is the universal survivor).
+  const askedFolder = Number(a.currentFolder ?? 0);
+  const landed = removedIds.includes(askedFolder) ? 0 : askedFolder;
+  const askedSelection = a.selectedNode == null ? null : Number(a.selectedNode);
+  const result = {
+    generation: tree.generation,
+    // Removed roots + absorbed rows (nested) — every staged row whose
+    // path moved clears from the queue (Rust parity).
+    trashed: [
+      ...removed.map((r) => ({ path: r.path, alreadyGone: false, nested: false })),
+      ...absorbed.map((r) => ({ path: r.path, alreadyGone: false, nested: true })),
+    ],
+    failed,
+    stats: [st.logical, st.onDisk, st.files, st.folders],
+    currentFolder: landed,
+    selectedNode: askedSelection != null && removedIds.includes(askedSelection) ? null : askedSelection,
+  };
+  window.setTimeout(() => {
+    emitMockEvent("cleanup-committed", result);
+  }, 60);
+  return result;
+}
+
 const commands: Record<string, Cmd> = {
   // ── scan lifecycle ────────────────────────────────────────────────
   get_dev_hooks: () => ({
@@ -818,28 +885,13 @@ const commands: Record<string, Cmd> = {
   preview_text: () => ({ text: "The quick brown fox jumps over the lazy dog.\n".repeat(40), truncated: false, read: 1120 }),
 
   // ── cleanup ───────────────────────────────────────────────────────
-  commit_cleanup: (a) => {
-    licenseGate();
-    const items = (a.items ?? []) as { id: number; path: string; size: number }[];
-    const ids = items.map((i) => i.id).filter((id) => id > 0 && id < tree.nodes.length && !tree.nodes[id].protected);
-    const failed = items
-      .filter((i) => i.id > 0 && tree.nodes[i.id]?.protected)
-      .map((i) => ({ path: i.path, reason: "Windows manages this item" }));
-    tree.removeSubtrees(ids);
-    const st = tree.stats(0);
-    const result = {
-      generation: tree.generation,
-      trashed: ids.map((id) => ({ path: fmtPath(id), alreadyGone: false, nested: false })),
-      failed,
-      stats: [st.logical, st.onDisk, st.files, st.folders],
-      currentFolder: 0,
-      selectedNode: null,
-    };
-    window.setTimeout(() => {
-      emitMockEvent("cleanup-committed", result);
-    }, 60);
-    return result;
-  },
+  // Both delete modes share one body (the mock has no real shell —
+  // the Windows CI integration test owns the real IFileOperation
+  // proof). Mirrors recycle::plan_commit: shortest-first, nested +
+  // duplicate paths absorbed, protected refused, every absorbed row
+  // re-joins `trashed` (nested) so the queue clears honestly.
+  commit_cleanup: (a) => commitShellDeleteMock(a, "recycle"),
+  delete_permanently: (a) => commitShellDeleteMock(a, "permanent"),
 
   // ── duplicates ─────────────────────────────────────────────────────────────────
   // One invoke, one result — matches the engine contract. The ~900 ms

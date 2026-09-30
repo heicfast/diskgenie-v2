@@ -36,7 +36,7 @@ import {
   ScanLine as ScanLineIcon, Search as SearchIcon, Settings as SettingsIcon,
   Shield as ShieldIcon, Smartphone as SmartphoneIcon, Sparkles as SparklesIcon,
   Square as SquareIcon, Sun as SunIcon, Trash2 as Trash2Icon, Wifi as WifiIcon,
-  X as XIcon, Download as DownloadIcon,
+  X as XIcon, Download as DownloadIcon, TriangleAlert as TriangleAlertIcon,
 } from "lucide-react";
 
 export type IconProps = SVGProps<SVGSVGElement> & { size?: number | string };
@@ -245,6 +245,7 @@ export {
   LockKeyholeIcon, Maximize2Icon, MemoryStickIcon, MinusIcon, MoonIcon,
   NetworkIcon, PackageOpenIcon, PanelRightIcon, PlusIcon, RefreshCwIcon,
   ScanLineIcon, SearchIcon, SettingsIcon, ShieldIcon, SmartphoneIcon,
+  TriangleAlertIcon,
   SparklesIcon, SquareIcon, SunIcon, Trash2Icon, WifiIcon, XIcon,
 };
 

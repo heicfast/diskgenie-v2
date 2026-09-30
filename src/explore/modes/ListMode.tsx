@@ -151,6 +151,7 @@ export function ListMode(props: ListModeProps) {
               <button
                 key={`${row.id}:${vi.index}`}
                 type="button"
+                data-pulse-id={row.id}
                 className={`db-list-row ${props.selectedId === row.id ? "is-selected" : ""}`}
                 style={{
                   position: "absolute",

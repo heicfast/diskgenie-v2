@@ -18,10 +18,27 @@ const MAX = 2;
  * live in the same page (no focus/reload needed). */
 const RECENTS_EVENT = "diskbytes.recents-changed";
 
+/** ONE normalization point for scan-target labels (session 13): the
+ * This-PC target is "ThisPC" at the command seam, "This PC" as a
+ * display label — both spellings landed in Recents as two
+ * near-identical rows after an elevated --scan relaunch (the raw
+ * hook value vs the scanning-transition's normalized one). Every
+ * entry is display-shaped BEFORE the dedupe, so any spelling of the
+ * same target collapses to one row. */
+export function recentTargetLabel(path: string): string {
+  return /^this ?pc$/i.test(path.trim()) ? "This PC" : path;
+}
+
+/** Case-insensitive recents identity (Windows paths; "C:\A" and
+ * "c:\a" are the same destination). */
+const sameTarget = (a: string, b: string): boolean =>
+  a.toLowerCase() === b.toLowerCase();
+
 export function pushRecent(path: string): void {
   try {
+    const label = recentTargetLabel(path);
     const list: string[] = JSON.parse(window.localStorage.getItem(KEY) ?? "[]");
-    const next = [path, ...list.filter((p) => p !== path)].slice(0, MAX);
+    const next = [label, ...list.filter((p) => !sameTarget(recentTargetLabel(p), label))].slice(0, MAX);
     window.localStorage.setItem(KEY, JSON.stringify(next));
     window.dispatchEvent(new CustomEvent(RECENTS_EVENT));
   } catch {
@@ -58,9 +75,22 @@ export function RecentSection() {
 
   if (recent.length === 0) return null;
 
-  /** Navigate into the current tree when possible; scan otherwise. */
+  /** Navigate into the current tree when possible; scan otherwise.
+   * "This PC" navigates to the tree ROOT when the standing scan
+   * already IS the whole-PC scan (the session-13 report: the row
+   * restarted a full rescan every click, even seconds after the scan
+   * finished). */
   const open = async (p: string) => {
     setTab("explore");
+    const label = recentTargetLabel(p);
+    if (label === "This PC") {
+      if (status === "done" && /^this ?pc$/i.test(useScanStore.getState().scanTarget)) {
+        useExploreStore.getState().resetNavigation();
+        return;
+      }
+      void startScan("ThisPC");
+      return;
+    }
     if (status === "done") {
       try {
         const id = await invoke<number | null>("resolve_path", { generation, path: p });

@@ -52,6 +52,28 @@ pub fn path_missing(display_path: &str) -> bool {
     std::fs::symlink_metadata(display_path).is_err()
 }
 
+/// Post-operation disk truth (parity with `win::recycle::OnDisk` —
+/// the same "never claim a delete you cannot prove" contract).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnDisk {
+    /// Definitely deleted (NotFound from the metadata probe).
+    Gone,
+    /// Still on disk, or unreadable (denied) — never claim success.
+    Present,
+}
+
+/// Definitive existence probe for post-operation verification.
+#[must_use]
+pub fn path_on_disk_truth(display_path: &str) -> OnDisk {
+    match std::fs::symlink_metadata(display_path) {
+        Ok(_) => OnDisk::Present,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => OnDisk::Gone,
+        // Permission errors on an EXISTING item read as errors here —
+        // the conservative read is "still there".
+        Err(_) => OnDisk::Present,
+    }
+}
+
 /// No COM on macOS — a no-op guard with the same API.
 #[allow(dead_code)] // API parity: the only constructor call (recycle's COM pass)
                     // is Windows-gated; macOS uses NSWorkspace recycleURLs

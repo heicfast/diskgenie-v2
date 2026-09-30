@@ -30,7 +30,7 @@ import { bootstrapDupes } from "./state/dupes";
 import { preloadApplications } from "./state/applications";
 import { getBreadcrumb, type CrumbData } from "./viz/exploreIpc";
 import { invoke } from "./lib/ipc";
-import { pushRecent } from "./sidebar/RecentSection";
+import { pushRecent, recentTargetLabel } from "./sidebar/RecentSection";
 import { TourDriver } from "./shell/TourDriver";
 import { AppErrorBoundary } from "./shell/AppErrorBoundary";
 import { CheckIcon, Trash2Icon, UacShieldIcon } from "./components/Icon";
@@ -251,11 +251,14 @@ function AppShell() {
     if (!v.inspectorTouched) v.setInspectorVisible(true);
     // CI tour hook: the DISKBYTES_SCAN dev-hook target lands in Recents
     // here (user-started scans are pushed on the scanning transition
-    // below — the dev hook bypasses the UI click).
+    // below — the dev hook bypasses the UI click). The RAW value
+    // (e.g. "ThisPC" from an elevated --scan relaunch) is normalized
+    // through the same single label point as every other entry — the
+    // twin "This PC"/"ThisPC" rows died there (session 13).
     void (async () => {
       try {
         const hooks = await invoke<{ scan: string | null }>("get_dev_hooks").catch(() => null);
-        if (hooks?.scan) pushRecent(hooks.scan);
+        if (hooks?.scan) pushRecent(recentTargetLabel(hooks.scan));
       } catch {
         /* ignore */
       }
@@ -263,15 +266,15 @@ function AppShell() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
-  // Every user-started scan lands in Recents (paths display as-is;
-  // "ThisPC" gets its friendly label). Runs on the scanning transition
-  // so the entry exists even if the scan is cancelled midway. Reads the
-  // store directly — no stale-closure risk on the [status] dep.
+  // Every user-started scan lands in Recents (normalized to ONE label
+  // per target). Runs on the scanning transition so the entry exists
+  // even if the scan is cancelled midway. Reads the store directly —
+  // no stale-closure risk on the [status] dep.
   useEffect(() => {
     if (status !== "scanning") return;
     const t = useScanStore.getState().scanTarget;
     if (t && t.length > 0) {
-      pushRecent(t.toLowerCase() === "thispc" ? "This PC" : t);
+      pushRecent(recentTargetLabel(t));
     }
   }, [status]);
 

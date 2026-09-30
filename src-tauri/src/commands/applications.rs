@@ -251,8 +251,25 @@ fn enumerate_apps(platform: HostPlatform) -> Vec<AppEntry> {
         }
     }
 
-    // 4. Bundle sizes + icons + leftovers, in parallel.
+    // 4. Bundle sizes + leftovers, in parallel.
     let root_ref = &roots;
+    // MSIX: full package name (the entry id) → family name
+    // ("Name_PublisherHash" — the AUMID prefix the shell Apps folder
+    // carries). Captured BEFORE the parallel pass consumes the
+    // identities.
+    let msix_family_of: std::collections::HashMap<String, String> = entries
+        .iter()
+        .filter(|(a, i)| {
+            a.source == AppSource::Msix && !a.id.is_empty() && !i.family_name.is_empty()
+        })
+        .map(|(a, i)| (a.id.clone(), i.family_name.clone()))
+        .collect();
+    let msix_families: Vec<String> = {
+        let mut v: Vec<String> = msix_family_of.values().cloned().collect();
+        v.sort();
+        v.dedup();
+        v
+    };
     let mut out: Vec<AppEntry> = entries
         .into_par_iter()
         .map(|(mut app, identity)| {
@@ -265,21 +282,44 @@ fn enumerate_apps(platform: HostPlatform) -> Vec<AppEntry> {
         })
         .collect();
 
-    // Icons need the raw DisplayIcon paths (registry only) — a second
-    // parallel pass keeps the pipeline simple.
-    let icon_sources: std::collections::HashMap<String, String> = registry
-        .iter()
-        .map(|r| (r.id.clone(), r.display_icon.clone()))
-        .collect();
-    for app in &mut out {
-        if app.source == AppSource::Registry {
-            let source = icon_sources.get(&app.id).cloned().unwrap_or_default();
-            let icon_ref = if source.is_empty() {
-                app.install_location.clone()
-            } else {
-                source
-            };
-            app.icon = crate::platform::os::icon_png_data_url(&icon_ref).unwrap_or_default();
+    // 5. Icons (session 13 — the "default icons everywhere" report).
+    // Two gaps closed: MSIX/Store packages NEVER got icons (the pass
+    // was registry-only; WindowsApps is ACL-locked so the shell Apps
+    // folder is the source), and registry entries without a
+    // DisplayIcon fell back to the INSTALL FOLDER (a folder glyph as
+    // an "app icon" reads as broken) — now the main executable is
+    // probed first. The shell Apps-folder enumeration needs COM STA;
+    // the whole pass already runs on the blocking pool.
+    {
+        let _com = crate::platform::os::ComApartment::init();
+        // Registry entries: DisplayIcon → main exe → (nothing: the
+        // placeholder renders honestly instead of a folder glyph).
+        let icon_sources: std::collections::HashMap<String, String> = registry
+            .iter()
+            .map(|r| (r.id.clone(), r.display_icon.clone()))
+            .collect();
+        for app in &mut out {
+            if app.source == AppSource::Registry {
+                let source = icon_sources.get(&app.id).cloned().unwrap_or_default();
+                let icon_ref = if source.is_empty() {
+                    crate::platform::os::find_main_exe(&app.install_location, &app.name)
+                        .unwrap_or_default()
+                } else {
+                    source
+                };
+                app.icon = crate::platform::os::icon_png_data_url(&icon_ref).unwrap_or_default();
+            }
+        }
+        // MSIX packages: family name → logo from the shell Apps folder.
+        let msix_icons = crate::platform::os::msix_icon_data_urls(&msix_families);
+        for app in &mut out {
+            if app.source == AppSource::Msix && app.icon.is_empty() {
+                if let Some(family) = msix_family_of.get(&app.id) {
+                    if let Some(url) = msix_icons.get(&family.to_lowercase()) {
+                        app.icon = url.clone();
+                    }
+                }
+            }
         }
     }
 

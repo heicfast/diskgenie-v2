@@ -15,11 +15,60 @@ pub mod recycle_seam {
     pub use windows::Win32::System::Com::CLSCTX_ALL;
     pub use windows::Win32::UI::Shell::{
         FileOperation, IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl,
-        IShellItem, FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO,
+        IShellItem, FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI,
+        FOF_SILENT,
     };
     pub use windows::Win32::UI::Shell::{
         SHCreateItemFromParsingName, SIGDN_DESKTOPABSOLUTEPARSING,
     };
+}
+
+/// Post-operation disk truth for one path (the honest-accounting core:
+/// "the shell said OK" is NOT proof — the file's absence is).
+///
+/// - `Gone`: the path definitively no longer exists (FILE_NOT_FOUND /
+///   PATH_NOT_FOUND from the attributes probe).
+/// - `Present`: attributes resolved (or access was denied/sharing —
+///   an EXISTING-but-locked file reads the same as a missing one to
+///   `GetFileAttributesW`'s INVALID sentinel; a delete that merely
+///   failed must never be counted as trashed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnDisk {
+    /// Definitely deleted (not-found from the filesystem).
+    Gone,
+    /// Still on disk, or unreadable (locked/denied) — never claim
+    /// success while in this state.
+    Present,
+}
+
+/// Definitive existence probe (vs [`path_missing`], which treats
+/// "cannot read attributes" as missing — right for pre-flight
+/// dedup, WRONG for post-operation verification).
+#[must_use]
+pub fn path_on_disk_truth(display_path: &str) -> OnDisk {
+    use windows::Win32::Foundation::{
+        GetLastError, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
+        ERROR_SHARING_VIOLATION, WIN32_ERROR,
+    };
+    let wide_path = wide(display_path);
+    // SAFETY: NUL-terminated path.
+    let attrs = unsafe { GetFileAttributesW(PCWSTR(wide_path.as_ptr())) };
+    if attrs != INVALID_FILE_ATTRIBUTES {
+        return OnDisk::Present;
+    }
+    // SAFETY: reads the calling thread's last-error slot immediately
+    // after the probe above (no intervening Win32 call).
+    let err: WIN32_ERROR = unsafe { GetLastError() };
+    match err {
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => OnDisk::Gone,
+        // Access denied / sharing violation means the item EXISTS but
+        // cannot be probed — the conservative read is "still there".
+        ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION => OnDisk::Present,
+        // Everything else (invalid parameter, bad name): the safest
+        // posture for a VERIFICATION pass is Present (never claim a
+        // delete we can't prove).
+        _ => OnDisk::Present,
+    }
 }
 
 /// Per-drive Recycle Bin policy (spec §9 pre-flight rules).

@@ -3,14 +3,20 @@
  * outline pair, fixed-drive chips. Every action switches to Explore
  * (spec: "Sidebar actions always switch to the Explore tab").
  *
- * State-aware behavior (senior-UX rules):
+ * State-aware behavior (senior-UX rules; session 13 — navigate-first
+ * EVERYWHERE, the owner's drive-switch report):
  * - While a scan runs, the primary button morphs into "Stop scan" so
  *   there is ALWAYS a way to cancel (the scan store reverts to the
  *   previous tree optimistically).
  * - Home navigates INTO the current tree when the home path was part
  *   of the last scan (instant, no rescan); it only starts a new scan
  *   when no tree exists or the path is outside it.
- * - Drive chips stay scan actions ("Scan C:") — that is their contract.
+ * - "This PC" jumps to the tree ROOT when the standing scan already
+ *   covers the whole PC — a rescan on every click (the owner's
+ *   report) wasted minutes of work for zero information.
+ * - Drive chips navigate into the tree when the drive is already
+ *   scanned (the C:→D:→C: flip-flop never rescans); a scan starts
+ *   only when the drive is outside the current tree.
  */
 import { useEffect, useState } from "react";
 import { FolderIcon, HardDriveIcon, HomeIcon, ScanLineIcon, SquareIcon } from "../components/Icon";
@@ -58,6 +64,39 @@ export function ScanSection() {
     void startScan(target);
   };
 
+  /** The primary button: when the standing tree already IS the
+   * whole-PC scan, jump to its ROOT instead of rescanning (the owner:
+   * "when i click This PC it starts scan again no matter its completed
+   * already"). A different standing target (or no tree) scans. */
+  const scanThisPc = async () => {
+    setTab("explore");
+    if (status === "done" && /^this ?pc$/i.test(useScanStore.getState().scanTarget)) {
+      track(EVENTS.scanStarted, { target: "navigate-root" });
+      useExploreStore.getState().resetNavigation();
+      return;
+    }
+    scan("ThisPC");
+  };
+
+  /** Drive chips navigate-first: inside the current tree → jump (the
+   * C:→D: flip never rescans, session 13); outside it → scan. */
+  const openDrive = async (d: DriveChip) => {
+    setTab("explore");
+    if (status === "done") {
+      try {
+        const id = await invoke<number | null>("resolve_path", { generation, path: d.target });
+        if (id != null) {
+          track(EVENTS.scanStarted, { target: `navigate:${d.letter}` });
+          openFolder(id);
+          return;
+        }
+      } catch {
+        /* fall through to a fresh scan */
+      }
+    }
+    scan(d.target);
+  };
+
   /** Navigate-first Home: jump to the home folder inside the CURRENT
    * scan when possible; fall back to scanning it. Never wipes a
    * finished view just to move somewhere. */
@@ -101,7 +140,7 @@ export function ScanSection() {
           Stop scan
         </button>
       ) : (
-        <button type="button" className="db-ink-button" onClick={() => scan("ThisPC")}>
+        <button type="button" className="db-ink-button" onClick={() => void scanThisPc()}>
           <ScanLineIcon size={17} />
           {SCAN_THIS_PC}
         </button>
@@ -126,8 +165,8 @@ export function ScanSection() {
               type="button"
               className="db-chip"
               disabled={busy}
-              onClick={() => scan(d.target)}
-              title={`Scan ${d.letter}`}
+              onClick={() => void openDrive(d)}
+              title={`Open ${d.letter}`}
             >
               <HardDriveIcon size={12} />
               {d.letter}

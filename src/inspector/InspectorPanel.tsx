@@ -39,8 +39,12 @@ export function InspectorPanel({ onPreview }: { onPreview: (id: number) => void 
   const status = useScanStore((s) => s.status);
   const currentFolder = useExploreStore((s) => s.currentFolder);
   const selectedNode = useExploreStore((s) => s.selectedNode);
-  const openFolder = useExploreStore((s) => s.openFolder);
-  const contains = useCleanupStore((s) => s.contains);
+  const focusItem = useExploreStore((s) => s.focusItem);
+  // The queue ITEMS (not just the contains() helper — a stable
+  // function selector never re-renders, so the Add-to-Cleanup button
+  // kept its unstaged copy after a + click in a mode row while the
+  // same node was selected here).
+  const queuedIds = useCleanupStore((s) => new Set(s.items.map((i) => i.id)));
   const stage = useCleanupStore((s) => s.stage);
   const unstage = useCleanupStore((s) => s.unstage);
   const [details, setDetails] = useState<NodeDetailsData | null>(null);
@@ -114,7 +118,7 @@ export function InspectorPanel({ onPreview }: { onPreview: (id: number) => void 
     : details.isDir
       ? FolderIcon
       : categoryIcon(details.kind);
-  const staged = contains(details.id);
+  const staged = queuedIds.has(details.id);
   const kindColor = `#${details.kindColor.toString(16).padStart(6, "0")}`;
   // The synthetic This-PC root (multi-drive scan): node_path yields the
   // LABEL "This PC", not a real path. Staging it would hand the shell a
@@ -237,10 +241,12 @@ export function InspectorPanel({ onPreview }: { onPreview: (id: number) => void 
         <button
           type="button"
           className="db-outline"
-          onClick={() => {
-            if (details.isDir) openFolder(details.id);
-            else openFolder(currentFolder);
-          }}
+          title={
+            details.isDir
+              ? "Drill into this folder"
+              : "Show this file in the map — opens its folder and highlights it"
+          }
+          onClick={() => void focusItem(details.id, { isDir: details.isDir, path: details.path })}
         >
           <SparklesIcon size={14} /> Focus
         </button>

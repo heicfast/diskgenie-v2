@@ -2,6 +2,7 @@
 //! UserAssist, icons, process close, uninstaller exec.
 
 use windows::core::PCWSTR;
+use windows::Win32::Graphics::Gdi::DeleteObject;
 
 use super::wide;
 
@@ -447,10 +448,6 @@ fn resolve_known_folder_prefix(decoded: &str) -> Option<String> {
 /// extraction failure (the UI shows the placeholder).
 #[must_use]
 pub fn icon_png_data_url(icon_path: &str) -> Option<String> {
-    use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, SelectObject, BITMAPINFO,
-        BITMAPINFOHEADER, DIB_RGB_COLORS,
-    };
     use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
     use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
 
@@ -475,51 +472,15 @@ pub fn icon_png_data_url(icon_path: &str) -> Option<String> {
     }
     // SAFETY: hIcon owned from SHGetFileInfoW; ICONINFO out-struct
     // valid; all GDI objects freed below (hbmColor/hbmMask by us, hIcon
-    // by DestroyIcon, the DC by DeleteDC after deselecting).
+    // by DestroyIcon — the HBITMAP pipeline only BORROWS hbmColor).
     unsafe {
         let mut info = ICONINFO::default();
         let ok = GetIconInfo(fi.hIcon, &mut info).is_ok();
-        let mut result = None;
-        if ok && !info.hbmColor.is_invalid() {
-            let dc = CreateCompatibleDC(None);
-            let old = SelectObject(dc, info.hbmColor.into());
-            let mut bmi = BITMAPINFO::default();
-            let mut hdr = BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: 0,
-                biHeight: 0,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: 0, // BI_RGB
-                ..Default::default()
-            };
-            bmi.bmiHeader = hdr;
-            // Pass 1: dimensions (lpvBits = None).
-            if GetDIBits(dc, info.hbmColor, 0, 0, None, &mut bmi, DIB_RGB_COLORS) != 0 {
-                let w = bmi.bmiHeader.biWidth.max(0) as usize;
-                let h = (-bmi.bmiHeader.biHeight).max(0) as usize;
-                if w > 0 && h > 0 && w * h <= 1024 * 1024 {
-                    let mut pixels = vec![0u8; w * h * 4];
-                    hdr.biWidth = bmi.bmiHeader.biWidth;
-                    hdr.biHeight = -bmi.bmiHeader.biHeight; // top-down
-                    bmi.bmiHeader = hdr;
-                    if GetDIBits(
-                        dc,
-                        info.hbmColor,
-                        0,
-                        h as u32,
-                        Some(pixels.as_mut_ptr().cast::<std::ffi::c_void>()),
-                        &mut bmi,
-                        DIB_RGB_COLORS,
-                    ) != 0
-                    {
-                        result = bgra_to_png(&pixels, w, h);
-                    }
-                }
-            }
-            let _ = SelectObject(dc, old);
-            let _ = DeleteDC(dc);
-        }
+        let result = if ok && !info.hbmColor.is_invalid() {
+            hbitmap_png_data_url(info.hbmColor)
+        } else {
+            None
+        };
         let _ = DeleteObject(info.hbmColor.into());
         let _ = DeleteObject(info.hbmMask.into());
         let _ = DestroyIcon(fi.hIcon);
@@ -527,7 +488,213 @@ pub fn icon_png_data_url(icon_path: &str) -> Option<String> {
     }
 }
 
-/// Encode a BGRA bottom-up-free (top-down) buffer as PNG → data URL.
+/// MSIX/Store app logos (session 13 — the "current default icons"
+/// report): WindowsApps is ACL-locked against direct file reads, so
+/// the shell's Apps folder is the only reliable per-package icon
+/// source. Enumerate `FOLDERID_AppsFolder` once; each item's parsing
+/// name is its AUMID (`Family!AppId`); matching families get
+/// `IShellItemImageFactory::GetImage` (48px) → PNG data URL.
+///
+/// Runs on a COM STA thread (the caller owns the apartment — the
+/// applications enumeration is already on the blocking pool).
+#[must_use]
+pub fn msix_icon_data_urls(families: &[String]) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    use windows::core::Interface;
+    use windows::Win32::UI::Shell::IShellItemArray;
+    use windows::Win32::UI::Shell::{
+        BHID_EnumItems, FOLDERID_AppsFolder, IShellItem, IShellItemImageFactory,
+        SHGetKnownFolderItem, SIGDN_DESKTOPABSOLUTEPARSING, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
+    };
+
+    let mut out: HashMap<String, String> = HashMap::new();
+    if families.is_empty() {
+        return out;
+    }
+    let wanted: HashMap<String, ()> = families.iter().map(|f| (f.to_lowercase(), ())).collect();
+
+    // SAFETY: known-folder item creation; default flags; the returned
+    // IShellItem owns its references.
+    let folder: IShellItem = match unsafe {
+        SHGetKnownFolderItem(
+            &FOLDERID_AppsFolder,
+            windows::Win32::UI::Shell::KNOWN_FOLDER_FLAG(0),
+            None,
+        )
+    } {
+        Ok(f) => f,
+        Err(_) => return out,
+    };
+    // SAFETY: bind to the enumeration handler on the Apps folder.
+    let items: IShellItemArray = match unsafe { folder.BindToHandler(None, &BHID_EnumItems) } {
+        Ok(a) => a,
+        Err(_) => return out,
+    };
+
+    // SAFETY: enum over the array; every Next hands us owned items.
+    let enum_items = match unsafe { items.EnumItems() } {
+        Ok(e) => e,
+        Err(_) => return out,
+    };
+    // SAFETY: pull in fixed batches; the slice length is the requested
+    // count and `fetched` carries the actual yield.
+    loop {
+        let mut batch: [Option<IShellItem>; 16] = Default::default();
+        let mut fetched: u32 = 0;
+        let hr = unsafe { enum_items.Next(&mut batch, Some(&mut fetched as *mut u32)) };
+        if hr.is_err() || fetched == 0 {
+            break;
+        }
+        for item in batch.into_iter().flatten() {
+            // SAFETY: display-name string owned by the shell, copied
+            // via to_string before any release.
+            // SAFETY: GetDisplayName's PWSTR is owned by the caller
+            // after the call (freed below); to_string copies it.
+            let aumid = unsafe {
+                item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)
+                    .ok()
+                    .and_then(|p| {
+                        let s = p.to_string().ok();
+                        windows::Win32::System::Com::CoTaskMemFree(Some(p.as_ptr().cast()));
+                        s
+                    })
+            };
+            let Some(aumid) = aumid else { continue };
+            let Some((family_raw, _app)) = aumid.split_once('!') else {
+                continue;
+            };
+            let family = family_raw.to_lowercase();
+            if !wanted.contains_key(&family) || out.contains_key(&family) {
+                continue;
+            }
+            // SAFETY: QI for the image factory on the same item; the
+            // HBITMAP returned by GetImage is ours to delete.
+            let factory: IShellItemImageFactory = match item.cast() {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let size = windows::Win32::Foundation::SIZE { cx: 48, cy: 48 };
+            let hbm = match unsafe { factory.GetImage(size, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK) }
+            {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let png = hbitmap_png_data_url(hbm);
+            // SAFETY: GetImage's HBITMAP is caller-owned.
+            let _ = unsafe { DeleteObject(hbm.into()) };
+            if let Some(url) = png {
+                out.insert(family, url);
+            }
+        }
+        if fetched < 16 {
+            break;
+        }
+    }
+    out
+}
+
+/// One candidate main executable for an app whose `DisplayIcon` is
+/// absent: the first `*.exe` directly under the install location
+/// (prefer stems containing the app's own name — installers usually
+/// name the launcher after the product). `None` when the folder is
+/// unreadable or holds no exe (the placeholder renders honestly).
+#[must_use]
+pub fn find_main_exe(install_location: &str, app_name: &str) -> Option<String> {
+    if install_location.trim().is_empty() {
+        return None;
+    }
+    let dir = std::path::Path::new(install_location);
+    let entries = std::fs::read_dir(dir).ok()?;
+    let name_norm = app_name.to_lowercase();
+    let mut first_exe: Option<String> = None;
+    let mut named_exe: Option<String> = None;
+    for e in entries.flatten() {
+        let path = e.path();
+        if path
+            .extension()
+            .and_then(|x| x.to_str())
+            .map_or(true, |x| !x.eq_ignore_ascii_case("exe"))
+        {
+            continue;
+        }
+        let p = path.to_string_lossy().into_owned();
+        if first_exe.is_none() {
+            first_exe = Some(p.clone());
+        }
+        if named_exe.is_none() {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_lowercase);
+            if let Some(stem) = stem {
+                if stem.contains(&name_norm) || name_norm.contains(&stem) {
+                    named_exe = Some(p);
+                }
+            }
+        }
+    }
+    named_exe.or(first_exe)
+}
+
+/// HBITMAP (32bpp) → PNG data URL via the shared DIB pipeline.
+fn hbitmap_png_data_url(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<String> {
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, DeleteDC, GetDIBits, GetObjectW, SelectObject, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, DIB_RGB_COLORS,
+    };
+    // SAFETY: GetObjectW reads the bitmap's metrics into a sized
+    // BITMAP (a borrowed probe — the HBITMAP stays owned by the caller).
+    let mut bm = BITMAP::default();
+    if unsafe {
+        GetObjectW(
+            hbm.into(),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bm as *mut _ as *mut std::ffi::c_void),
+        )
+    } == 0
+    {
+        return None;
+    }
+    let w = bm.bmWidth.max(0) as usize;
+    let h = bm.bmHeight.max(0) as usize;
+    if w == 0 || h == 0 || w * h > 1024 * 1024 {
+        return None;
+    }
+    // SAFETY: compatible DC for the GetDIBits call; deselected and
+    // destroyed below (the bitmap itself is never deleted here).
+    unsafe {
+        let dc = CreateCompatibleDC(None);
+        let old = SelectObject(dc, hbm.into());
+        let mut bmi = BITMAPINFO::default();
+        bmi.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w as i32,
+            biHeight: -(h as i32), // top-down
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: 0, // BI_RGB
+            ..Default::default()
+        };
+        let mut pixels = vec![0u8; w * h * 4];
+        let ok = GetDIBits(
+            dc,
+            hbm,
+            0,
+            h as u32,
+            Some(pixels.as_mut_ptr().cast::<std::ffi::c_void>()),
+            &mut bmi,
+            DIB_RGB_COLORS,
+        ) != 0;
+        let _ = SelectObject(dc, old);
+        let _ = DeleteDC(dc);
+        if !ok {
+            return None;
+        }
+        bgra_to_png(&pixels, w, h)
+    }
+}
+
+/// Encode a BGRA top-down buffer as PNG → data URL.
 fn bgra_to_png(bgra: &[u8], w: usize, h: usize) -> Option<String> {
     // BGRA → RGBA.
     let mut rgba = vec![0u8; bgra.len()];

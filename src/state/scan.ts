@@ -11,6 +11,15 @@ import { EVENTS, track } from "../lib/analytics";
 import { listen, type UnlistenFn } from "../lib/ipc";
 import { userFacingError } from "../lib/userFacingError";
 import { invalidateLayouts, invalidateHoverCache } from "../viz/layoutIpc";
+// Realtime refresh wiring (session 13): a tree change (fresh scan OR
+// cleanup commit) must reach EVERY consumer — duplicates results are
+// tree-scoped (stale after surgery), and the applications list shrinks
+// when staged leftovers get removed. Function-level usage on both
+// sides — the module cycle is init-safe (same pattern as ipc ↔
+// state/license).
+import { useDupesStore } from "./dupes";
+import { useApplicationsStore } from "./applications";
+import { useExploreStore } from "./explore";
 
 export interface ScanProgress {
   files: number;
@@ -82,10 +91,16 @@ interface ScanDoneEvent {
 
 /** cleanup-committed payload (M5; the trashed/failed lists go to the
  *  cleanup store via the command's return value — the event carries the
- *  tree-refresh half). */
+ *  tree-refresh half + the surgery's navigation fixup). */
 interface CommitEvent {
   generation: number;
   stats: [number, number, number, number] | null;
+  /** Where the view lands when the commit removed the on-screen folder
+   *  (the server walked the UI's live navigation up to a survivor). */
+  currentFolder?: number;
+  /** The post-surgery selection (null when the selected node was
+   *  removed). */
+  selectedNode?: number | null;
 }
 
 let listenersAttached = false;
@@ -318,10 +333,28 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         set({ turboReport: e, turboFallback: null });
       });
       const un3 = await listen<CommitEvent>("cleanup-committed", (e) => {
-        const { generation, stats } = e;
+        const { generation, stats, currentFolder, selectedNode } = e;
         // Only a NEWER generation applies (stale commits drop).
         if (generation >= get().generation && get().status === "done") {
           get().applyTreeUpdate(generation, stats);
+          // Navigation fixup: the commit may have REMOVED the folder on
+          // screen — land the view on the survivor the surgery chose
+          // (a hard set, not a navigation: no back-stack entry for a
+          // forced landing; optional fields keep older payloads inert).
+          if (typeof currentFolder === "number" && currentFolder >= 0) {
+            useExploreStore.setState((s) => ({
+              currentFolder: s.currentFolder === currentFolder ? s.currentFolder : currentFolder,
+              selectedNode: typeof selectedNode === "number" ? selectedNode : (selectedNode === null ? null : s.selectedNode),
+            }));
+          }
+          // Realtime refresh (session 13): the tree changed under every
+          // consumer — duplicates results are now tree-stale, and staged
+          // leftovers shrank the applications list (the Rust side already
+          // cleared its caches; the frontend follows).
+          useDupesStore.getState().invalidate(generation);
+          if (useApplicationsStore.getState().apps !== null) {
+            void useApplicationsStore.getState().load(true);
+          }
         }
       });
       const un2 = await listen<ScanDoneEvent>("scan-done", (e) => {
@@ -334,6 +367,9 @@ export const useScanStore = create<ScanStore>((set, get) => ({
         // but were never called; this is the wiring point.
         invalidateHoverCache();
         invalidateLayouts();
+        // A fresh tree also retires any standing duplicates result (the
+        // engine's groups reference the old arena).
+        useDupesStore.getState().invalidate(generation);
         if (error) {
           scanStartedAt = null;
           set({ status: "error", error });

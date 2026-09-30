@@ -47,15 +47,19 @@ interface CleanupState {
    *  Rejects on stale generation / COM failure — the queue stays intact
    *  (safe default) and the popover surfaces the error. */
   commitToRecycleBin: () => Promise<CommitResult>;
+  /** Permanently delete after explicit confirmation (owner decision,
+   *  session 13 — the "Delete permanently" popover action). Same error
+   *  contract: the queue survives failures. */
+  commitToDeletePermanently: () => Promise<CommitResult>;
 }
 
-/** Stable identity: real node ids dedupe by id, but synthetic items
- * (Duplicates stage with id 0 — path-only; the Rust commit path treats
- * id 0 as path-only) must dedupe by PATH. Keying everything by id alone
- * meant only ONE duplicate could ever be staged, and remove(0) nuked
- * every duplicate row at once. */
+/** Stable identity: PATH-first (paths are unique on disk — the same
+ * file staged through the inspector (real id) AND a path-only surface
+ * (id 0, e.g. a leftover or duplicate) must land in the queue ONCE;
+ * id-only keying let it appear twice and unstage(0) nuked every
+ * path-only row). Path-less items fall back to the node id. */
 const keyOf = (i: Pick<QueueItem, "id" | "path">): string =>
-  i.id === 0 ? `p:${i.path}` : `i:${i.id}`;
+  i.path && i.path.length > 0 ? `p:${i.path.toLowerCase()}` : `i:${i.id}`;
 
 /** The staged queue. Popover + badge subscribe via selectors (spec §9). */
 export const useCleanupStore = create<CleanupState>((set, get) => ({
@@ -109,27 +113,42 @@ export const useCleanupStore = create<CleanupState>((set, get) => ({
 
   totalSize: () => get().items.reduce((acc, i) => acc + i.size, 0),
 
-  commitToRecycleBin: async () => {
-    const status = await invoke<{ generation: number }>("get_status");
-    const items = get().items.map((i) => ({
-      id: i.id,
-      path: i.path,
-      size: i.size,
-      reason: i.reason,
-    }));
-    try {
-      const result = await invoke<CommitResult>("commit_cleanup", {
-        generation: status.generation,
-        items,
-      });
-      // Recycled (incl. already-gone + nested-with-parent) leave the queue.
-      const recycled = new Set(result.trashed.map((t) => t.path));
-      set((s) => ({ items: s.items.filter((i) => !recycled.has(i.path)) }));
-      return result;
-    } catch (e) {
-      // Stale generation or COM failure: the queue stays intact (safe
-      // default); the popover surfaces the error.
-      throw e;
-    }
-  },
+  commitToRecycleBin: () => commitItems("commit_cleanup"),
+
+  commitToDeletePermanently: () => commitItems("delete_permanently"),
 }));
+
+/** The shared commit body for both delete modes (recycle / permanent):
+ * resolve the generation, send the UI's live navigation with the items
+ * (the surgery may remove the ON-SCREEN folder — the response carries
+ * the survivor fixup), then drop every recycled path from the queue.
+ * Failures reject — the queue stays intact and the popover surfaces
+ * the error. */
+async function commitItems(cmd: "commit_cleanup" | "delete_permanently"): Promise<CommitResult> {
+  const status = await invoke<{ generation: number }>("get_status");
+  const items = useCleanupStore.getState().items.map((i) => ({
+    id: i.id,
+    path: i.path,
+    size: i.size,
+    reason: i.reason,
+  }));
+  // The live navigation rides along so the tree surgery can fix up a
+  // view whose folder it removes (module-level import: function-only
+  // usage, init-safe).
+  const { useExploreStore } = await import("./explore");
+  const nav = useExploreStore.getState();
+  const result = await invoke<CommitResult>(cmd, {
+    generation: status.generation,
+    items,
+    currentFolder: nav.currentFolder,
+    selectedNode: nav.selectedNode,
+  });
+  // Recycled (incl. already-gone + nested-with-parent + duplicate
+  // identities) leave the queue — path matching is case-insensitive
+  // (Windows semantics; the Rust plan folds duplicates the same way).
+  const recycled = new Set(result.trashed.map((t) => t.path.toLowerCase()));
+  useCleanupStore.setState((s) => ({
+    items: s.items.filter((i) => !recycled.has(i.path.toLowerCase())),
+  }));
+  return result;
+}

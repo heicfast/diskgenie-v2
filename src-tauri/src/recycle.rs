@@ -1,22 +1,43 @@
-//! Recycle Bin moves (spec §9, BuildPrompt §1 safety promise):
-//! EVERYTHING goes to the Recycle Bin through `IFileOperation` — this
-//! crate contains NO direct-delete API (the doc 09 §2 grep is the gate).
+//! Shell delete operations (spec §9; owner decision, session 13):
 //!
-//! Flow:
+//! - **Recycle** (default): `IFileOperation` with
+//!   `FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE` — everything lands in the
+//!   Recycle Bin.
+//! - **Permanent** (owner-sanctioned, session 13): the SAME
+//!   `IFileOperation` pipeline WITHOUT the undo/recycle flags. The
+//!   R7.1 CI gate still greps for raw delete APIs; the only raw-`fs`
+//!   call in this crate is the macOS permanent path, marked
+//!   `R7.1-allow: owner-sanctioned permanent-delete` on the line.
+//!
+//! Both modes run HEADLESS on a background (pump-less) thread:
+//! `FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI`. The pre-v3 code
+//! shipped WITHOUT those flags on a `spawn_blocking` thread that never
+//! pumps messages — Windows tried to raise its own confirmation /
+//! progress UI on a thread that cannot run a message loop, so the
+//! operation silently failed or was cancelled ("the button does
+//! nothing" — the session-13 owner report). The app's OWN popover
+//! dialog is the confirmation surface; the shell's redundant dialogs
+//! are suppressed, and per-item failures (elevation, locks) surface
+//! through the honest per-item result list.
+//!
+//! Honest accounting: after `PerformOperations`, every queued path is
+//! VERIFIED against the filesystem (`path_on_disk_truth`). The sink's
+//! "no callback + ok" heuristic that pre-v3 used treated silent
+//! cancellations as recycled — the disk is the authority now: a path
+//! still on disk is a FAILURE with a reason, never a trashed entry.
+//!
+//! Flow (both modes):
 //! 1. `plan_commit` (pure, host-testable): sort shortest-first; items
-//!    nested inside another staged item are absorbed by it.
-//! 2. Pre-flight (per item, spec §9): DRIVE_FIXED volume, the volume's
-//!    bin is not `NukeOnDelete == 1`, the item fits the bin's
-//!    `MaxCapacity`, and it is not protected. Failing items get a clear
-//!    reason instead of being attempted. Missing items count as already
-//!    gone.
-//! 3. `IFileOperation` with `FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE` and
-//!    NOT `FOF_NOCONFIRMATION` / `FOF_NOERRORUI` (Windows may show UAC
-//!    for Program Files items). Per-item `HRESULT`s come from an
-//!    `IFileOperationProgressSink` (`PostDeleteItem`).
-//!
-//! windows-rs usage flows through `platform::win::recycle_seam`
-//! (doc 02 §2 footnote).
+//!    nested inside another staged item are absorbed by it; the SAME
+//!    path staged twice (different surfaces, id vs path identity) is
+//!    absorbed once too.
+//! 2. Pre-flight (per item, spec §9): protected items are refused;
+//!    missing items count as already gone; Recycle mode additionally
+//!    requires a fixed drive, a live bin (not `NukeOnDelete == 1`)
+//!    and bin capacity headroom. Failing items get a clear reason
+//!    instead of being attempted.
+//! 3. `IFileOperation` + per-item `PostDeleteItem` sink + post-op disk
+//!    verification (the truth source for the outcome).
 
 // COM calls below carry SAFETY comments (the doc 02 §2 footnote
 // sanctions this module as a windows-rs consumer through the
@@ -38,13 +59,24 @@ use std::sync::Arc;
 #[cfg(windows)]
 use parking_lot::Mutex;
 
-use crate::platform::os::{bin_policy_for, path_missing, path_on_fixed_drive};
+use crate::platform::os::{
+    bin_policy_for, path_missing, path_on_disk_truth, path_on_fixed_drive, OnDisk,
+};
 
 #[cfg(windows)]
 use crate::platform::os::recycle_seam;
 
 #[cfg(windows)]
 use crate::platform::os::ComApartment;
+
+/// Which shell delete the caller wants (owner decision, session 13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteMode {
+    /// Recycle Bin / Trash (the default; reversible).
+    Recycle,
+    /// Permanent delete (explicit user choice; irreversible).
+    Permanent,
+}
 
 /// One staged item as the command layer resolved it (tree flags joined).
 #[derive(Debug, Clone)]
@@ -114,7 +146,11 @@ pub struct AbsorbedItem {
 
 /// Pure planning pass (spec §9: "Sort paths shortest-first. Items nested
 /// inside an already-recycled folder count as recycled"). A path is
-/// nested when it equals or starts with `parent + '\'`.
+/// nested when it equals or starts with `parent + '\'`. The SAME path
+/// staged twice (the inspector stages real node ids; path-only surfaces
+/// stage id 0 — one file can enter the queue through both identities)
+/// is absorbed into its first occurrence: the shell only needs to move
+/// it once and the UI accounting stays honest.
 #[must_use]
 pub fn plan_commit(items: Vec<StagedPath>) -> CommitPlan {
     let mut sorted = items;
@@ -122,16 +158,18 @@ pub fn plan_commit(items: Vec<StagedPath>) -> CommitPlan {
         Ordering::Equal => a.path.cmp(&b.path),
         other => other,
     });
-    // Absorb nested paths into their ancestor (both staged).
+    // Absorb nested paths AND exact duplicates into the earlier entry.
     let mut keep: Vec<StagedPath> = Vec::with_capacity(sorted.len());
     let mut absorbed: Vec<AbsorbedItem> = Vec::new();
     for item in sorted {
         let mut absorbed_by: Option<usize> = None;
         for (i, k) in keep.iter().enumerate() {
-            let nested = item.path.len() > k.path.len()
-                && (item.path.starts_with(&k.path)
-                    && item.path.as_bytes().get(k.path.len()) == Some(&b'\\'));
-            if nested {
+            let same = paths_same(&item.path, &k.path);
+            let nested = !same
+                && item.path.len() > k.path.len()
+                && item.path.starts_with(&k.path)
+                && item.path.as_bytes().get(k.path.len()) == Some(&b'\\');
+            if same || nested {
                 absorbed_by = Some(i);
                 break;
             }
@@ -150,9 +188,17 @@ pub fn plan_commit(items: Vec<StagedPath>) -> CommitPlan {
     }
 }
 
+/// Case-insensitive path identity (Windows semantics; on macOS paths
+/// are case-preserving but the staged queue comes from one scanner, so
+/// ASCII folding is a safe second line behind exact matches).
+fn paths_same(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
 /// Pre-flight one item (spec §9). Returns Err(reason) to REFUSE instead
-/// of attempting the move.
-fn preflight(item: &StagedPath) -> Result<(), String> {
+/// of attempting the move. Bin rules (fixed drive / live bin /
+/// capacity) apply to RECYCLE only — a permanent delete needs no bin.
+fn preflight(item: &StagedPath, mode: DeleteMode) -> Result<(), String> {
     if item.protected {
         return Err("This item is protected by Windows and can't be staged for cleanup.".into());
     }
@@ -160,22 +206,26 @@ fn preflight(item: &StagedPath) -> Result<(), String> {
         // Handled by the caller (already_gone), not a failure.
         return Ok(());
     }
-    if !path_on_fixed_drive(&item.path) {
-        return Err("This item is not on a fixed drive, so it can't go to the Recycle Bin.".into());
-    }
-    let policy = bin_policy_for(&item.path);
-    if policy.nuke_on_delete {
-        return Err(
-            "The Recycle Bin is disabled on this drive — deleting would be permanent, so it was refused.".into(),
-        );
-    }
-    if let Some(cap_mb) = policy.max_capacity_mb {
-        if cap_mb > 0 && item.size > cap_mb * 1_048_576 {
-            return Err(format!(
-                "This item ({}) is larger than this drive's Recycle Bin capacity ({}), so it can't be recycled.",
-                humans(item.size),
-                humans(cap_mb * 1_048_576)
-            ));
+    if mode == DeleteMode::Recycle {
+        if !path_on_fixed_drive(&item.path) {
+            return Err(
+                "This item is not on a fixed drive, so it can't go to the Recycle Bin.".into(),
+            );
+        }
+        let policy = bin_policy_for(&item.path);
+        if policy.nuke_on_delete {
+            return Err(
+                "The Recycle Bin is disabled on this drive — deleting would be permanent, so it was refused.".into(),
+            );
+        }
+        if let Some(cap_mb) = policy.max_capacity_mb {
+            if cap_mb > 0 && item.size > cap_mb * 1_048_576 {
+                return Err(format!(
+                    "This item ({}) is larger than this drive's Recycle Bin capacity ({}), so it can't be recycled.",
+                    humans(item.size),
+                    humans(cap_mb * 1_048_576)
+                ));
+            }
         }
     }
     Ok(())
@@ -198,7 +248,7 @@ fn humans(bytes: u64) -> String {
 }
 
 /// Move every staged item to the Recycle Bin / Trash (spec §9 contract;
-/// the platform pass is `com_recycle_pass` — IFileOperation on Windows,
+/// the platform pass is `com_delete_pass` — IFileOperation on Windows,
 /// NSWorkspace recycleURLs on macOS). Runs on a blocking thread (the
 /// command layer calls this inside `spawn_blocking`).
 ///
@@ -206,6 +256,25 @@ fn humans(bytes: u64) -> String {
 /// String error when COM cannot initialize or the operation object
 /// cannot be created — per-item problems land in `failed` instead.
 pub fn move_to_recycle_bin(items: Vec<StagedPath>) -> Result<RecycleOutcome, String> {
+    shell_delete(items, DeleteMode::Recycle)
+}
+
+/// Permanently delete every staged item (owner decision, session 13 —
+/// the "Delete permanently" replacement for the old Clear button).
+/// Same pipeline, no undo/recycle flags: the disk is the verification
+/// authority either way.
+///
+/// # Errors
+/// String error when COM cannot initialize or the operation object
+/// cannot be created — per-item problems land in `failed` instead.
+pub fn delete_permanently(items: Vec<StagedPath>) -> Result<RecycleOutcome, String> {
+    shell_delete(items, DeleteMode::Permanent)
+}
+
+/// The shared commit pipeline (pre-flight → platform pass → disk
+/// verification). See the module docs for the honest-accounting
+/// contract.
+fn shell_delete(items: Vec<StagedPath>, mode: DeleteMode) -> Result<RecycleOutcome, String> {
     let plan = plan_commit(items);
     let mut trashed: Vec<TrashedItem> = Vec::new();
     let mut failed: Vec<FailedItem> = Vec::new();
@@ -221,7 +290,7 @@ pub fn move_to_recycle_bin(items: Vec<StagedPath>) -> Result<RecycleOutcome, Str
             });
             continue;
         }
-        match preflight(item) {
+        match preflight(item, mode) {
             Ok(()) => candidates.push(item.clone()),
             Err(reason) => failed.push(FailedItem {
                 path: item.path.clone(),
@@ -229,11 +298,11 @@ pub fn move_to_recycle_bin(items: Vec<StagedPath>) -> Result<RecycleOutcome, Str
             }),
         }
     }
-    // Absorbed (nested) items count as recycled with their parent: the
-    // plan keeps only the absorbing root, so every nested path re-joins
-    // the trashed list marked `nested` for honest UI accounting (the
-    // frontend removes queue items by trashed path — without these
-    // entries absorbed items lingered in the queue after a commit).
+    // Absorbed (nested / duplicate) items count as recycled with their
+    // parent: the plan keeps only the absorbing root, so every absorbed
+    // path re-joins the trashed list marked `nested` for honest UI
+    // accounting (the frontend removes queue items by trashed path —
+    // without these entries absorbed items lingered in the queue).
     for abs in &plan.absorbed {
         trashed.push(TrashedItem {
             path: abs.path.clone(),
@@ -246,7 +315,7 @@ pub fn move_to_recycle_bin(items: Vec<StagedPath>) -> Result<RecycleOutcome, Str
         return Ok(RecycleOutcome { trashed, failed });
     }
 
-    let com_trashed = com_recycle_pass(&candidates, &mut failed)?;
+    let com_trashed = com_delete_pass(&candidates, mode, &mut failed)?;
     trashed.extend(com_trashed);
     Ok(RecycleOutcome { trashed, failed })
 }
@@ -260,7 +329,10 @@ mod windows_pass {
         clippy::ref_as_ptr,
         clippy::inline_always
     )]
-    use super::{recycle_seam, Arc, ComApartment, FailedItem, Mutex, StagedPath, TrashedItem};
+    use super::{
+        path_on_disk_truth, recycle_seam, Arc, ComApartment, FailedItem, Mutex, StagedPath,
+        TrashedItem,
+    };
 
     #[recycle_seam::implement(recycle_seam::IFileOperationProgressSink)]
     struct DeleteSink {
@@ -414,12 +486,16 @@ mod windows_pass {
         }
     }
 
-    /// The COM pass: one `IFileOperation` over the pre-flighted candidates
-    /// (per-item `PostDeleteItem` HRESULTs through the sink).
-    pub(crate) fn com_recycle_pass(
+    /// The COM pass: one `IFileOperation` over the pre-flighted
+    /// candidates (per-item `PostDeleteItem` HRESULTs through the sink,
+    /// then the post-operation DISK VERIFICATION that owns the final
+    /// truth — see the module docs).
+    pub(crate) fn com_delete_pass(
         candidates: &[StagedPath],
+        mode: super::DeleteMode,
         failed: &mut Vec<FailedItem>,
     ) -> Result<Vec<TrashedItem>, String> {
+        use super::OnDisk;
         let mut trashed: Vec<TrashedItem> = Vec::new();
 
         // Pass 2: IFileOperation with the progress sink.
@@ -438,12 +514,29 @@ mod windows_pass {
         }
         .map_err(|e| format!("Windows file operation unavailable: {e}"))?;
 
-        // SAFETY: flags per spec §9: ALLOWUNDO + RECYCLEONDELETE only
-        // (Windows shows its own confirmations/UAC).
-        unsafe {
-            op.SetOperationFlags(recycle_seam::FOF_ALLOWUNDO | recycle_seam::FOFX_RECYCLEONDELETE)
-        }
-        .map_err(|e| format!("Couldn't configure the Recycle Bin operation: {e}"))?;
+        // SAFETY: HEADLESS operation flags (the session-13 root cause:
+        // pre-v3 shipped without NOCONFIRMATION/SILENT/NOERRORUI on a
+        // pump-less spawn_blocking thread — Windows tried to raise its
+        // own confirmation/progress UI on a thread that cannot run a
+        // message loop, so the operation silently failed. The app's own
+        // popover dialog is the confirmation surface). Recycle keeps
+        // ALLOWUNDO + RECYCLEONDELETE; permanent omits both.
+        let flags = match mode {
+            super::DeleteMode::Recycle => {
+                recycle_seam::FOF_ALLOWUNDO
+                    | recycle_seam::FOFX_RECYCLEONDELETE
+                    | recycle_seam::FOF_NOCONFIRMATION
+                    | recycle_seam::FOF_SILENT
+                    | recycle_seam::FOF_NOERRORUI
+            }
+            super::DeleteMode::Permanent => {
+                recycle_seam::FOF_NOCONFIRMATION
+                    | recycle_seam::FOF_SILENT
+                    | recycle_seam::FOF_NOERRORUI
+            }
+        };
+        unsafe { op.SetOperationFlags(flags) }
+            .map_err(|e| format!("Couldn't configure the Recycle Bin operation: {e}"))?;
         let sink_iface: recycle_seam::IFileOperationProgressSink = sink.into();
         let cookie = unsafe { op.Advise(&sink_iface) }
             .map_err(|e| format!("Couldn't attach the operation progress: {e}"))?;
@@ -478,21 +571,20 @@ mod windows_pass {
             queued_paths.push(item.path.clone());
         }
 
-        // SAFETY: performs the queued operations (Windows UI allowed).
-        if let Err(e) = unsafe { op.PerformOperations() } {
-            // The sink may still hold partial results; surface the overall
-            // failure honestly.
-            failed.push(FailedItem {
-                path: queued_paths.first().cloned().unwrap_or_default(),
-                reason: format!("The Recycle Bin operation failed: {e}"),
-            });
-        }
+        // SAFETY: performs the queued operations (headless — the flags
+        // above guarantee no shell UI needs this thread's pump).
+        let perform_err = unsafe { op.PerformOperations() }.err();
         // SAFETY: unadvise with the cookie from Advise.
         unsafe { op.Unadvise(cookie) }.ok();
         drop(op);
         drop(sink_iface);
 
-        // Pass 3: reconcile sink results with the queued set.
+        // Pass 3: the DISK is the authority. The sink only reports some
+        // item kinds, and pre-v3's "no callback + PerformOperations ok =
+        // recycled" treated silent cancellations as recycled (the
+        // "button does nothing" report). Every queued path is probed:
+        // gone → trashed; still on disk (or unprovable) → failed with a
+        // reason enriched by the sink's HRESULT when one exists.
         let sink_results =
             Arc::try_unwrap(results).map_or_else(|_| Vec::new(), parking_lot::Mutex::into_inner);
         for path in queued_paths {
@@ -500,22 +592,36 @@ mod windows_pass {
                 .iter()
                 .find(|(p, _)| paths_equal(p, &path))
                 .map(|(_, hr)| *hr);
-            match hr {
-                // No callback + PerformOperations ok = recycled (the sink
-                // only reports some item kinds).
-                Some(0) | None => trashed.push(TrashedItem {
+            match path_on_disk_truth(&path) {
+                OnDisk::Gone => trashed.push(TrashedItem {
                     path,
                     already_gone: false,
                     nested: false,
                 }),
-                Some(code) => failed.push(FailedItem {
-                    path,
-                    reason: format!(
-                        "Windows couldn't recycle this item (error {}): {}",
-                        code,
-                        hr_message(code)
-                    ),
-                }),
+                OnDisk::Present => {
+                    let reason = match hr {
+                        Some(0) | None => match (&perform_err, mode) {
+                            // PerformOperations itself failed: the honest
+                            // overall reason, backed by the still-on-disk
+                            // proof.
+                            (Some(e), _) => {
+                                format!("Windows didn't move this item — the operation failed: {e}")
+                            }
+                            (None, super::DeleteMode::Recycle) => {
+                                "Windows didn't move this item to the Recycle Bin — the operation was cancelled or blocked (the item may be in use, or need administrator rights)".into()
+                            }
+                            (None, super::DeleteMode::Permanent) => {
+                                "Windows couldn't permanently delete this item (it may be in use, or need administrator rights)".into()
+                            }
+                        },
+                        Some(code) => format!(
+                            "Windows couldn't delete this item (error {}): {}",
+                            code,
+                            hr_message(code)
+                        ),
+                    };
+                    failed.push(FailedItem { path, reason });
+                }
             }
         }
 
@@ -553,18 +659,56 @@ mod windows_pass {
 mod mac_pass {
     // Explicit imports (no `use super::*` glob): the wildcard hid what
     // the mac pass actually consumes from the parent module.
-    use super::{FailedItem, StagedPath, TrashedItem};
-    use crate::platform::os::recycle_to_trash;
+    use super::{FailedItem, OnDisk, StagedPath, TrashedItem};
+    use crate::platform::os::{path_on_disk_truth, recycle_to_trash};
 
-    /// The macOS Trash pass: NSWorkspace.recycleURLs — the same
-    /// pre-flight contract, a Finder Trash move (never a hard delete).
-    pub(crate) fn com_recycle_pass(
+    /// The macOS pass: Recycle = NSWorkspace.recycleURLs (Finder
+    /// Trash, never a hard delete); Permanent = the raw removal
+    /// (macOS has no headless shell-API equivalent — the R7.1 gate's
+    /// sanctioned marker is on the line). Both verify against the
+    /// disk afterwards, same as the Windows pass.
+    pub(crate) fn com_delete_pass(
         candidates: &[StagedPath],
+        mode: super::DeleteMode,
         failed: &mut Vec<FailedItem>,
     ) -> Result<Vec<TrashedItem>, String> {
+        let mut trashed = Vec::new();
+        if mode == super::DeleteMode::Permanent {
+            for c in candidates {
+                // R7.1-allow: owner-sanctioned permanent-delete
+                let removed = if std::fs::symlink_metadata(&c.path)
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
+                {
+                    std::fs::remove_dir_all(&c.path) // R7.1-allow: owner-sanctioned permanent-delete
+                } else {
+                    std::fs::remove_file(&c.path) // R7.1-allow: owner-sanctioned permanent-delete
+                };
+                match removed {
+                    Ok(()) => trashed.push(TrashedItem {
+                        path: c.path.clone(),
+                        already_gone: false,
+                        nested: false,
+                    }),
+                    // The disk verification below is the authority: a
+                    // failed call on an already-gone path still counts.
+                    Err(_) => match path_on_disk_truth(&c.path) {
+                        OnDisk::Gone => trashed.push(TrashedItem {
+                            path: c.path.clone(),
+                            already_gone: false,
+                            nested: false,
+                        }),
+                        OnDisk::Present => failed.push(FailedItem {
+                            path: c.path.clone(),
+                            reason: "The item couldn't be deleted (it may be in use)".into(),
+                        }),
+                    },
+                }
+            }
+            return Ok(trashed);
+        }
         let paths: Vec<String> = candidates.iter().map(|c| c.path.clone()).collect();
         let results = recycle_to_trash(&paths)?;
-        let mut trashed = Vec::new();
         for (path, outcome) in results {
             match outcome {
                 Ok(()) => trashed.push(TrashedItem {
@@ -580,10 +724,10 @@ mod mac_pass {
 }
 
 #[cfg(windows)]
-use windows_pass::com_recycle_pass;
+use windows_pass::com_delete_pass;
 
 #[cfg(target_os = "macos")]
-use mac_pass::com_recycle_pass;
+use mac_pass::com_delete_pass;
 
 #[cfg(test)]
 mod tests {
@@ -641,6 +785,43 @@ mod tests {
         ]);
         assert_eq!(plan.items.len(), 2);
         assert!(plan.absorbed.is_empty());
+    }
+
+    #[test]
+    fn plan_absorbs_the_same_path_staged_twice() {
+        // The owner's edge case: one file enters the queue through two
+        // surfaces — the inspector (real node id) and a path-only view
+        // (id 0). The shell must be asked to move it ONCE, and both
+        // queue rows must clear (the absorbed path re-joins `trashed`).
+        let plan = plan_commit(vec![
+            StagedPath {
+                id: 7,
+                path: r"C:\Users\dev\big.iso".into(),
+                size: 900,
+                protected: false,
+            },
+            StagedPath {
+                id: 0,
+                path: r"C:\Users\dev\big.iso".into(),
+                size: 900,
+                protected: false,
+            },
+        ]);
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].id, 7);
+        assert_eq!(plan.absorbed.len(), 1);
+        assert_eq!(plan.absorbed[0].path, r"C:\Users\dev\big.iso");
+    }
+
+    #[test]
+    fn plan_dedupe_is_case_insensitive() {
+        // Windows path semantics: one file, two casings.
+        let plan = plan_commit(vec![
+            item(r"C:\Users\Dev\Big.iso", 5, false),
+            item(r"c:\users\dev\big.iso", 5, false),
+        ]);
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.absorbed.len(), 1);
     }
 
     #[test]

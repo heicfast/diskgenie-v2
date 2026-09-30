@@ -1,9 +1,10 @@
 /**
  * Cleanup Queue popover (spec §9): 460×520 portal, opaque background,
- * click-outside/Esc; header (staged total, Clear, red Move-to-Recycle-
- * Bin), rows with reason + ✕, tray empty state, confirmation dialog
- * ("Items go to the Recycle Bin. Space is only freed when you empty
- * it." + Open Recycle Bin link) and a per-item failure alert.
+ * click-outside/Esc; header (staged total, Delete permanently…, Move to
+ * Recycle Bin…), rows with reason + ✕, tray empty state, per-mode
+ * confirmation dialogs (session 13: the recycle dialog explains the
+ * bin; the permanent dialog states the irreversibility plainly) and a
+ * per-item failure alert.
  *
  * Motion (session-7): the enter/exit are CSS keyframe + transition —
  * NOT framer-motion. The old `motion.div` + `AnimatePresence` drove
@@ -17,7 +18,7 @@
  * `db-pop-in` / `[data-closing]`).
  */
 import { useEffect, useRef, useState } from "react";
-import { CheckIcon, Trash2Icon, XIcon } from "./Icon";
+import { CheckIcon, Trash2Icon, TriangleAlertIcon, XIcon } from "./Icon";
 import { TailPath } from "./TailPath";
 import { useCleanupStore } from "../state/cleanup";
 import { useScanStore } from "../state/scan";
@@ -29,6 +30,9 @@ import { invoke } from "../lib/ipc";
 /** Unmount delay: the CSS `[data-closing]` exit transition runs 140 ms
  * (overlays.css); the actual unmount waits it out + a small margin. */
 const EXIT_UNMOUNT_MS = 170;
+
+/** Which destructive action is pending confirmation. */
+type ConfirmMode = "recycle" | "permanent";
 
 export interface CommitFailure {
   path: string;
@@ -46,13 +50,13 @@ export function CleanupQueuePopover({
 }) {
   const items = useCleanupStore((s) => s.items);
   const remove = useCleanupStore((s) => s.remove);
-  const clear = useCleanupStore((s) => s.clear);
-  const commit = useCleanupStore((s) => s.commitToRecycleBin);
+  const commitRecycle = useCleanupStore((s) => s.commitToRecycleBin);
+  const commitPermanent = useCleanupStore((s) => s.commitToDeletePermanently);
   const scanStatus = useScanStore((s) => s.status);
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState<ConfirmMode | null>(null);
   const [committing, setCommitting] = useState(false);
   const confirmRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(confirmRef, confirming);
+  useFocusTrap(confirmRef, confirming !== null);
   const [failure, setFailure] = useState<{ count: number; failed: CommitFailure[]; error: string | null } | null>(null);
   const popRef = useRef<HTMLDivElement>(null);
   // Anchor to the toolbar Cleanup button's live position instead of a
@@ -159,7 +163,7 @@ export function CleanupQueuePopover({
 
   useEffect(() => {
     if (!open) {
-      setConfirming(false);
+      setConfirming(null);
       setFailure(null);
       return;
     }
@@ -171,12 +175,12 @@ export function CleanupQueuePopover({
     // outside-close while confirming; the dialog's own scrim/Esc handles
     // dismissal.
     const onDown = (e: PointerEvent) => {
-      if (confirming) return;
+      if (confirming !== null) return;
       if (popRef.current && !popRef.current.contains(e.target as Node)) onClose();
     };
     const esc = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (confirming) setConfirming(false);
+        if (confirming !== null) setConfirming(null);
         else onClose();
       }
     };
@@ -197,30 +201,38 @@ export function CleanupQueuePopover({
   const scanRunning = scanStatus === "scanning";
 
   const doCommit = async () => {
+    if (confirming === null) return;
+    const mode = confirming;
     setCommitting(true);
     setFailure(null);
     const committingItems = items;
     try {
-      const result = await commit();
+      const result = mode === "permanent" ? await commitPermanent() : await commitRecycle();
       const failed = result.failed;
       if (failed.length > 0) {
         setFailure({ count: failed.length, failed, error: null });
       } else {
-        setConfirming(false);
+        setConfirming(null);
         onClose();
         // Success feedback: the popover closing over an updated tree is
         // too quiet for a destructive-feeling action — confirm WHAT
-        // moved and remind that emptying the bin frees the space.
-        const moved = result.trashed.length;
+        // moved and what happens to the space now.
+        const moved = result.trashed.filter((t) => !t.alreadyGone).length;
         const freed = committingItems
-          .filter((i) => result.trashed.some((t) => t.path === i.path))
+          .filter((i) => result.trashed.some((t) => t.path.toLowerCase() === i.path.toLowerCase()))
           .reduce((a, i) => a + i.size, 0);
         window.dispatchEvent(
           new CustomEvent("db-toast", {
-            detail: {
-              text: `Moved ${moved.toLocaleString()} item${moved === 1 ? "" : "s"} · ${bytes(freed)} to the ${BIN_NAME} — empty it to free the space.`,
-              icon: "trash",
-            },
+            detail:
+              mode === "permanent"
+                ? {
+                    text: `Permanently deleted ${moved.toLocaleString()} item${moved === 1 ? "" : "s"} · ${bytes(freed)} freed.`,
+                    icon: "trash",
+                  }
+                : {
+                    text: `Moved ${moved.toLocaleString()} item${moved === 1 ? "" : "s"} · ${bytes(freed)} to the ${BIN_NAME} — empty it to free the space.`,
+                    icon: "trash",
+                  },
           }),
         );
       }
@@ -254,8 +266,19 @@ export function CleanupQueuePopover({
               </button>
             </div>
             <div className="db-pop-actions">
-              <button type="button" className="db-btn-clear" disabled={items.length === 0} onClick={clear}>
-                Clear
+              <button
+                type="button"
+                className="db-btn-permanent"
+                disabled={items.length === 0 || committing || scanRunning}
+                title={
+                  scanRunning
+                    ? "Wait for the scan to finish — cleaning needs a settled map"
+                    : "Delete immediately — nothing goes to the Recycle Bin"
+                }
+                onClick={() => setConfirming("permanent")}
+              >
+                <TriangleAlertIcon size={14} />
+                Delete permanently…
               </button>
               <button
                 type="button"
@@ -266,10 +289,10 @@ export function CleanupQueuePopover({
                     ? "Wait for the scan to finish — cleaning needs a settled map"
                     : undefined
                 }
-                onClick={() => setConfirming(true)}
+                onClick={() => setConfirming("recycle")}
               >
                 <Trash2Icon size={14} />
-                {committing ? "Moving…" : `Move to ${BIN_NAME}…`}
+                {committing ? "Working…" : `Move to ${BIN_NAME}…`}
               </button>
             </div>
             {failure && (
@@ -327,37 +350,68 @@ export function CleanupQueuePopover({
           </div>
         )}
 
-      {open && confirming && (
+      {open && confirming !== null && (
         <div className="db-scrim" role="dialog" aria-modal="true">
           <div className="db-dialog" ref={confirmRef}>
-            <h3>Move {items.length.toLocaleString()} item{items.length === 1 ? "" : "s"} to the {BIN_NAME}?</h3>
-            <p>
-              {items.length.toLocaleString()} item{items.length === 1 ? "" : "s"} · {bytes(total)} of data.{" "}
-              {IS_MAC
-                ? `Items go to the Trash. Space is only freed when you empty it.`
-                : `Items go to the Recycle Bin. Space is only freed when you empty it.`}
-            </p>
-            <button
-              type="button"
-              className="db-dialog-link"
-              onClick={() => void invoke("open_recycle_bin").catch(() => undefined)}
-            >
-              <CheckIcon size={12} /> Open {BIN_NAME}
-            </button>
-            <div className="db-dialog-actions">
-              <button type="button" className="db-outline auto" onClick={() => setConfirming(false)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="db-ink-button auto danger"
-                disabled={committing}
-                onClick={() => void doCommit()}
-              >
-                <Trash2Icon size={14} />
-                {committing ? "Moving…" : `Move to ${BIN_NAME}`}
-              </button>
-            </div>
+            {confirming === "recycle" ? (
+              <>
+                <h3>Move {items.length.toLocaleString()} item{items.length === 1 ? "" : "s"} to the {BIN_NAME}?</h3>
+                <p>
+                  {items.length.toLocaleString()} item{items.length === 1 ? "" : "s"} · {bytes(total)} of data.{" "}
+                  {IS_MAC
+                    ? `Items go to the Trash. Space is only freed when you empty it.`
+                    : `Items go to the Recycle Bin. Space is only freed when you empty it.`}
+                </p>
+                <button
+                  type="button"
+                  className="db-dialog-link"
+                  onClick={() => void invoke("open_recycle_bin").catch(() => undefined)}
+                >
+                  <CheckIcon size={12} /> Open {BIN_NAME}
+                </button>
+                <div className="db-dialog-actions">
+                  <button type="button" className="db-outline auto" onClick={() => setConfirming(null)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="db-ink-button auto danger"
+                    disabled={committing}
+                    onClick={() => void doCommit()}
+                  >
+                    <Trash2Icon size={14} />
+                    {committing ? "Moving…" : `Move to ${BIN_NAME}`}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 className="db-dialog-danger-title">
+                  <TriangleAlertIcon size={16} />
+                  Permanently delete {items.length.toLocaleString()} item{items.length === 1 ? "" : "s"}?
+                </h3>
+                <p>
+                  {items.length.toLocaleString()} item{items.length === 1 ? "" : "s"} · {bytes(total)} of data.{" "}
+                  {IS_MAC
+                    ? "These items are deleted immediately — nothing goes to the Trash, and this can't be undone."
+                    : "These items are deleted immediately — nothing goes to the Recycle Bin, and this can't be undone."}
+                </p>
+                <div className="db-dialog-actions">
+                  <button type="button" className="db-outline auto" onClick={() => setConfirming(null)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="db-ink-button auto danger"
+                    disabled={committing}
+                    onClick={() => void doCommit()}
+                  >
+                    <TriangleAlertIcon size={14} />
+                    {committing ? "Deleting…" : "Delete permanently"}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

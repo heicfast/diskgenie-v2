@@ -28,7 +28,10 @@ export function AgeMapMode(props: AgeMapModeProps) {
   const [data, setData] = useState<AgeMapDataData | null>(null);
   const [stale, setStale] = useState(false);
   const stage = useCleanupStore((s) => s.stage);
-  const contains = useCleanupStore((s) => s.contains);
+  // Subscribe to the ITEMS themselves (not the contains() helper — a
+  // stable function selector never re-renders, so the + → ✓ toggle
+  // flip never painted; the badge updated but the row lied).
+  const queuedIds = useCleanupStore((s) => new Set(s.items.map((i) => i.id)));
   const unstage = useCleanupStore((s) => s.unstage);
 
   useEffect(() => {
@@ -171,10 +174,12 @@ export function AgeMapMode(props: AgeMapModeProps) {
           <div className="db-substate">No files ≥ 40 MB untouched for over a year. Nothing to reclaim here.</div>
         ) : (
           data.big.slice(0, 50).map((row) => {
-            const staged = contains(row.id);
+            const staged = queuedIds.has(row.id);
             return (
-              <button
-                type="button"
+              <div
+                role="button"
+                tabIndex={0}
+                data-pulse-id={row.id}
                 className="db-big-row"
                 key={row.id}
                 onPointerEnter={(e) => props.onHover(row.id, e.clientX, e.clientY)}
@@ -184,6 +189,12 @@ export function AgeMapMode(props: AgeMapModeProps) {
                   props.onContextMenu(row.id, e.clientX, e.clientY);
                 }}
                 onClick={() => props.onSelect(row.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    props.onSelect(row.id);
+                  }
+                }}
                 aria-label={`${row.name}, ${bytes(row.logical)}, ${relativeAge(row.modified, now)}`}
               >
                 <FileIcon size={15} />
@@ -209,7 +220,7 @@ export function AgeMapMode(props: AgeMapModeProps) {
                   {relativeAge(row.modified, now)}
                 </em>
                 <b className="tnum">{bytes(row.logical)}</b>
-              </button>
+              </div>
             );
           })
         )}

@@ -46,8 +46,12 @@ export function TopSizesMode(props: TopSizesModeProps) {
     // No silent catch: a dropped stale response used to render the
     // EMPTY state ("Nothing to rank yet") — a lie during a rescan.
     // Show the honest reload state instead.
+    // Smooth refetch (session 13): the PREVIOUS rows stay on screen
+    // while the new generation's data lands (a cleanup commit bumps
+    // the generation — skeletons flashing over rows the user is
+    // reading is the jank the "realtime everywhere" report called
+    // out). Skeletons appear only on the very first load (data null).
     setStale(false);
-    setData(null);
     void (async () => {
       try {
         const d = await getTopSizes(props.generation, props.folder, scope, props.filter);
@@ -105,6 +109,7 @@ export function TopSizesMode(props: TopSizesModeProps) {
                 key={r.id}
                 type="button"
                 data-rank={r.rank}
+                data-pulse-id={r.id}
                 className={props.selectedId === r.id ? "is-selected" : ""}
                 onClick={() => props.onSelect(r.id)}
                 onDoubleClick={() => props.onOpen(r.id)}

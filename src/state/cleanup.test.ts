@@ -96,4 +96,31 @@ describe("useCleanupStore (spec §9)", () => {
     s.remove(7);
     expect(useCleanupStore.getState().items.map((i) => i.id)).toEqual([0]);
   });
+
+  // ── Session 13: PATH-first identity ────────────────────────────────
+  // THE OWNER'S EDGE CASE: "one file added twice to cleanup queue" —
+  // the same file staged through the inspector (real id) AND a
+  // path-only surface (id 0) used to land twice; the queue now dedupes
+  // by path (paths are unique on disk).
+
+  it("the same file staged by id AND by path lands once", () => {
+    const s = useCleanupStore.getState();
+    s.stage({ id: 9, path: "C:\\a\\big.iso", size: 900, reason: "Manual" });
+    s.stage({ id: 0, path: "C:\\a\\big.iso", size: 900, reason: "Duplicate" });
+    expect(useCleanupStore.getState().items).toHaveLength(1);
+  });
+
+  it("path identity is case-insensitive (Windows semantics)", () => {
+    const s = useCleanupStore.getState();
+    s.stage({ id: 9, path: "C:\\A\\Big.ISO", size: 900, reason: "Manual" });
+    s.stage({ id: 0, path: "c:\\a\\big.iso", size: 900, reason: "Duplicate" });
+    expect(useCleanupStore.getState().items).toHaveLength(1);
+  });
+
+  it("different files with different ids still stack", () => {
+    const s = useCleanupStore.getState();
+    s.stage({ id: 9, path: "C:\\a\\one.iso", size: 900, reason: "Manual" });
+    s.stage({ id: 12, path: "C:\\a\\two.iso", size: 900, reason: "Manual" });
+    expect(useCleanupStore.getState().items).toHaveLength(2);
+  });
 });

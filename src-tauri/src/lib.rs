@@ -16,8 +16,23 @@ mod commands;
 // main.rs + tests, so this widens nothing that ships.
 pub mod license;
 mod platform;
-mod recycle;
+// Public so the shell-delete integration test (tests/shell_delete.rs)
+// can drive the REAL IFileOperation pipeline against real temp files on
+// the Windows CI runner (the disk-level proof the owner asked for:
+// recycle → gone + bin count +1; permanent → gone + count same).
+// Binary crate — the lib surface is only consumed by main.rs + tests,
+// so this widens nothing that ships.
+pub mod recycle;
 mod state;
+
+// Test-accessible re-exports of the platform icon surface for
+// tests/shell_delete.rs (binary crate — doc-hidden, ships nothing
+// beyond the lib the main binary already links).
+#[cfg(windows)]
+#[doc(hidden)]
+pub mod apps_test_probe {
+    pub use crate::platform::os::{find_main_exe, icon_png_data_url, msix_icon_data_urls};
+}
 
 #[cfg(test)]
 mod tests_support;
@@ -152,6 +167,7 @@ pub fn run() {
             commands::shell::preview_text,
             commands::shell::hover_details,
             commands::cleanup::commit_cleanup,
+            commands::cleanup::delete_permanently,
             commands::cleanup::open_recycle_bin,
             commands::sidebar::get_drive_chips,
             commands::sidebar::get_home_path,

@@ -1,11 +1,13 @@
 //! Cleanup commit commands (spec §9; doc 03 M5): the SAFETY-CRITICAL
-//! flow — pre-flight + Recycle Bin move on a background thread, then
-//! in-memory tree surgery (no rescan), cache clears, generation bump,
+//! flow — pre-flight + shell delete (Recycle Bin or owner-sanctioned
+//! permanent, session 13) on a background thread, then in-memory tree
+//! surgery (no rescan), cache clears, generation bump,
 //! navigation/selection fixups and the `cleanup-committed` event.
 //!
-//! Zero direct-delete APIs exist in this crate (doc 09 §2 grep gate);
-//! everything goes through `recycle::move_to_recycle_bin`
-//! (IFileOperation, Recycle-Bin-only).
+//! Recycle remains the default (`recycle::move_to_recycle_bin`);
+//! permanent delete is the owner-sanctioned "Delete permanently"
+//! popover action (`recycle::delete_permanently`) — both verified
+//! against the disk post-operation (see `recycle.rs`).
 
 use std::sync::Arc;
 
@@ -14,7 +16,7 @@ use diskbytes_core::scan::surgery;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::recycle::{self, StagedPath};
+use crate::recycle::{self, DeleteMode, StagedPath};
 use crate::state::AppState;
 
 /// One staged item from the JS queue (spec §9 shape).
@@ -52,17 +54,84 @@ pub struct CleanupCommitted {
 /// Commit the staged queue to the Recycle Bin (spec §9): pre-flight
 /// refusals → IFileOperation → tree surgery without rescan.
 ///
+/// `current_folder`/`selected_node` are the UI's live navigation (the
+/// surgery may REMOVE the folder on screen — the response carries the
+/// fixup so the frontend lands on a survivor instead of a dead node).
+///
 /// # Errors
 /// String error when the generation is stale or COM setup fails;
 /// per-item problems land in the response's `failed` list.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
-#[allow(clippy::too_many_lines)] // lifecycle orchestrator: gate → resolve → recycle → surgery → swap →
-                                 // caches → event; the ordering invariants are documented in-body
-                                 // (same posture as start_scan/start_scan_turbo)
 pub async fn commit_cleanup(
     generation: u64,
     items: Vec<CommitItem>,
+    current_folder: Option<u32>,
+    selected_node: Option<u32>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+    license: State<'_, crate::commands::license::LicenseManager>,
+    analytics: State<'_, crate::analytics::Analytics>,
+) -> Result<CleanupCommitted, String> {
+    commit_shell_delete(
+        generation,
+        items,
+        current_folder,
+        selected_node,
+        DeleteMode::Recycle,
+        state,
+        app,
+        license,
+        analytics,
+    )
+    .await
+}
+
+/// Permanently delete the staged queue (owner decision, session 13 —
+/// the popover's "Delete permanently" action): the same pre-flight +
+/// tree-surgery lifecycle, WITHOUT the undo/recycle flags.
+///
+/// # Errors
+/// String error when the generation is stale or COM setup fails;
+/// per-item problems land in the response's `failed` list.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
+pub async fn delete_permanently(
+    generation: u64,
+    items: Vec<CommitItem>,
+    current_folder: Option<u32>,
+    selected_node: Option<u32>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+    license: State<'_, crate::commands::license::LicenseManager>,
+    analytics: State<'_, crate::analytics::Analytics>,
+) -> Result<CleanupCommitted, String> {
+    commit_shell_delete(
+        generation,
+        items,
+        current_folder,
+        selected_node,
+        DeleteMode::Permanent,
+        state,
+        app,
+        license,
+        analytics,
+    )
+    .await
+}
+
+/// The shared commit lifecycle for BOTH delete modes: gate → resolve →
+/// shell delete (disk-verified) → surgery → swap → caches → event.
+/// The ordering invariants are documented in-body (same posture as
+/// start_scan/start_scan_turbo).
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
+async fn commit_shell_delete(
+    generation: u64,
+    items: Vec<CommitItem>,
+    current_folder: Option<u32>,
+    selected_node: Option<u32>,
+    mode: DeleteMode,
     state: State<'_, AppState>,
     app: AppHandle,
     license: State<'_, crate::commands::license::LicenseManager>,
@@ -112,15 +181,22 @@ pub async fn commit_cleanup(
         })
         .collect();
 
-    // The Recycle Bin move runs on the blocking pool (COM thread).
-    let outcome =
-        tauri::async_runtime::spawn_blocking(move || recycle::move_to_recycle_bin(staged))
-            .await
-            .map_err(|e| format!("cleanup thread failed: {e}"))??;
+    // The shell delete runs on the blocking pool (COM thread) — the
+    // mode selects recycle vs permanent (owner-sanctioned, session 13).
+    let outcome = tauri::async_runtime::spawn_blocking(move || match mode {
+        DeleteMode::Recycle => recycle::move_to_recycle_bin(staged),
+        DeleteMode::Permanent => recycle::delete_permanently(staged),
+    })
+    .await
+    .map_err(|e| format!("cleanup thread failed: {e}"))??;
 
     // Engine telemetry (doc 07 §4): counts only, never paths.
     analytics.capture(
-        "cleanup_committed",
+        if mode == DeleteMode::Permanent {
+            "cleanup_deleted_permanently"
+        } else {
+            "cleanup_committed"
+        },
         &[
             ("items", serde_json::json!(outcome.trashed.len())),
             ("bytes", serde_json::json!(queue_total)),
@@ -134,6 +210,8 @@ pub async fn commit_cleanup(
     // would stall every other concurrent command).
     let trashed_paths: Vec<String> = outcome.trashed.iter().map(|t| t.path.clone()).collect();
     let tree_for_surgery = Arc::clone(&tree);
+    let nav_folder = current_folder.unwrap_or(0);
+    let nav_selection = selected_node;
     let surgery_result = tauri::async_runtime::spawn_blocking(move || {
         // Tree surgery for every successfully recycled REAL node
         // (path-only items like leftovers have no node to remove).
@@ -159,16 +237,33 @@ pub async fn commit_cleanup(
         surgery::remove_subtrees(&mut owned, &removed_ids);
         let new_generation = owned.generation;
         let stats_after = owned.root_stats();
-        // UI fixups: the removed navigation point walks up to a survivor.
-        let current_folder = surgery::fixup_navigation(&owned, 0);
-        Some((owned, new_generation, stats_after, current_folder))
+        // UI fixups against the REAL live navigation (session 13: the
+        // frontend now sends its current folder + selection — the old
+        // call hard-wired 0, so a commit that removed the ON-SCREEN
+        // folder left the view pointed at a dead node): the removed
+        // navigation point walks up to a survivor, a removed selection
+        // clears.
+        let fixed_folder = surgery::fixup_navigation(&owned, nav_folder);
+        let fixed_selection = nav_selection.filter(|&id| !surgery::node_gone(&owned, id));
+        Some((
+            owned,
+            new_generation,
+            stats_after,
+            fixed_folder,
+            fixed_selection,
+        ))
     })
     .await
     .map_err(|e| format!("surgery thread failed: {e}"))?;
 
-    let (new_generation, root_stats, current_folder, selected_node) = match surgery_result {
-        None => (tree.generation, Some(tree.root_stats()), 0, None),
-        Some((owned, new_generation, stats_after, current_folder)) => {
+    let (new_generation, root_stats, fixed_folder, fixed_selection) = match surgery_result {
+        None => (
+            tree.generation,
+            Some(tree.root_stats()),
+            nav_folder,
+            nav_selection,
+        ),
+        Some((owned, new_generation, stats_after, fixed_folder, fixed_selection)) => {
             // Swap under the write lock, generation-guarded: a scan that
             // finished while we were surgering owns the slot — its fresh
             // tree (which already reflects the recycled files on disk)
@@ -189,7 +284,12 @@ pub async fn commit_cleanup(
             state
                 .generation
                 .fetch_max(new_generation, std::sync::atomic::Ordering::SeqCst);
-            (new_generation, Some(stats_after), current_folder, None)
+            (
+                new_generation,
+                Some(stats_after),
+                fixed_folder,
+                fixed_selection,
+            )
         }
     };
 
@@ -206,8 +306,8 @@ pub async fn commit_cleanup(
         trashed: outcome.trashed,
         failed: outcome.failed,
         stats: root_stats,
-        current_folder,
-        selected_node,
+        current_folder: fixed_folder,
+        selected_node: fixed_selection,
     };
     let _ = app.emit("cleanup-committed", &payload);
     Ok(payload)

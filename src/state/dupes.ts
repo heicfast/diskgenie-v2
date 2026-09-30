@@ -21,6 +21,10 @@ import { create } from "zustand";
 import { invoke, listen, type UnlistenFn } from "../lib/ipc";
 import { EVENTS, track } from "../lib/analytics";
 import { userFacingError } from "../lib/userFacingError";
+// Function-level usage only (the resolve-staleness guard) — the module
+// cycle scan.ts ↔ dupes.ts is init-safe (same pattern as ipc ↔
+// state/license; both sides access each other inside functions).
+import { useScanStore } from "./scan";
 
 export interface DupeGroup {
   id: number;
@@ -117,8 +121,24 @@ export const useDupesStore = create<DupesStore>((set, get) => ({
     set({ running: true, cancelling: false, progress: null, result: null, error: null });
     void invoke<DupesResult>("find_duplicates", { generation })
       .then((res) => {
-        set({ running: false, cancelling: false, progress: null, result: res, error: null });
-        track(EVENTS.duplicatesScanCompleted, { groups: res.groups.length, wasted: res.wastedTotal });
+        // A tree swap (fresh scan / cleanup commit) landed while the
+        // engine hashed: the groups reference the OLD arena — drop them
+        // instead of rendering a result for a tree that no longer
+        // exists. Function-level scan-store access (init-safe cycle).
+        const stillCurrent =
+          res.generation === generation &&
+          generation === useScanStore.getState().generation &&
+          useScanStore.getState().status === "done";
+        set({
+          running: false,
+          cancelling: false,
+          progress: null,
+          result: stillCurrent ? res : null,
+          error: null,
+        });
+        if (stillCurrent) {
+          track(EVENTS.duplicatesScanCompleted, { groups: res.groups.length, wasted: res.wastedTotal });
+        }
       })
       .catch((e: unknown) => {
         // Cancellation is a USER action, not a failure — quiet reset.

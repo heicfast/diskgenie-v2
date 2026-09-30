@@ -21,6 +21,7 @@ import { ItemContextMenu, type ItemMenuState } from "../components/ItemContextMe
 import { TailPath } from "../components/TailPath";
 import { invoke } from "../lib/ipc";
 import { bytes } from "../lib/format";
+import { useFocusPulseHost } from "../lib/useFocusPulse";
 import { useExploreStore } from "../state/explore";
 import { useScanStore } from "../state/scan";
 import { useViewStore } from "../state/view";
@@ -91,6 +92,8 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
   const hoverSeq = useRef(0);
   const [menu, setMenu] = useState<ItemMenuState | null>(null);
   const [folderView, setFolderView] = useState<NodeDetailsData | null>(null);
+  // The focus-pulse lifecycle host (session 13 — see the hook docs).
+  useFocusPulseHost();
 
   // Shift+F10: the Windows keyboard context-menu key. Same contract as
   // right-click, but for the SELECTED item (the keyboard-nav surrogate
