@@ -19,6 +19,12 @@
 //!    same file staged twice, already-missing items, protected items.
 
 #![cfg(windows)]
+// SAFETY discipline parity with the src tree (unsafe_code=warn +
+// clippy -D warnings): the two probes below carry their own SAFETY
+// comments; the crate lint is allowed here for the same reason the
+// recycle/COM modules allow it — the Win32 boundary is reviewed as a
+// unit.
+#![allow(unsafe_code)]
 
 use diskbytes_lib::recycle::{delete_permanently, move_to_recycle_bin, StagedPath};
 use windows::core::PCWSTR;
@@ -54,12 +60,12 @@ fn bin_count() -> Option<i64> {
     let root: Vec<u16> = "C:\\".encode_utf16().chain(std::iter::once(0)).collect();
     // SAFETY: NUL-terminated root path; info sized to its own cbSize
     // contract; the out-struct is fully initialized above.
-    let hr = unsafe { SHQueryRecycleBinW(PCWSTR(root.as_ptr()), &mut info) };
-    if hr.is_ok() {
-        Some(info.i64NumItems)
-    } else {
-        eprintln!("note: SHQueryRecycleBinW unavailable ({hr}) — bin-count assertion skipped");
-        None
+    match unsafe { SHQueryRecycleBinW(PCWSTR(root.as_ptr()), &mut info) } {
+        Ok(()) => Some(info.i64NumItems),
+        Err(e) => {
+            eprintln!("note: SHQueryRecycleBinW unavailable ({e}) — bin-count assertion skipped");
+            None
+        }
     }
 }
 
