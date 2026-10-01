@@ -5,7 +5,7 @@
 use serde::Serialize;
 use tauri::State;
 
-use diskbytes_core::snapshots::{self, Snapshot, SnapshotSummary};
+use diskgenie_core::snapshots::{self, Snapshot, SnapshotSummary};
 use std::path::PathBuf;
 
 /// The snapshots directory (app data; created on demand).
@@ -15,7 +15,7 @@ const MIN_1MIB: u64 = 1024 * 1024;
 fn snapshots_dir() -> PathBuf {
     let base = std::env::var("APPDATA").map_or_else(
         |_| PathBuf::from("."),
-        |d| PathBuf::from(d).join("DiskBytes"),
+        |d| PathBuf::from(d).join("DiskGenie"),
     );
     let dir = base.join("snapshots");
     let _ = std::fs::create_dir_all(&dir);

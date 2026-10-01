@@ -1,8 +1,8 @@
 //! Manual M2 gate bench (doc 03: "1M synthetic nodes insert < 2 s; bench
 //! ignored in CI, run manually"). Run with:
-//! `cargo test -p diskbytes-core --release -- --ignored bench_1m --nocapture`
+//! `cargo test -p diskgenie-core --release -- --ignored bench_1m --nocapture`
 
-use diskbytes_core::scan::node::{BatchEntry, Node, Tree};
+use diskgenie_core::scan::node::{BatchEntry, Node, Tree};
 
 #[test]
 #[ignore = "manual bench"]

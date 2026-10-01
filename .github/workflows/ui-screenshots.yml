@@ -2,7 +2,7 @@ name: UI Screenshots
 
 # The interactive verification battery (owner instruction, session 005):
 # builds the REAL app (Windows, release, embedded frontend), stages a
-# synthetic file tree, launches with DISKBYTES_SCAN + DISKBYTES_TOUR=1,
+# synthetic file tree, launches with DISKGENIE_SCAN + DISKGENIE_TOUR=1,
 # and captures a screenshot at every tour step (all 9 modes, all tabs,
 # color modes, dark theme, license + cleanup overlays) via GDI
 # CopyFromScreen. Artifacts are pulled and VLM-verified per session.
@@ -45,7 +45,7 @@ jobs:
       - name: Build the app (release exe, no installer, ci-license-sim)
         # The license-sim feature (src-tauri/Cargo.toml [features]) is
         # ONLY compiled into this screenshots build: it seeds a
-        # simulated activated license (DISKBYTES_LICENSE_SIM=1 below)
+        # simulated activated license (DISKGENIE_LICENSE_SIM=1 below)
         # so the tour captures the working app AND — when the tour
         # flips it off — the Activation Gate + Pro status card. It does
         # not exist in NSIS/MSIX production builds.
@@ -57,7 +57,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = 'C:\DiskBytesTest'
+          $root = 'C:\DiskGenieTest'
           New-Item -ItemType Directory -Force -Path `
             "$root\Users\dev\Desktop","$root\Users\dev\Documents\Work\Invoices 2026", `
             "$root\Users\dev\Downloads","$root\Users\dev\Pictures\Camera Roll","$root\Users\dev\Videos", `
@@ -145,13 +145,13 @@ jobs:
           } catch {
             "display resolution change unavailable ($($_.Exception.Message)) — capturing at default"
           }
-          $exe = Join-Path $PWD "src-tauri\target\release\diskbytes.exe"
+          $exe = Join-Path $PWD "src-tauri\target\release\diskgenie.exe"
           if (-not (Test-Path $exe)) { throw "exe not found: $exe" }
-          $env:DISKBYTES_SCAN = 'C:\DiskBytesTest'
-          $env:DISKBYTES_MODE = 'Folders'
-          $env:DISKBYTES_TOUR = '1'
-          $env:DISKBYTES_POSTHOG_KEY = ''
-          $env:DISKBYTES_LICENSE_SIM = '1'
+          $env:DISKGENIE_SCAN = 'C:\DiskGenieTest'
+          $env:DISKGENIE_MODE = 'Folders'
+          $env:DISKGENIE_TOUR = '1'
+          $env:DISKGENIE_POSTHOG_KEY = ''
+          $env:DISKGENIE_LICENSE_SIM = '1'
           $out = Join-Path $env:RUNNER_TEMP 'shots'
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           $app = Start-Process -FilePath $exe -WorkingDirectory $PWD -RedirectStandardOutput "$env:RUNNER_TEMP\app-stdout.log" -RedirectStandardError "$env:RUNNER_TEMP\app-stderr.log" -PassThru
@@ -190,7 +190,7 @@ jobs:
       - name: Upload screenshots
         uses: actions/upload-artifact@v4
         with:
-          name: diskbytes-ui-screenshots
+          name: diskgenie-ui-screenshots
           path: ${{ runner.temp }}/shots
           retention-days: 14
           if-no-files-found: error
@@ -198,7 +198,7 @@ jobs:
       - name: Upload app logs
         uses: actions/upload-artifact@v4
         with:
-          name: diskbytes-app-logs
+          name: diskgenie-app-logs
           path: |
             ${{ runner.temp }}/app-stdout.log
             ${{ runner.temp }}/app-stderr.log

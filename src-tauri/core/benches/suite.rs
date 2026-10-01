@@ -4,7 +4,7 @@
 //! order), layout engines (treemap/sunburst/flame), surgery (the
 //! post-cleanup `CoW` path), quickwins resolve, and duplicate ranking.
 //!
-//! Run locally: `cargo bench -p diskbytes-core`
+//! Run locally: `cargo bench -p diskgenie-core`
 //! CI: `.github/workflows/test-matrix.yml` (benchmark job, both OSes).
 
 // Bench-only lint posture: criterion's `b.iter(|| {...})` closures end
@@ -15,8 +15,8 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-use diskbytes_core::scan::node::{BatchEntry, Node, Tree};
-use diskbytes_core::scan::rollup;
+use diskgenie_core::scan::node::{BatchEntry, Node, Tree};
+use diskgenie_core::scan::rollup;
 
 /// A deterministic synthetic tree: `dirs` directories × `files_per_dir`
 /// files, sizes derived from a cheap LCG so every run is identical.
@@ -47,7 +47,7 @@ fn synthetic_tree(dirs: u32, files_per_dir: u32) -> Tree {
             n.logical = sz;
             n.on_disk = sz.div_ceil(4096) * 4096;
             n.modified = 1_700_000_000 + i64::from(d * files_per_dir + i);
-            n.set_category(diskbytes_core::scan::categories::FileCategory::from_name(
+            n.set_category(diskgenie_core::scan::categories::FileCategory::from_name(
                 &format!("f_{i}.bin").encode_utf16().collect::<Vec<u16>>(),
             ));
             entries.push(BatchEntry {
@@ -100,39 +100,39 @@ fn bench_layout(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1_000_000));
     group.bench_function("treemap_1m_depth4", |b| {
         b.iter(|| {
-            diskbytes_core::layout::treemap::treemap(
+            diskgenie_core::layout::treemap::treemap(
                 &t,
                 0,
                 1600.0,
                 1000.0,
                 4,
-                diskbytes_core::layout::ColorMode::ByFolder,
+                diskgenie_core::layout::ColorMode::ByFolder,
                 1,
             )
         })
     });
     group.bench_function("sunburst_1m_depth4", |b| {
         b.iter(|| {
-            diskbytes_core::layout::sunburst::sunburst(
+            diskgenie_core::layout::sunburst::sunburst(
                 &t,
                 0,
                 900.0,
                 900.0,
                 4,
-                diskbytes_core::layout::ColorMode::ByFolder,
+                diskgenie_core::layout::ColorMode::ByFolder,
                 1,
             )
         })
     });
     group.bench_function("flame_1m_depth4", |b| {
         b.iter(|| {
-            diskbytes_core::layout::flame::flame(
+            diskgenie_core::layout::flame::flame(
                 &t,
                 0,
                 1600.0,
                 1000.0,
                 4,
-                diskbytes_core::layout::ColorMode::ByFolder,
+                diskgenie_core::layout::ColorMode::ByFolder,
                 1,
             )
         })
@@ -153,13 +153,13 @@ fn bench_treemap_scaling(c: &mut Criterion) {
             &t,
             |b, t| {
                 b.iter(|| {
-                    diskbytes_core::layout::treemap::treemap(
+                    diskgenie_core::layout::treemap::treemap(
                         t,
                         0,
                         1600.0,
                         1000.0,
                         4,
-                        diskbytes_core::layout::ColorMode::ByFolder,
+                        diskgenie_core::layout::ColorMode::ByFolder,
                         1,
                     )
                 })
@@ -181,7 +181,7 @@ fn bench_surgery(c: &mut Criterion) {
         b.iter_batched_ref(
             || Tree::deep_from(&t),
             |copy| {
-                diskbytes_core::scan::surgery::remove_subtrees(copy, &ids);
+                diskgenie_core::scan::surgery::remove_subtrees(copy, &ids);
             },
             criterion::BatchSize::LargeInput,
         )
@@ -202,7 +202,7 @@ fn bench_quickwins(c: &mut Criterion) {
     let mut group = c.benchmark_group("quickwins");
     group.throughput(Throughput::Elements(40_200));
     group.bench_function("resolve_40k_nodes", |b| {
-        b.iter(|| diskbytes_core::quickwins::resolve(&t, &env, 1))
+        b.iter(|| diskgenie_core::quickwins::resolve(&t, &env, 1))
     });
     group.finish();
 }
@@ -212,8 +212,8 @@ fn bench_quickwins(c: &mut Criterion) {
 fn bench_dupes(c: &mut Criterion) {
     // 50k files, sizes cycling over 10k distinct values -> 5-member
     // buckets on average (the realistic dupe density).
-    let files: Vec<diskbytes_core::dupes::HashedFile> = (0..50_000u32)
-        .map(|i| diskbytes_core::dupes::HashedFile {
+    let files: Vec<diskgenie_core::dupes::HashedFile> = (0..50_000u32)
+        .map(|i| diskgenie_core::dupes::HashedFile {
             path: format!(r"C:\bench\file_{i:05}.bin"),
             size: 4096 + u64::from(i % 10_000) * 512,
             volume_serial: 1,
@@ -224,7 +224,7 @@ fn bench_dupes(c: &mut Criterion) {
     let mut group = c.benchmark_group("dupes");
     group.throughput(Throughput::Elements(50_000));
     group.bench_function("rank_50k_files", |b| {
-        b.iter(|| diskbytes_core::dupes::rank(&files))
+        b.iter(|| diskgenie_core::dupes::rank(&files))
     });
     group.finish();
 }

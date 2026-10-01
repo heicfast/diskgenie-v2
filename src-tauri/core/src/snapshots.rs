@@ -2,7 +2,7 @@
 //!
 //! A snapshot stores folder path → logical size for **folders ≥ 1 MB only**
 //! (spec: "skip entire smaller subtrees"). Storage layout (app-side
-//! `%LOCALAPPDATA%\DiskBytes\Snapshots\`):
+//! `%LOCALAPPDATA%\DiskGenie\Snapshots\`):
 //! - one JSON file per snapshot ([`Snapshot`]),
 //! - a small `index.json` of [`SnapshotSummary`] rows so the list loads
 //!   instantly without opening every file.
@@ -277,8 +277,8 @@ pub fn read_snapshot(path: &Path) -> Result<Snapshot, CoreError> {
 /// as already deleted, and a missing/corrupt index is left as-is.
 ///
 /// This is the inverse of [`write_json_atomic`] over the app-owned
-/// snapshot store. Snapshot files are documents DISKBYTES created
-/// (spec §13: `%LOCALAPPDATA%\DiskBytes\Snapshots\`), never user files;
+/// snapshot store. Snapshot files are documents DISKGENIE created
+/// (spec §13: `%LOCALAPPDATA%\DiskGenie\Snapshots\`), never user files;
 /// the app crate keeps zero direct-delete APIs (R7.1 grep scope =
 /// `src-tauri/src`), so this persistence-layer operation lives here with
 /// the rest of the store.

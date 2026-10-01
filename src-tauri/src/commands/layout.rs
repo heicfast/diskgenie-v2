@@ -10,12 +10,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use diskbytes_core::layout::regroup::{self, Regrouped};
-use diskbytes_core::layout::{
+use diskgenie_core::layout::regroup::{self, Regrouped};
+use diskgenie_core::layout::{
     bubbles, flame, folder_legend, groups, mindmap, sunburst, treemap, ColorMode, LayoutBuffer,
     MAX_CELLS,
 };
-use diskbytes_core::scan::node::Tree;
+use diskgenie_core::scan::node::Tree;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Response;
@@ -239,7 +239,7 @@ fn compute_layout(
         if c.id < regroup::SYNTH_BASE {
             if let Some(n) = tree.node(c.id) {
                 if n.is_dir() {
-                    c.flags |= diskbytes_core::layout::cell_kind::DIR_BIT;
+                    c.flags |= diskgenie_core::layout::cell_kind::DIR_BIT;
                 }
             }
         }

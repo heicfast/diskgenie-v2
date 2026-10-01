@@ -1,4 +1,4 @@
-# DiskBytes release build (doc 03 M11.2; spec §17): the full gate
+# DiskGenie release build (doc 03 M11.2; spec §17): the full gate
 # battery, the per-user NSIS installer, the portable zip and
 # SHA256SUMS.txt. Windows only (MSVC + WebView2).
 #
@@ -63,20 +63,20 @@ New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $installer = Get-ChildItem (Join-Path $bundle "nsis") -Filter "*.exe" |
     Select-Object -First 1
 if (-not $installer) { throw "NSIS installer not found" }
-Copy-Item $installer.FullName -Destination (Join-Path $outDir "DiskBytes-$version-$Arch-setup.exe") -Force
+Copy-Item $installer.FullName -Destination (Join-Path $outDir "DiskGenie-$version-$Arch-setup.exe") -Force
 
 # Portable zip: the bare exe + WebView2 bootstrapper note.
-$exe = Join-Path $AppRoot "src-tauri/target/$target/release/diskbytes.exe"
+$exe = Join-Path $AppRoot "src-tauri/target/$target/release/diskgenie.exe"
 if (-not (Test-Path $exe)) { throw "release exe not found" }
-$portable = Join-Path $outDir "DiskBytes-$version-$Arch-portable"
+$portable = Join-Path $outDir "DiskGenie-$version-$Arch-portable"
 New-Item -ItemType Directory -Force -Path $portable | Out-Null
-Copy-Item $exe -Destination (Join-Path $portable "DiskBytes.exe") -Force
+Copy-Item $exe -Destination (Join-Path $portable "DiskGenie.exe") -Force
 @(
-    "DiskBytes portable. Runs without installing; WebView2 is required",
+    "DiskGenie portable. Runs without installing; WebView2 is required",
     "(the Windows bootstrapper is bundled with the setup exe instead).",
     "See docs/DISTRIBUTION.md for SmartScreen/Unblock guidance."
 ) | Set-Content (Join-Path $portable "README.txt")
-Compress-Archive -Path $portable -DestinationPath (Join-Path $outDir "DiskBytes-$version-$Arch-portable.zip") -Force
+Compress-Archive -Path $portable -DestinationPath (Join-Path $outDir "DiskGenie-$version-$Arch-portable.zip") -Force
 Remove-Item $portable -Recurse -Force
 
 Write-Host "== SHA256SUMS.txt =="

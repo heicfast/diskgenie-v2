@@ -1,5 +1,5 @@
 /**
- * DiskBytes icon system.
+ * DiskGenie icon system.
  *
  * Standard glyphs are re-exported from **lucide-react** — the professional,
  * MIT-licensed icon set (Feather/Lucide, 24×24 grid, stroke 2, round

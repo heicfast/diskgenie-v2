@@ -156,7 +156,7 @@ fn read_uninstall_entry(
         quiet_uninstall_string: get_str("QuietUninstallString").unwrap_or_default(),
         display_icon: get_str("DisplayIcon")
             .as_deref()
-            .and_then(diskbytes_core::apps::parse_display_icon)
+            .and_then(diskgenie_core::apps::parse_display_icon)
             .unwrap_or_default(),
     };
     let _ = unsafe { RegCloseKey(hk) };
@@ -358,7 +358,7 @@ pub fn msix_remove_package(full_name: &str) -> Result<(), String> {
 /// FILETIME at data offset 60). Best effort: unreadable parts are
 /// skipped, never errors.
 pub fn userassist_entries() -> Vec<(String, i64)> {
-    use diskbytes_core::apps::{rot13, userassist_last_run};
+    use diskgenie_core::apps::{rot13, userassist_last_run};
     use windows::Win32::System::Registry::{
         RegCloseKey, RegEnumValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
     };
@@ -715,7 +715,7 @@ fn bgra_to_png(bgra: &[u8], w: usize, h: usize) -> Option<String> {
     }
     Some(format!(
         "data:image/png;base64,{}",
-        diskbytes_core::apps::base64_encode(&png_bytes)
+        diskgenie_core::apps::base64_encode(&png_bytes)
     ))
 }
 

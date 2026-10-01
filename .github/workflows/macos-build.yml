@@ -80,33 +80,33 @@ jobs:
 
       - name: Launch the .app bundle + capture the smoke pass
         env:
-          DISKBYTES_POSTHOG_KEY: ""
+          DISKGENIE_POSTHOG_KEY: ""
         run: |
           set -e
-          APP="src-tauri/target/release/bundle/macos/DiskBytes.app"
+          APP="src-tauri/target/release/bundle/macos/DiskGenie.app"
           OUT="$RUNNER_TEMP/shots"
           mkdir -p "$OUT"
           # Launch the BUNDLE via LaunchServices (the real install
           # path), then capture the window exactly like the audit
           # harness — the raw binary inside the bundle is the same
           # process the smoke needs (env + logs come along).
-          BIN="$APP/Contents/MacOS/DiskBytes"
+          BIN="$APP/Contents/MacOS/DiskGenie"
           APP_BIN="$BIN" \
           OUT_DIR="$OUT" \
           FRAMES=6 \
           BOOT_WAIT_S=5 \
           CADENCE_MS=3000 \
           FULL_CONTEXT=1 \
-          LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_WINDOW=1440x860" \
+          LAUNCH_ENV="DISKGENIE_SCAN=$HOME/diskgenie-test DISKGENIE_WINDOW=1440x860" \
           bash scripts/ci/mac-capture.sh
-          osascript -e 'tell application "DiskBytes" to quit' 2>/dev/null || true
+          osascript -e 'tell application "DiskGenie" to quit' 2>/dev/null || true
           echo "--- bundle smoke stderr tail ---"; tail -15 "$OUT/app-stderr.log" || true
           ls -la "$OUT"
 
       - name: Upload mac smoke screenshots
         uses: actions/upload-artifact@v4
         with:
-          name: diskbytes-macos-screenshots
+          name: diskgenie-macos-screenshots
           path: ${{ runner.temp }}/shots
           retention-days: 14
           if-no-files-found: warn
@@ -114,7 +114,7 @@ jobs:
       - name: Upload dmg
         uses: actions/upload-artifact@v4
         with:
-          name: diskbytes-macos-dmg
+          name: diskgenie-macos-dmg
           path: src-tauri/target/release/bundle/dmg/*.dmg
           retention-days: 14
           if-no-files-found: warn

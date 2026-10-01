@@ -222,7 +222,7 @@ Based on a detailed visual audit of the **Target (Image 1)** vs. the **Current I
 ### 4. Component Styling
 *   **Navigation Bar:** 
     *   Image 1 has a clean segmented control look for "Explore", "Duplicates", etc., with "Explore" active (white text on orange pill).
-    *   Image 2 adds a "DiskBytes" logo/text on the far left which shifts the layout. Remove the logo if strictly following Image 1, or ensure it doesn't compress the nav items.
+    *   Image 2 adds a "DiskGenie" logo/text on the far left which shifts the layout. Remove the logo if strictly following Image 1, or ensure it doesn't compress the nav items.
     *   The "This PC" dropdown in Image 2 replaces the simple "Macintosh HD" text in Image 1. Style the dropdown trigger to look like the target's static text or adjust the target design if a dropdown is required.
 *   **Toolbar Icons:** The toolbar below the header in Image 1 has a specific set of icons (Grid view, List view, etc.) inside a rounded container. Image 2 has different icons (including a flame icon?). Replace icons to match the target set exactly.
 *   **Buttons:**
@@ -265,7 +265,7 @@ Based on a detailed visual audit of the **Target (Image 1)** vs. the **Current I
 Here is a comprehensive, production-grade audit of the visual gaps between the **Target (Image 1)** and the **Current Implementation (Image 2)**:
 
 ### 1. Global Layout & Header Structure
-*   **Missing App Branding:** Image 2 is missing the "DiskBytes" logo and app name in the top-left corner (present in Image 1).
+*   **Missing App Branding:** Image 2 is missing the "DiskGenie" logo and app name in the top-left corner (present in Image 1).
 *   **Top Navigation Bar:** 
     *   The navigation items in Image 2 ("Explore", "Duplicates", etc.) lack the pill-shaped background container seen in Image 1.
     *   The active tab styling is incorrect: Image 1 uses a solid orange/red background with white text for the active state; Image 2 uses a lighter red/orange tint.
@@ -621,7 +621,7 @@ Here is a comprehensive, production-grade audit of the visual gaps between the *
 *   **Treemap Container Height:** The treemap visualization area in IMAGE 2 is much taller (extending further down the screen) relative to the sidebar, whereas IMAGE 1 has a more balanced, contained height for the treemap block.
 *   **Right Panel Width:** The details panel on the right in IMAGE 2 appears slightly wider or the content is more spread out compared to the tighter layout of IMAGE 1.
 *   **Header Layout:** 
-    *   IMAGE 2 includes a "DiskBytes" app logo/title on the far left of the top nav bar, which is absent in IMAGE 1.
+    *   IMAGE 2 includes a "DiskGenie" app logo/title on the far left of the top nav bar, which is absent in IMAGE 1.
     *   The "Scan Full Mac" button text in IMAGE 2 reads "**Scan This PC**".
     *   The navigation path breadcrumb in the header center differs (`Macintosh HD` vs `This PC` with a back arrow).
 *   **Missing Sidebar Sections:** IMAGE 2 has an extra section at the bottom of the sidebar titled "**FILE TYPES**" (listing Archives, System, Documents, etc.) which does not exist in IMAGE 1.

@@ -119,23 +119,23 @@ optimization gist, JetBrains rewriting-in-rust, oneuptime memory guide).
 33. **Sidecar localization overrides** (WinMemoryCleaner Localizer):
     translators PR a file next to the exe, not a build.
 34. **Browser multi-profile globs** (cleaner): `User Data/*/Cache` — all
-    profiles, not just Default (DiskBytes has this; keep the constraint
+    profiles, not just Default (DiskGenie has this; keep the constraint
     comment test-pinned).
 
 ## Rejected (with reason)
 
 - **Full rescan after delete instead of surgery** (disktree): deliberate
-  simplicity trade; DiskBytes' surgery is better and now regression-tested.
+  simplicity trade; DiskGenie' surgery is better and now regression-tested.
 - **`own_bytes` derived-only aggregation** (disktree): breaks the streaming
-  live-totals property DiskBytes' scanner is built around; DiskBytes
+  live-totals property DiskGenie' scanner is built around; DiskGenie
   aggregates during scan by design.
-- **Permanent delete only, no recycle** (cleaner): DiskBytes' recycle-bin
+- **Permanent delete only, no recycle** (cleaner): DiskGenie' recycle-bin
   commit model is strictly safer; keep.
 - **Killing taskmgr/mmc to uninstall** (WinMemoryCleaner): far too
   aggressive; never adopt.
 - **Tests compiled into the shipped binary** (WinMemoryCleaner): bloat and
   attack surface; never adopt.
-- **256 KiB → 64 KiB buffer shrink** (dua-cli): DiskBytes' 256 KiB is a
+- **256 KiB → 64 KiB buffer shrink** (dua-cli): DiskGenie' 256 KiB is a
   documented BuildPrompt §4 choice; revisit only with A/B benchmarks on
   real volumes (criterion suite now exists to measure it).
 
@@ -146,7 +146,7 @@ optimization gist, JetBrains rewriting-in-rust, oneuptime memory guide).
 - Progress = relaxed atomics + snapshot + capped error detail (disktree);
   never channel per-entry events to the UI.
 - Epoch counters invalidate every async result (disktree); stale results
-  dropped on arrival. (DiskBytes has generation authority — keep the
+  dropped on arrival. (DiskGenie has generation authority — keep the
   pattern for every new async surface.)
 - Error aggregation over protected objects: ERROR_ACCESS_DENIED on Windows
   and EACCES on macOS are expected noise, never surfaced as errors.

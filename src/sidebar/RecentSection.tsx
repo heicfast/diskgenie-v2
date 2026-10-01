@@ -12,11 +12,11 @@ import { useExploreStore } from "../state/explore";
 import { useScanStore } from "../state/scan";
 import { useViewStore } from "../state/view";
 
-const KEY = "diskbytes.recent";
+const KEY = "diskgenie.recent";
 const MAX = 2;
 /** RecentSection listens for this after every push so the list updates
  * live in the same page (no focus/reload needed). */
-const RECENTS_EVENT = "diskbytes.recents-changed";
+const RECENTS_EVENT = "diskgenie.recents-changed";
 
 /** ONE normalization point for scan-target labels (session 13): the
  * This-PC target is "ThisPC" at the command seam, "This PC" as a

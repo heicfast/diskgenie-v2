@@ -10,10 +10,10 @@
 //! per-OS tests; this file pins the CORE's contract against the real
 //! behaviors those platforms exhibit.
 
-use diskbytes_core::scan::categories::FileCategory;
-use diskbytes_core::scan::node::{BatchEntry, Node, Tree};
-use diskbytes_core::scan::rollup;
-use diskbytes_core::snapshots::{FolderSize, Snapshot};
+use diskgenie_core::scan::categories::FileCategory;
+use diskgenie_core::scan::node::{BatchEntry, Node, Tree};
+use diskgenie_core::scan::rollup;
+use diskgenie_core::snapshots::{FolderSize, Snapshot};
 
 // ---------------------------------------------------------------------------
 // Helpers: staging + a std::fs-walker that feeds the tree like an engine.
@@ -75,7 +75,7 @@ impl AllocHint for std::fs::Metadata {
     }
 }
 
-/// Walk a real directory with `std::fs` and build a `DiskBytes` tree
+/// Walk a real directory with `std::fs` and build a `DiskGenie` tree
 /// through the same protocol the engines use (one batch per directory,
 /// parents before children — BFS). `symlink_metadata` mirrors the
 /// engines: links are never followed.
@@ -396,7 +396,7 @@ fn snapshot_atomic_round_trip() {
 }
 
 fn snapshots_write(snap: &Snapshot, path: &std::path::Path) {
-    diskbytes_core::snapshots::write_json_atomic(path, snap).expect("atomic write");
+    diskgenie_core::snapshots::write_json_atomic(path, snap).expect("atomic write");
 }
 
 #[test]

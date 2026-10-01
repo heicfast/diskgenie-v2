@@ -75,7 +75,7 @@ export function nativeThemeFor(id: ThemeId): "light" | "dark" {
   return familyOf(id);
 }
 
-const STORAGE_KEY = "diskbytes.theme";
+const STORAGE_KEY = "diskgenie.theme";
 
 /** Validate a stored/loaded value — anything unknown falls back to
  * the light default (the pre-mount script and useTheme share this). */

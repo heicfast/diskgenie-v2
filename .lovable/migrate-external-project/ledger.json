@@ -1,7 +1,7 @@
 {
   "source": "code-archive",
   "capabilities": [
-    {"capability":"application code","source":"DiskBytes archive","outcome":"preserve React 18 + Vite 6 + Tauri 2 stack","status":"in_progress","next_action":"replace template and verify"},
+    {"capability":"application code","source":"DiskGenie archive","outcome":"preserve React 18 + Vite 6 + Tauri 2 stack","status":"in_progress","next_action":"replace template and verify"},
     {"capability":"Rust scanning core","source":"src-tauri/core","outcome":"preserve","status":"in_progress","next_action":"verify command wiring"},
     {"capability":"native Tauri commands","source":"src-tauri/src/commands","outcome":"preserve","status":"in_progress","next_action":"verify frontend IPC contracts"},
     {"capability":"desktop interface","source":"src and screenshot references","outcome":"refine","status":"in_progress","next_action":"polish all desktop layouts"},

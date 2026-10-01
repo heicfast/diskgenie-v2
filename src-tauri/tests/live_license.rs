@@ -3,9 +3,9 @@
 //! `cargo test` pass, never in NSIS/MSIX production builds):
 //!
 //!   --features live-license-e2e
-//!   DISKBYTES_LIVE_LICENSE_E2E=1
-//!   DISKBYTES_LIVE_ADMIN_KEY=<admin bearer>
-//!   DISKBYTES_LICENSE_API=https://…workers.dev/   (optional; defaults
+//!   DISKGENIE_LIVE_LICENSE_E2E=1
+//!   DISKGENIE_LIVE_ADMIN_KEY=<admin bearer>
+//!   DISKGENIE_LICENSE_API=https://…workers.dev/   (optional; defaults
 //!   to the compiled-in production base)
 //!
 //! Executed by `.github/workflows/license-e2e.yml` on the Windows
@@ -28,13 +28,13 @@
 
 #![cfg(feature = "live-license-e2e")]
 
-use diskbytes_lib::license::{
+use diskgenie_lib::license::{
     DeviceFacts, EntitlementDto, LicenseApi, LicenseError, ReqwestLicense, LICENSE_PUBLIC_KEY_HEX,
     LICENSE_PURCHASE_URL, VALIDATION_INTERVAL_S,
 };
 
-const ADMIN_KEY: Option<&str> = option_env!("DISKBYTES_LIVE_ADMIN_KEY");
-const LIVE: bool = option_env!("DISKBYTES_LIVE_LICENSE_E2E").is_some();
+const ADMIN_KEY: Option<&str> = option_env!("DISKGENIE_LIVE_ADMIN_KEY");
+const LIVE: bool = option_env!("DISKGENIE_LIVE_LICENSE_E2E").is_some();
 
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
@@ -58,7 +58,7 @@ fn run_stamp() -> i64 {
 }
 
 fn live_base() -> String {
-    std::env::var("DISKBYTES_LICENSE_API").unwrap_or_else(|_| diskbytes_lib::license::api_base())
+    std::env::var("DISKGENIE_LICENSE_API").unwrap_or_else(|_| diskgenie_lib::license::api_base())
 }
 
 /// Minimal admin HTTP (plain bearer JSON — no HMAC on admin routes).
@@ -172,16 +172,16 @@ struct LookupDevice {
 /// hash is STABLE within a run, exactly like real hardware).
 fn run_facts(tag: &str) -> DeviceFacts {
     let stamp = run_stamp();
-    let hw = diskbytes_lib::license::sha256_hex(&format!("live-e2e-{tag}-{stamp}"));
+    let hw = diskgenie_lib::license::sha256_hex(&format!("live-e2e-{tag}-{stamp}"));
     DeviceFacts {
         platform: "windows".to_string(),
         hardware_hash: hw,
         hostname: format!("E2E-{tag}"),
         os_version: "Windows 11.0.26100".to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        comp_machine: Some(diskbytes_lib::license::sha256_hex("live-e2e-machine")),
-        comp_volume: Some(diskbytes_lib::license::sha256_hex("live-e2e-volume")),
-        comp_cpu: Some(diskbytes_lib::license::sha256_hex("live-e2e-cpu")),
+        comp_machine: Some(diskgenie_lib::license::sha256_hex("live-e2e-machine")),
+        comp_volume: Some(diskgenie_lib::license::sha256_hex("live-e2e-volume")),
+        comp_cpu: Some(diskgenie_lib::license::sha256_hex("live-e2e-cpu")),
         cpu_brand: Some("Intel(R) Core(TM) i7-1260P CPU @ 2.10GHz".to_string()),
         ram_mb: Some(16_384),
         machine_model: Some("E2E Runner Co. License Test Rig".to_string()),
@@ -190,8 +190,8 @@ fn run_facts(tag: &str) -> DeviceFacts {
         bios_version: Some("E2E BIOS 1.0".to_string()),
         cpu_cores: Some(8),
         arch: Some("x86_64".to_string()),
-        comp_board: Some(diskbytes_lib::license::sha256_hex("live-e2e-board")),
-        comp_firmware: Some(diskbytes_lib::license::sha256_hex("live-e2e-firmware")),
+        comp_board: Some(diskgenie_lib::license::sha256_hex("live-e2e-board")),
+        comp_firmware: Some(diskgenie_lib::license::sha256_hex("live-e2e-firmware")),
     }
 }
 
@@ -202,10 +202,10 @@ fn api() -> Result<LicenseApi<ReqwestLicense>, String> {
 /// Verify a returned token with the production public key + the run's
 /// fingerprint — the same call the command layer makes before trusting.
 fn verify(dto: &EntitlementDto, key: &str, facts: &DeviceFacts) -> Result<(), String> {
-    let claims = diskbytes_lib::license::verify_token(
+    let claims = diskgenie_lib::license::verify_token(
         &dto.token,
         LICENSE_PUBLIC_KEY_HEX,
-        &diskbytes_lib::license::sha256_hex(key),
+        &diskgenie_lib::license::sha256_hex(key),
         &facts.hardware_hash,
         &facts.platform,
         now_unix(),
@@ -218,7 +218,7 @@ fn verify(dto: &EntitlementDto, key: &str, facts: &DeviceFacts) -> Result<(), St
 #[test]
 fn live_license_lifecycle_keeps_device_facts() {
     if !LIVE || ADMIN_KEY.is_none() {
-        panic!("live-license-e2e feature enabled but DISKBYTES_LIVE_LICENSE_E2E / DISKBYTES_LIVE_ADMIN_KEY not set");
+        panic!("live-license-e2e feature enabled but DISKGENIE_LIVE_LICENSE_E2E / DISKGENIE_LIVE_ADMIN_KEY not set");
     }
     let admin = AdminHttp::new().expect("admin client");
 
@@ -230,7 +230,7 @@ fn live_license_lifecycle_keeps_device_facts() {
         panic!(
             "worker unreachable: {e}\nIf the body says 'error code: 1042': the \
              workers.dev route is disabled — Cloudflare dashboard → Workers & Pages → \
-             diskbytes-license → Settings → Domains & Routes → enable workers.dev \
+             diskgenie-license → Settings → Domains & Routes → enable workers.dev \
              (the license-server repo now defaults workers_dev: true in wrangler.jsonc; \
              redeploy with `npx wrangler deploy` after enabling)."
         );
@@ -242,7 +242,7 @@ fn live_license_lifecycle_keeps_device_facts() {
             .unwrap_or(1)
             >= 3,
         "the deployed license server is older than v3 — the repo auto-deploys on push; \
-         verify the last diskbytes-license-server push completed, then (once) run \
+         verify the last diskgenie-license-server push completed, then (once) run \
          npx wrangler d1 migrations apply DB --remote  (the worker also self-heals \
          the additive v3 columns on first request, so activation keeps working \
          either way)"
@@ -257,7 +257,7 @@ fn live_license_lifecycle_keeps_device_facts() {
             &serde_json::json!({
                 "tier": "yearly",
                 "customerName": "E2E Bot",
-                "customerEmail": "e2e@diskbytes.test",
+                "customerEmail": "e2e@diskgenie.test",
                 "days": 1,
                 "note": "ci live e2e",
                 "source": "webhook",
@@ -281,7 +281,7 @@ fn live_license_lifecycle_keeps_device_facts() {
             &serde_json::json!({ "key": key }).to_string(),
         )
         .expect("lookup");
-    assert_eq!(look.license.customer_email, "e2e@diskbytes.test");
+    assert_eq!(look.license.customer_email, "e2e@diskgenie.test");
     let dev = look
         .devices
         .iter()
@@ -403,7 +403,7 @@ fn live_license_lifecycle_keeps_device_facts() {
 #[test]
 fn real_device_fingerprint_is_deterministic_and_round_trips() {
     if !LIVE || ADMIN_KEY.is_none() {
-        panic!("live-license-e2e feature enabled but DISKBYTES_LIVE_LICENSE_E2E / DISKBYTES_LIVE_ADMIN_KEY not set");
+        panic!("live-license-e2e feature enabled but DISKGENIE_LIVE_LICENSE_E2E / DISKGENIE_LIVE_ADMIN_KEY not set");
     }
     let admin = AdminHttp::new().expect("admin client");
     let health: serde_json::Value = admin.get("/v1/health").expect("worker healthy");
@@ -418,16 +418,16 @@ fn real_device_fingerprint_is_deterministic_and_round_trips() {
     );
 
     // 1. Determinism: two independent collections agree on EVERY byte.
-    let facts_a = diskbytes_lib::license::collect_device_facts()
+    let facts_a = diskgenie_lib::license::collect_device_facts()
         .expect("real device facts collectable on the CI machine");
-    let facts_b = diskbytes_lib::license::collect_device_facts()
+    let facts_b = diskgenie_lib::license::collect_device_facts()
         .expect("real device facts collectable (2nd collection)");
     assert_eq!(
         facts_a.hardware_hash, facts_b.hardware_hash,
         "same-device composite fingerprint must be deterministic"
     );
-    let comps_a = diskbytes_lib::license::component_hashes();
-    let comps_b = diskbytes_lib::license::component_hashes();
+    let comps_a = diskgenie_lib::license::component_hashes();
+    let comps_b = diskgenie_lib::license::component_hashes();
     assert_eq!(comps_a, comps_b, "component hashes must be deterministic");
     println!(
         "[e2e] fingerprint stable across two collections: {}",
@@ -479,7 +479,7 @@ fn real_device_fingerprint_is_deterministic_and_round_trips() {
             &serde_json::json!({
                 "tier": "yearly",
                 "customerName": "E2E Real Facts Bot",
-                "customerEmail": "e2e-real@diskbytes.test",
+                "customerEmail": "e2e-real@diskgenie.test",
                 "days": 1,
                 "note": "ci live e2e v3",
                 "source": "webhook",

@@ -6,7 +6,7 @@
  * - mock `get_dev_hooks` parity: the three session-17 fields
  *   (`tourMode`, `tourLicenseKey`, `window`) parse from the launch
  *   parameters exactly like the Rust env hook reads them — the browser
- *   dev mirror of the workflow's `DISKBYTES_TOUR_MODE` etc.
+ *   dev mirror of the workflow's `DISKGENIE_TOUR_MODE` etc.
  * - license store (previously UNCOVERED — the exact paths the license
  *   tour drives): malformed key → typed error, posture unchanged;
  *   well-formed key → pro + the activated flag the dialog's success
@@ -127,7 +127,7 @@ describe("license store activation paths (the mac license E2E drives these)", ()
   });
 
   it("maps the ACTIVATION_REQUIRED marker prefix to the gate (the refused boot scan)", () => {
-    interceptLicenseGate("ACTIVATION_REQUIRED — Activate DiskBytes Pro to use this.");
+    interceptLicenseGate("ACTIVATION_REQUIRED — Activate DiskGenie Pro to use this.");
     expect(useLicenseStore.getState().gate).toBe("activation");
     useLicenseStore.getState().dismissGate();
     expect(useLicenseStore.getState().gate).toBeNull();

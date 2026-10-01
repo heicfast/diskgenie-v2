@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use diskbytes_core::monitor::{self, MonitorSample, ProcSample, VolumeSample};
+use diskgenie_core::monitor::{self, MonitorSample, ProcSample, VolumeSample};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// The sampler interval (spec §12: "every 2 seconds").

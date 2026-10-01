@@ -250,7 +250,7 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
     [generation, mode, onPreview, openFolder, stage],
   );
 
-  // Dev-hook auto-start (spec §15 DISKBYTES_SCAN / --scan)
+  // Dev-hook auto-start (spec §15 DISKGENIE_SCAN / --scan)
   useEffect(() => {
     if (status !== "idle") return;
     void (async () => {
@@ -281,7 +281,7 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
           </span>
           <h2>Map every byte on your {MACHINE_NOUN}</h2>
           <p>
-            Scan your whole {MACHINE_NOUN}, your Home folder, or any folder — DiskBytes builds a
+            Scan your whole {MACHINE_NOUN}, your Home folder, or any folder — DiskGenie builds a
             complete tree and shows you exactly where the space went.
           </p>
           <div className="db-state-actions">

@@ -7,10 +7,10 @@
 # APFS) with a dd fallback. Total ≈ 12 GB logical — the runner's free
 # disk is limited (the Windows staging's 15 GB ceiling lesson).
 #
-# Usage: ROOT=${1:-$HOME/diskbytes-test}
+# Usage: ROOT=${1:-$HOME/diskgenie-test}
 set -uo pipefail
 
-R=${1:-$HOME/diskbytes-test}
+R=${1:-$HOME/diskgenie-test}
 big() { # big <bytes> <path>
   mkdir -p "$(dirname "$2")"
   mkfile "$1" "$2" 2>/dev/null || dd if=/dev/zero of="$2" bs=1048576 count=$(( $1 / 1048576 )) status=none

@@ -71,7 +71,7 @@ pub use sysinfo::*;
 
 #[cfg(test)]
 mod tests {
-    use diskbytes_core::platform::{KnownFolder, Platform};
+    use diskgenie_core::platform::{KnownFolder, Platform};
 
     use std::os::unix::fs::PermissionsExt;
 

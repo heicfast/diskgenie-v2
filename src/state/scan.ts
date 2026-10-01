@@ -189,7 +189,7 @@ function adoptDone(
   if (prog) {
     try {
       window.localStorage.setItem(
-        "diskbytes.last-denied",
+        "diskgenie.last-denied",
         JSON.stringify({ count: prog.denied, samples: prog.deniedSamples }),
       );
     } catch {

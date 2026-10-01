@@ -1,4 +1,4 @@
-# DiskBytes refinement roadmap
+# DiskGenie refinement roadmap
 
 - [x] Safely inspect the uploaded archive and reference screens
 - [ ] Replace the starter with the original React/Vite/Tauri application

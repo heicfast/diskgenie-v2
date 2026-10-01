@@ -24,11 +24,11 @@ on:
       store_identity_name:
         description: "Partner Center package identity Name (reserved app name)"
         required: false
-        default: "DiskBytes"
+        default: "DiskGenie"
       store_publisher:
         description: "Partner Center package identity Publisher (CN=…)"
         required: false
-        default: "CN=DiskBytes"
+        default: "CN=DiskGenie"
   push:
     branches: [main]
 
@@ -81,17 +81,17 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $identityName = "${{ github.event.inputs.store_identity_name || 'DiskBytes' }}"
-          $publisher = "${{ github.event.inputs.store_publisher || 'CN=DiskBytes' }}"
+          $identityName = "${{ github.event.inputs.store_identity_name || 'DiskGenie' }}"
+          $publisher = "${{ github.event.inputs.store_publisher || 'CN=DiskGenie' }}"
           $version = "${{ steps.ver.outputs.version }}"
 
           # -- Layout: app files -----------------------------------------
           $root = "msix-layout"
           Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path "$root" | Out-Null
-          $exe = "src-tauri\target\release\diskbytes.exe"
+          $exe = "src-tauri\target\release\diskgenie.exe"
           if (-not (Test-Path $exe)) { throw "exe not found: $exe" }
-          Copy-Item $exe "$root\DiskBytes.exe"
+          Copy-Item $exe "$root\DiskGenie.exe"
           # Tauri 2 embeds the frontend; the release build emits no
           # side-by-side DLLs (anything new would be copied here).
 
@@ -156,10 +156,10 @@ jobs:
           $version = "${{ steps.ver.outputs.version }}"
           $out = "dist-msix"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          & $makeappx.FullName pack /o /v /d msix-layout /p "$out\DiskBytes-$version-x64.msix"
+          & $makeappx.FullName pack /o /v /d msix-layout /p "$out\DiskGenie-$version-x64.msix"
           if ($LASTEXITCODE -ne 0) { throw "MakeAppx failed ($LASTEXITCODE)" }
-          $hash = (Get-FileHash "$out\DiskBytes-$version-x64.msix" -Algorithm SHA256).Hash.ToLower()
-          "$hash  DiskBytes-$version-x64.msix" | Set-Content "$out\SHA256SUMS.txt"
+          $hash = (Get-FileHash "$out\DiskGenie-$version-x64.msix" -Algorithm SHA256).Hash.ToLower()
+          "$hash  DiskGenie-$version-x64.msix" | Set-Content "$out\SHA256SUMS.txt"
           Get-Content "$out\SHA256SUMS.txt"
           Get-Item "$out\*.msix" | ForEach-Object { "msix: $($_.Name) - $([Math]::Round($_.Length / 1MB, 2)) MB" }
 
@@ -185,7 +185,7 @@ jobs:
       - name: Upload the MSIX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: diskbytes-msix-store
+          name: diskgenie-msix-store
           path: |
             dist-msix/*
           if-no-files-found: error
@@ -193,6 +193,6 @@ jobs:
       - name: Upload the WACK report (if produced)
         uses: actions/upload-artifact@v4
         with:
-          name: diskbytes-wack-report
+          name: diskgenie-wack-report
           path: wack-report/
           if-no-files-found: ignore

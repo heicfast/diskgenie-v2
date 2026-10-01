@@ -105,13 +105,13 @@ export function TopBar(props: TopBarProps) {
     >
       <div className="db-brand" data-tauri-drag-region>
         <span className="db-brand-mark">
-          {/* The DiskBytes product mark (PhotoIcon pack — the photoreal
+          {/* The DiskGenie product mark (PhotoIcon pack — the photoreal
            * hard-drive + brush badge on the orange circle; same design as
            * the window/taskbar/installer icon everywhere the product
            * appears. 31px frame = the tab-pill height for symmetry. */}
           <img src={brandMark} alt="" draggable={false} />
         </span>
-        <strong data-tauri-drag-region>DiskBytes</strong>
+        <strong data-tauri-drag-region>DiskGenie</strong>
       </div>
 
       <nav className="db-tabcaps" aria-label="Application sections">

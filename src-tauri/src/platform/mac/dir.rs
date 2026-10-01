@@ -4,7 +4,7 @@
 use std::ffi::{c_int, CStr, CString};
 
 // Through the parent seam (crate::platform re-exports the core types),
-// exactly like win/dir.rs — importing diskbytes_core::platform directly
+// exactly like win/dir.rs — importing diskgenie_core::platform directly
 // would leave the parent re-export unconsumed on macOS (CI's new app
 // clippy gate flags it as unused).
 use crate::platform::{DirEntryData, DirListing, KnownFolder, ListError, Platform};

@@ -1,21 +1,21 @@
 /**
- * Tour driver (dev hook §15 extension, CI-only): DISKBYTES_TOUR=1 (or
+ * Tour driver (dev hook §15 extension, CI-only): DISKGENIE_TOUR=1 (or
  * ?tour=1 in browser-dev) auto-cycles through every tab, every mode,
  * popovers and dialogs with ~2.6 s dwell so CI screenshot passes can
  * capture every state of the real app without interactive automation.
  * It sets window.__DB_TOUR_STATE after each step for the harness.
  *
- * Session 17 — the tour PROGRAMS (DISKBYTES_TOUR_MODE):
+ * Session 17 — the tour PROGRAMS (DISKGENIE_TOUR_MODE):
  *  * "ui" (default): the full sweep + the responsive window steps
  *    (window-min at the 1280×760 design floor, window-full, restore).
  *  * "license": the live-key lifecycle for the macOS license E2E —
  *    entry state → malformed-key rejection → unknown-key rejection →
- *    REAL activation (DISKBYTES_TOUR_LICENSE_KEY, minted per-run by
+ *    REAL activation (DISKGENIE_TOUR_LICENSE_KEY, minted per-run by
  *    the admin API) → success → Pro status card → Validate now →
  *    the unlocked app. Every state goes through the REAL store path
  *    (invoke activate_license → server → Ed25519 verify → Keychain).
  *  * "bench": the benchmark program — first scan (auto via
- *    DISKBYTES_SCAN), a re-scan of the SAME target (the flip-cache
+ *    DISKGENIE_SCAN), a re-scan of the SAME target (the flip-cache
  *    restore), then the duplicates pipeline. The harness parses the
  *    [bench] stderr lines + samples memory.
  */
@@ -371,7 +371,7 @@ async function runLicenseTour(hooks: TourHooks) {
       },
     },
     {
-      // The REAL minted key (DISKBYTES_TOUR_LICENSE_KEY): busy →
+      // The REAL minted key (DISKGENIE_TOUR_LICENSE_KEY): busy →
       // success → the dialog closes itself (~1.6 s after success).
       // 6× = 15.6 s covers the RTT + the auto-close dwell.
       name: "license-real-activate",
@@ -439,7 +439,7 @@ async function runLicenseTour(hooks: TourHooks) {
 }
 
 // ── The bench program (macOS benchmark) ─────────────────────────────
-// The boot scan (DISKBYTES_SCAN) leaves target A standing. This
+// The boot scan (DISKGENIE_SCAN) leaves target A standing. This
 // program then scans B (a subtree of A — B's walk DISPLACES A's tree,
 // filing it into the flip cache) and re-scans A — the instant
 // RESTORE, [bench] scan restored (a re-scan of the STANDING target

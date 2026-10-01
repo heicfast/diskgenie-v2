@@ -1,5 +1,5 @@
 //! License layer v2 (docs/LICENSING-ARCHITECTURE.md; supersedes the Dodo
-//! Payments design in doc 06): DiskBytes-owned licensing over our
+//! Payments design in doc 06): DiskGenie-owned licensing over our
 //! Cloudflare Worker + D1 backend.
 //!
 //! Security model (the short version — the full layer table lives in the
@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Default production license-server base (change per deployment; the
-/// env `DISKBYTES_LICENSE_API` overrides for tests/local dev).
+/// env `DISKGENIE_LICENSE_API` overrides for tests/local dev).
 const LICENSE_API_BASE: &str = "https://diskbytes-license.heictojpg-pics.workers.dev/";
 
 /// Ed25519 public key (64 hex chars) — the ONLY key this binary holds.
@@ -48,7 +48,7 @@ const CLIENT_SECRET_HEX: &str = "333d71177f5b8558e7ea8f45140742dfa71621e1000b899
 
 /// The purchase page (external; collects name + email + billing address
 /// at checkout — the address stays with the payment processor).
-pub const LICENSE_PURCHASE_URL: &str = "https://diskbytes.app/pricing";
+pub const LICENSE_PURCHASE_URL: &str = "https://diskgenie.app/pricing";
 
 /// Revalidation interval (doc §6: 24 h).
 pub const VALIDATION_INTERVAL_S: i64 = 24 * 60 * 60;
@@ -63,7 +63,7 @@ const CLOCK_SKEW_S: i64 = 300;
 /// Resolve the API base (env override for tests/local dev).
 #[must_use]
 pub fn api_base() -> String {
-    std::env::var("DISKBYTES_LICENSE_API").unwrap_or_else(|_| LICENSE_API_BASE.to_string())
+    std::env::var("DISKGENIE_LICENSE_API").unwrap_or_else(|_| LICENSE_API_BASE.to_string())
 }
 
 // ============================================================================
@@ -115,7 +115,7 @@ impl LicenseHttp for ReqwestLicense {
             .client
             .post(url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header(reqwest::header::USER_AGENT, "DiskBytes-License-Client/1");
+            .header(reqwest::header::USER_AGENT, "DiskGenie-License-Client/1");
         for (k, v) in headers {
             req = req.header(k.as_str(), v.as_str());
         }
@@ -163,13 +163,13 @@ impl std::fmt::Display for LicenseError {
         let s = match self {
             Self::InvalidKey => "Invalid license key. Please check it and try again.",
             Self::Inactive => "This license key is no longer active. Contact support.",
-            Self::Expired => "Your yearly license has expired — renew to keep DiskBytes Pro.",
+            Self::Expired => "Your yearly license has expired — renew to keep DiskGenie Pro.",
             Self::DeviceSlotTaken => {
                 "This key is already activated on another device. Contact support to move your license."
             }
             Self::DeviceMismatch => "This device isn't registered with this license key.",
             Self::RateLimited => "Too many attempts — wait a minute and try again.",
-            Self::Network => "Network unavailable — DiskBytes keeps working offline.",
+            Self::Network => "Network unavailable — DiskGenie keeps working offline.",
             Self::ServerError => "The license server had a problem. Try again in a moment.",
             Self::Spoofed => {
                 "The license server's response could not be verified. Reconnect and try again."
@@ -671,7 +671,7 @@ impl<H: LicenseHttp> LicenseApi<H> {
         let message = format!("{timestamp}.{nonce}.POST.{path}.{body_hash}");
         let sig = hmac_hex(&self.secret_hex, &message);
         let headers = vec![
-            ("x-db-app".to_string(), "diskbytes".to_string()),
+            ("x-db-app".to_string(), "diskgenie".to_string()),
             (
                 "x-db-version".to_string(),
                 env!("CARGO_PKG_VERSION").to_string(),
@@ -803,7 +803,7 @@ pub mod dpapi {
 
     /// Remove the stored license (deactivation cleanup; R7.1-safe).
     pub fn clear() {
-        diskbytes_core::snapshots::remove_app_data_file(&license_path());
+        diskgenie_core::snapshots::remove_app_data_file(&license_path());
     }
 }
 
@@ -1504,9 +1504,9 @@ mod tests {
 
     #[test]
     fn api_base_env_override() {
-        std::env::set_var("DISKBYTES_LICENSE_API", "http://127.0.0.1:8787/");
+        std::env::set_var("DISKGENIE_LICENSE_API", "http://127.0.0.1:8787/");
         assert_eq!(api_base(), "http://127.0.0.1:8787/");
-        std::env::remove_var("DISKBYTES_LICENSE_API");
+        std::env::remove_var("DISKGENIE_LICENSE_API");
         assert_eq!(api_base(), LICENSE_API_BASE);
     }
 }

@@ -992,10 +992,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "diskbytes"
+name = "diskgenie"
 version = "0.1.0"
 dependencies = [
- "diskbytes-core",
+ "diskgenie-core",
  "ed25519-dalek",
  "hmac",
  "objc2 0.5.2",
@@ -1020,7 +1020,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "diskbytes-core"
+name = "diskgenie-core"
 version = "0.1.0"
 dependencies = [
  "criterion",

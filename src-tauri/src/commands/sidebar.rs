@@ -9,10 +9,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use diskbytes_core::platform::Platform;
-use diskbytes_core::quickwins;
-use diskbytes_core::scan::categories::FileCategory;
-use diskbytes_core::scan::node::Tree;
+use diskgenie_core::platform::Platform;
+use diskgenie_core::quickwins;
+use diskgenie_core::scan::categories::FileCategory;
+use diskgenie_core::scan::node::Tree;
 use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, State};
@@ -61,7 +61,7 @@ pub fn get_drive_chips(platform: State<'_, Arc<HostPlatform>>) -> Vec<DriveChip>
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
 pub fn get_home_path(platform: State<'_, Arc<HostPlatform>>) -> Result<String, String> {
     (*platform)
-        .known_folder(diskbytes_core::platform::KnownFolder::Profile)
+        .known_folder(diskgenie_core::platform::KnownFolder::Profile)
         .ok_or_else(|| "Couldn't resolve your user profile folder.".into())
 }
 
@@ -213,7 +213,7 @@ pub fn disk_storage(
         }
         if probed > 0 {
             return Ok(StorageInfo {
-                label: diskbytes_core::scan::scanner::this_pc_display_label().to_string(),
+                label: diskgenie_core::scan::scanner::this_pc_display_label().to_string(),
                 total,
                 used,
                 free,
@@ -389,19 +389,19 @@ fn env_roots(platform: HostPlatform) -> HashMap<String, String> {
     let pairs = [
         (
             "%USERPROFILE%",
-            diskbytes_core::platform::KnownFolder::Profile,
+            diskgenie_core::platform::KnownFolder::Profile,
         ),
         (
             "%LOCALAPPDATA%",
-            diskbytes_core::platform::KnownFolder::LocalAppData,
+            diskgenie_core::platform::KnownFolder::LocalAppData,
         ),
         (
             "%APPDATA%",
-            diskbytes_core::platform::KnownFolder::RoamingAppData,
+            diskgenie_core::platform::KnownFolder::RoamingAppData,
         ),
         (
             "%PROGRAMDATA%",
-            diskbytes_core::platform::KnownFolder::ProgramData,
+            diskgenie_core::platform::KnownFolder::ProgramData,
         ),
     ];
     for (key, folder) in pairs {
@@ -411,7 +411,7 @@ fn env_roots(platform: HostPlatform) -> HashMap<String, String> {
     }
     if cfg!(target_os = "macos") {
         // Mac aliases for the Mac BuildPrompt §5 pattern table.
-        if let Some(home) = platform.known_folder(diskbytes_core::platform::KnownFolder::Profile) {
+        if let Some(home) = platform.known_folder(diskgenie_core::platform::KnownFolder::Profile) {
             let support = format!("{home}/Library/Application Support");
             m.insert("%HOME%".into(), home);
             m.insert("%APP_SUPPORT%".into(), support);

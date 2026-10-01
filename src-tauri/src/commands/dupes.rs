@@ -48,8 +48,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use diskbytes_core::dupes::{self, DupeGroup, HashedFile};
-use diskbytes_core::scan::node::Tree;
+use diskgenie_core::dupes::{self, DupeGroup, HashedFile};
+use diskgenie_core::scan::node::Tree;
 
 use rayon::prelude::*;
 use serde::Serialize;
@@ -1251,7 +1251,7 @@ mod tests {
     #[cfg(windows)]
     mod windows_e2e {
         use super::*;
-        use diskbytes_core::scan::scanner::{scan, Progress, ScanOutcome, ScanTarget};
+        use diskgenie_core::scan::scanner::{scan, Progress, ScanOutcome, ScanTarget};
         use parking_lot::Mutex;
         use std::fs;
         use std::os::windows::fs::OpenOptionsExt;
@@ -1402,7 +1402,7 @@ mod tests {
             ("zip", &[b'P', b'K', 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]),
             ("pdf", b"%PDF-1.7"),
             ("iso", &[0x01, b'C', b'D', 0x00, 0x01]),
-            ("txt", b"DiskBytes"),
+            ("txt", b"DiskGenie"),
             ("bin", &[0x7F, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00]),
         ];
 

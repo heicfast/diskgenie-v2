@@ -69,7 +69,7 @@ async function pickTheme(t) {
   await sleep(650); // view-transition crossfade + canvas repaint
   const themeAttr = ev(`document.documentElement.getAttribute('data-theme')`);
   const schemeAttr = ev(`document.documentElement.getAttribute('data-scheme')`);
-  const stored = ev(`localStorage.getItem('diskbytes.theme')`);
+  const stored = ev(`localStorage.getItem('diskgenie.theme')`);
   const ink = ev(`getComputedStyle(document.documentElement).getPropertyValue('--ink').trim()`);
   const activeSwatch = ev(`document.querySelector('.db-license-dialog .db-theme-swatch[data-active="true"]')?.getAttribute('data-theme-id')`);
   const currentLabel = ev(`document.querySelector('.db-theme-picker-current')?.textContent`);

@@ -14,8 +14,8 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use diskbytes_core::age;
-use diskbytes_core::scan::node::Tree;
+use diskgenie_core::age;
+use diskgenie_core::scan::node::Tree;
 use serde::Serialize;
 use tauri::State;
 
@@ -643,7 +643,7 @@ pub fn compute_age_map(tree: &Tree, node: u32, now: i64) -> AgeMapData {
             modified: f.modified,
             protected: tree
                 .node(f.id)
-                .is_some_and(diskbytes_core::scan::node::Node::is_protected),
+                .is_some_and(diskgenie_core::scan::node::Node::is_protected),
         })
         .collect();
     AgeMapData {
@@ -902,7 +902,7 @@ mod tests {
             vec![file_entry("a1.mp4", 100, 1), file_entry("a2.txt", 20, 2)],
         );
         t.append_batch(2, vec![file_entry("b1.bin", 5, 3)]);
-        diskbytes_core::scan::rollup::finalize(&mut t);
+        diskgenie_core::scan::rollup::finalize(&mut t);
         t
     }
 
@@ -1035,7 +1035,7 @@ mod tests {
         // Production parity: drives are path roots (node_path stops here).
         t.add_root_path(1, "C:\\");
         t.add_root_path(2, "D:\\");
-        diskbytes_core::scan::rollup::finalize(&mut t);
+        diskgenie_core::scan::rollup::finalize(&mut t);
         assert_eq!(compute_details(&t, 0).kind, "Folder"); // This PC stays Folder
         assert_eq!(compute_details(&t, 1).kind, "Disk");
         assert_eq!(compute_details(&t, 2).kind, "Disk");

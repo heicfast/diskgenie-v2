@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use diskbytes_core::scan::node::Tree;
-use diskbytes_core::scan::scanner::{Progress, ScanOutcome, ScanTarget};
+use diskgenie_core::scan::node::Tree;
+use diskgenie_core::scan::scanner::{Progress, ScanOutcome, ScanTarget};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -246,7 +246,7 @@ pub async fn start_scan(
     let join = std::thread::spawn(move || {
         let state_inner = app_handle.state::<AppState>();
         let started = std::time::Instant::now();
-        let outcome = diskbytes_core::scan::scanner::scan(
+        let outcome = diskgenie_core::scan::scanner::scan(
             platform,
             &scan_target,
             generation,
@@ -496,35 +496,35 @@ fn swap_tree(state: &AppState, new: Arc<Tree>, generation: u64, new_key: &str) {
     }
 }
 
-/// Dev hooks (spec §15): `DISKBYTES_SCAN` / `--scan` auto-start targets,
-/// `DISKBYTES_MODE` visualization, `--turbo`, `DISKBYTES_VERIFY`.
+/// Dev hooks (spec §15): `DISKGENIE_SCAN` / `--scan` auto-start targets,
+/// `DISKGENIE_MODE` visualization, `--turbo`, `DISKGENIE_VERIFY`.
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DevHooks {
-    /// Auto-scan target from `DISKBYTES_SCAN` / `--scan <path>`.
+    /// Auto-scan target from `DISKGENIE_SCAN` / `--scan <path>`.
     pub scan: Option<String>,
-    /// Visualization from `DISKBYTES_MODE`.
+    /// Visualization from `DISKGENIE_MODE`.
     pub mode: Option<String>,
     /// `--turbo` requested.
     pub turbo: bool,
-    /// `DISKBYTES_VERIFY=1` two-engine comparison.
+    /// `DISKGENIE_VERIFY=1` two-engine comparison.
     pub verify: bool,
-    /// `DISKBYTES_TOUR=1` auto-cycles tabs/modes/overlays so CI
+    /// `DISKGENIE_TOUR=1` auto-cycles tabs/modes/overlays so CI
     /// screenshot passes can capture every state of the real app
     /// without interactive automation.
     pub tour: bool,
-    /// `DISKBYTES_TOUR_MODE` — the tour PROGRAM: unset/`"ui"` = the
+    /// `DISKGENIE_TOUR_MODE` — the tour PROGRAM: unset/`"ui"` = the
     /// full UI sweep; `"license"` = the live-key lifecycle (entry →
     /// bad-format → unknown-key → REAL activation → status card →
     /// validate → unlocked app, the macOS license E2E workflow);
     /// `"bench"` = the benchmark program (scan → cache-restore →
     /// duplicates, the macOS benchmark workflow).
     pub tour_mode: Option<String>,
-    /// `DISKBYTES_TOUR_LICENSE_KEY` — a real, freshly-minted key the
+    /// `DISKGENIE_TOUR_LICENSE_KEY` — a real, freshly-minted key the
     /// license tour activates with (the workflow mints it via the
     /// admin API; never hardcoded, never logged).
     pub tour_license_key: Option<String>,
-    /// `DISKBYTES_WINDOW` (`WxH`, e.g. `1280x760`) — the initial window
+    /// `DISKGENIE_WINDOW` (`WxH`, e.g. `1280x760`) — the initial window
     /// size for capture workflows (the screenshot tour must fit the
     /// runner's display; the logical size also feeds the responsive
     /// window-min/window-full tour steps).
@@ -536,7 +536,7 @@ pub struct DevHooks {
 pub fn read_dev_hooks() -> DevHooks {
     let args: Vec<String> = std::env::args().collect();
     let mut hooks = DevHooks::default();
-    if let Ok(v) = std::env::var("DISKBYTES_SCAN") {
+    if let Ok(v) = std::env::var("DISKGENIE_SCAN") {
         if !v.is_empty() {
             hooks.scan = Some(v);
         }
@@ -551,28 +551,28 @@ pub fn read_dev_hooks() -> DevHooks {
             hooks.turbo = true;
         }
     }
-    if let Ok(v) = std::env::var("DISKBYTES_MODE") {
+    if let Ok(v) = std::env::var("DISKGENIE_MODE") {
         if !v.is_empty() {
             hooks.mode = Some(v);
         }
     }
-    if let Ok(v) = std::env::var("DISKBYTES_VERIFY") {
+    if let Ok(v) = std::env::var("DISKGENIE_VERIFY") {
         hooks.verify = v == "1";
     }
-    if let Ok(v) = std::env::var("DISKBYTES_TOUR") {
+    if let Ok(v) = std::env::var("DISKGENIE_TOUR") {
         hooks.tour = v == "1";
     }
-    if let Ok(v) = std::env::var("DISKBYTES_TOUR_MODE") {
+    if let Ok(v) = std::env::var("DISKGENIE_TOUR_MODE") {
         if !v.is_empty() {
             hooks.tour_mode = Some(v);
         }
     }
-    if let Ok(v) = std::env::var("DISKBYTES_TOUR_LICENSE_KEY") {
+    if let Ok(v) = std::env::var("DISKGENIE_TOUR_LICENSE_KEY") {
         if !v.is_empty() {
             hooks.tour_license_key = Some(v);
         }
     }
-    if let Ok(v) = std::env::var("DISKBYTES_WINDOW") {
+    if let Ok(v) = std::env::var("DISKGENIE_WINDOW") {
         if !v.is_empty() {
             hooks.window = Some(v);
         }
@@ -680,7 +680,7 @@ pub async fn start_scan_turbo(
             let state_inner = app_handle.state::<AppState>();
             let mut reason: Option<String> = None;
 
-            let mut tree_opt: Option<diskbytes_core::scan::node::Tree> = None;
+            let mut tree_opt: Option<diskgenie_core::scan::node::Tree> = None;
             let mut report: Option<TurboReport> = None;
 
             if !crate::platform::os::enable_backup_privilege() {
@@ -698,18 +698,18 @@ pub async fn start_scan_turbo(
                     Ok((mut volume, geo)) => {
                         match crate::platform::os::turbo_read_mft(&mut volume, &geo) {
                             Ok(mft) => {
-                                let core_geo = diskbytes_core::turbo::Geometry {
+                                let core_geo = diskgenie_core::turbo::Geometry {
                                     bytes_per_sector: geo.bytes_per_sector,
                                     bytes_per_cluster: geo.bytes_per_cluster,
                                     bytes_per_record: geo.bytes_per_record,
                                     mft_valid_data_length: geo.mft_valid_data_length,
                                 };
                                 let (entries, warnings) =
-                                    diskbytes_core::turbo::parse_all(&mft, &core_geo);
+                                    diskgenie_core::turbo::parse_all(&mft, &core_geo);
                                 let records = entries.len() as u64;
                                 let mut build =
-                                    diskbytes_core::turbo::tree::build_tree(entries, &label);
-                                diskbytes_core::scan::rollup::finalize(&mut build.tree);
+                                    diskgenie_core::turbo::tree::build_tree(entries, &label);
+                                diskgenie_core::scan::rollup::finalize(&mut build.tree);
                                 build.tree.generation = generation;
                                 tree_opt = Some(build.tree);
                                 report = Some(TurboReport {
@@ -767,7 +767,7 @@ pub async fn start_scan_turbo(
                     // `get_status` lying) and the REGISTERED cancel flag
                     // flows in (the old code minted a fresh never-cancelled
                     // flag, so Stop could not cancel a fallback either).
-                    let outcome = diskbytes_core::scan::scanner::scan(
+                    let outcome = diskgenie_core::scan::scanner::scan(
                         platform,
                         &parse_target(&drive_root),
                         generation,

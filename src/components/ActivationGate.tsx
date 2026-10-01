@@ -57,7 +57,7 @@ const PITCH: Record<TabId, { title: string; lines: string[] }> = {
 
 export function ActivationGate({ tab }: { tab: TabId }) {
   const status = useLicenseStore((s) => s.status);
-  const purchaseUrl = status?.purchaseUrl || "https://diskbytes.app/pricing";
+  const purchaseUrl = status?.purchaseUrl || "https://diskgenie.app/pricing";
   const posture = status?.posture ?? "unlicensed";
   const pitch = PITCH[tab] ?? PITCH.explore;
 
@@ -81,7 +81,7 @@ export function ActivationGate({ tab }: { tab: TabId }) {
         </h2>
         {posture === "degraded" ? (
           <p>
-            DiskBytes couldn't verify your license for over 14 days. Reconnect
+            DiskGenie couldn't verify your license for over 14 days. Reconnect
             and validate from the License panel to pick up exactly where you
             left off.
           </p>
@@ -103,7 +103,7 @@ export function ActivationGate({ tab }: { tab: TabId }) {
         <div className="db-activation-gate-actions">
           <button type="button" className="db-activation-gate-primary" onClick={openDialog}>
             <LockKeyholeIcon size={14} />
-            {posture === "degraded" ? "Reactivate" : "Activate DiskBytes"}
+            {posture === "degraded" ? "Reactivate" : "Activate DiskGenie"}
           </button>
           {posture !== "degraded" && (
             <button type="button" className="db-activation-gate-secondary" onClick={openPurchase}>

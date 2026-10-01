@@ -11,8 +11,8 @@
 
 use std::sync::Arc;
 
-use diskbytes_core::scan::node::Tree;
-use diskbytes_core::scan::surgery;
+use diskgenie_core::scan::node::Tree;
+use diskgenie_core::scan::surgery;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 

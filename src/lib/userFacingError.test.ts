@@ -15,8 +15,8 @@ describe("userFacingError", () => {
   });
 
   it("strips the ACTIVATION_REQUIRED protocol prefix but keeps the sentence", () => {
-    expect(userFacingError("ACTIVATION_REQUIRED — Activate DiskBytes Pro to use this.")).toBe(
-      "Activate DiskBytes Pro to use this.",
+    expect(userFacingError("ACTIVATION_REQUIRED — Activate DiskGenie Pro to use this.")).toBe(
+      "Activate DiskGenie Pro to use this.",
     );
   });
 

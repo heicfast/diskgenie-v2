@@ -1,11 +1,11 @@
 //! App-side platform module: the Windows and macOS implementations of
-//! the core [`Platform`](diskbytes_core::platform::Platform) seam (doc
+//! the core [`Platform`](diskgenie_core::platform::Platform) seam (doc
 //! 02 §2). Each OS lives in a module directory (`win/`, `mac/`) split
 //! by concern (dir walking, apps, monitor, recycle, license, sysinfo);
 //! code under `platform::win` / `platform::mac` is the ONLY place
 //! allowed to call windows-rs / CoreFoundation directly.
 
-pub use diskbytes_core::platform::{DirEntryData, DirListing, KnownFolder, ListError, Platform};
+pub use diskgenie_core::platform::{DirEntryData, DirListing, KnownFolder, ListError, Platform};
 
 #[cfg(windows)]
 pub mod win;

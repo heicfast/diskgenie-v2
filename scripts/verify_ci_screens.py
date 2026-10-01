@@ -11,7 +11,7 @@ import sys
 import urllib.request
 
 TOKEN = os.environ.get("GH_TOKEN", "")
-REPO = "heicfast/DiskBytes"
+REPO = "heicfast/DiskGenie"
 
 def api(url):
     req = urllib.request.Request(url, headers={"Authorization": f"token {TOKEN}"})
@@ -42,8 +42,8 @@ def main():
     os.makedirs(outdir, exist_ok=True)
 
     arts = api(f"https://api.github.com/repos/{REPO}/actions/runs/{run_id}/artifacts")["artifacts"]
-    shots = next((a for a in arts if a["name"] == "diskbytes-ui-screenshots"), None)
-    logs = next((a for a in arts if a["name"] == "diskbytes-app-logs"), None)
+    shots = next((a for a in arts if a["name"] == "diskgenie-ui-screenshots"), None)
+    logs = next((a for a in arts if a["name"] == "diskgenie-app-logs"), None)
     if not shots:
         print("NO SCREENSHOT ARTIFACT"); return 1
     dl(f"https://api.github.com/repos/{REPO}/actions/artifacts/{shots['id']}/zip", f"{outdir}/shots.zip")

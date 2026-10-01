@@ -3,8 +3,8 @@
 
 #![allow(dead_code)] // test helper surface
 
-use diskbytes_core::scan::categories::FileCategory;
-use diskbytes_core::scan::node::{BatchEntry, Node};
+use diskgenie_core::scan::categories::FileCategory;
+use diskgenie_core::scan::node::{BatchEntry, Node};
 
 /// A directory `BatchEntry` (mtime = 1).
 pub fn dir_entry(name: &str) -> BatchEntry {

@@ -11,12 +11,12 @@
 //! children, one batch per directory) so properties test behavior, not
 //! invariant violations the engine never produces.
 
-use diskbytes_core::dupes::{self, HashedFile};
-use diskbytes_core::scan::categories::FileCategory;
-use diskbytes_core::scan::node::{BatchEntry, Node, Tree};
-use diskbytes_core::scan::rollup;
-use diskbytes_core::scan::surgery;
-use diskbytes_core::{format, layout};
+use diskgenie_core::dupes::{self, HashedFile};
+use diskgenie_core::scan::categories::FileCategory;
+use diskgenie_core::scan::node::{BatchEntry, Node, Tree};
+use diskgenie_core::scan::rollup;
+use diskgenie_core::scan::surgery;
+use diskgenie_core::{format, layout};
 
 use proptest::prelude::*;
 
@@ -420,13 +420,13 @@ proptest! {
         before in proptest::collection::vec((any::<u64>(), any::<u64>()), 0..10),
         after in proptest::collection::vec((any::<u64>(), any::<u64>()), 0..10),
     ) {
-        use diskbytes_core::snapshots::Snapshot;
+        use diskgenie_core::snapshots::Snapshot;
         let mk = |v: Vec<(u64, u64)>| -> Vec<(String, u64)> {
             v.into_iter().map(|(i, s)| (format!("folder_{i}"), s)).collect()
         };
         let a = Snapshot::build("a".into(), "C:\\".into(), 1, mk(before));
         let b = Snapshot::build("b".into(), "C:\\".into(), 2, mk(after));
-        let diff = diskbytes_core::snapshots::diff(&a, &b);
+        let diff = diskgenie_core::snapshots::diff(&a, &b);
         for ch in &diff.changes {
             prop_assert_eq!(ch.delta, ch.after as i64 - ch.before as i64);
         }
@@ -448,7 +448,7 @@ proptest! {
     fn run_list_decoder_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
         // Any byte slice, any VCN window: decode must error or return
         // internally-consistent runs — never panic.
-        if let Ok(out) = diskbytes_core::turbo::runs::decode_run_list(
+        if let Ok(out) = diskgenie_core::turbo::runs::decode_run_list(
             &bytes, 0, bytes.len(), 0, u64::MAX,
         ) {
             let mut vcn = 0u64;
@@ -564,11 +564,11 @@ proptest! {
 
     #[test]
     fn age_bucket_total(ts in any::<i64>(), now in 1_600_000_000i64..1_900_000_000) {
-        let b = diskbytes_core::age::bucket_of(ts, now);
+        let b = diskgenie_core::age::bucket_of(ts, now);
         prop_assert!(b <= 5);
-        prop_assert_eq!(diskbytes_core::age::bucket_of(ts, now), b);
-        prop_assert_eq!(diskbytes_core::age::bucket_of(now + 86_400 * 400, now), 0);
-        prop_assert_eq!(diskbytes_core::age::bucket_of(0, now), 5);
+        prop_assert_eq!(diskgenie_core::age::bucket_of(ts, now), b);
+        prop_assert_eq!(diskgenie_core::age::bucket_of(now + 86_400 * 400, now), 0);
+        prop_assert_eq!(diskgenie_core::age::bucket_of(0, now), 5);
     }
 }
 

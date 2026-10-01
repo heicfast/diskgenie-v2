@@ -10,14 +10,14 @@ use super::wide;
 // M10: License platform surface (doc 06; licensing doc §3/§5.4)
 // ============================================================================
 
-/// Per-user roaming app-data directory for DiskBytes
-/// (`%APPDATA%\DiskBytes`, created on demand). `.` when `APPDATA` is
+/// Per-user roaming app-data directory for DiskGenie
+/// (`%APPDATA%\DiskGenie`, created on demand). `.` when `APPDATA` is
 /// unset (test runners, portable mode).
 #[must_use]
 pub fn app_data_dir() -> std::path::PathBuf {
     let base = std::env::var("APPDATA")
         .map_or_else(|_| std::path::PathBuf::from("."), std::path::PathBuf::from);
-    let dir = base.join("DiskBytes");
+    let dir = base.join("DiskGenie");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }

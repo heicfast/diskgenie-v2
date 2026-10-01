@@ -1,8 +1,8 @@
 [package]
-name = "diskbytes"
+name = "diskgenie"
 version = "0.1.0"
-description = "DiskBytes — Windows disk-space analyzer. Rust core + Tauri 2 (WebView2) + React/TS Canvas UI."
-authors = ["DiskBytes"]
+description = "DiskGenie — Windows disk-space analyzer. Rust core + Tauri 2 (WebView2) + React/TS Canvas UI."
+authors = ["DiskGenie"]
 edition = "2021"
 rust-version = "1.80"
 
@@ -15,14 +15,14 @@ members = ["core"]
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary to make the lib name
 # unique and not conflict with the bin name (Windows name clash, rust issue 8519).
-name = "diskbytes_lib"
+name = "diskgenie_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-diskbytes-core = { path = "core" }
+diskgenie-core = { path = "core" }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -131,7 +131,7 @@ missing_docs = "warn"
 all = { level = "deny", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = "allow"
-# The product name "DiskBytes" and platform terms ("WebView", "Tauri") are
+# The product name "DiskGenie" and platform terms ("WebView", "Tauri") are
 # CamelCase by design; backticking every occurrence hurts doc readability.
 doc_markdown = "allow"
 # Hex RGB colors (0x93C5FD pastel blue, …) read better without digit

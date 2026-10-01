@@ -1,6 +1,6 @@
 name: CI
 
-# DiskBytes CI (doc 09 §2 static gate battery + Windows-only verification).
+# DiskGenie CI (doc 09 §2 static gate battery + Windows-only verification).
 # The dev sandbox is Linux; this workflow runs the REAL Windows gates on
 # windows-latest: MSVC toolchain, WebView2, and the NSIS bundle build.
 
@@ -52,7 +52,7 @@ jobs:
         shell: bash
 
       - name: "Gate: 1M-node bench (M2: < 2 s)"
-        run: cargo test --release -p diskbytes-core -- --ignored bench_1m --nocapture
+        run: cargo test --release -p diskgenie-core -- --ignored bench_1m --nocapture
         working-directory: src-tauri
         shell: bash
 
@@ -133,12 +133,12 @@ jobs:
           $out = "dist-release"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           $installer = Get-ChildItem src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter "*.exe" | Select-Object -First 1
-          Copy-Item $installer.FullName "$out/DiskBytes-$version-x64-setup.exe"
+          Copy-Item $installer.FullName "$out/DiskGenie-$version-x64-setup.exe"
           $portable = "$out/portable"
           New-Item -ItemType Directory -Force -Path $portable | Out-Null
-          Copy-Item src-tauri/target/x86_64-pc-windows-msvc/release/diskbytes.exe "$portable/DiskBytes.exe"
-          @("DiskBytes portable. Runs without installing; WebView2 required.", "See docs/DISTRIBUTION.md for SmartScreen/Unblock guidance.") | Set-Content "$portable/README.txt"
-          Compress-Archive -Path $portable -DestinationPath "$out/DiskBytes-$version-x64-portable.zip" -Force
+          Copy-Item src-tauri/target/x86_64-pc-windows-msvc/release/diskgenie.exe "$portable/DiskGenie.exe"
+          @("DiskGenie portable. Runs without installing; WebView2 required.", "See docs/DISTRIBUTION.md for SmartScreen/Unblock guidance.") | Set-Content "$portable/README.txt"
+          Compress-Archive -Path $portable -DestinationPath "$out/DiskGenie-$version-x64-portable.zip" -Force
           Remove-Item $portable -Recurse -Force
           Get-ChildItem $out -File | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
@@ -148,7 +148,7 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: diskbytes-windows-release
+          name: diskgenie-windows-release
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             dist-release/*

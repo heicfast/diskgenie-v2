@@ -63,9 +63,9 @@ jobs:
 
       - name: Run the benchmark window
         env:
-          DISKBYTES_POSTHOG_KEY: ""
+          DISKGENIE_POSTHOG_KEY: ""
         run: |
-          APP="$PWD/src-tauri/target/release/diskbytes"
+          APP="$PWD/src-tauri/target/release/diskgenie"
           OUT="$RUNNER_TEMP/bench"
           mkdir -p "$OUT"
           # The bench tour: boot scan (timed) → the flip-cache restore
@@ -74,7 +74,7 @@ jobs:
           APP_BIN="$APP" \
           OUT_DIR="$OUT" \
           RUN_SECONDS=96 \
-          LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_TOUR=1 DISKBYTES_TOUR_MODE=bench DISKBYTES_LICENSE_SIM=1 DISKBYTES_WINDOW=1440x860" \
+          LAUNCH_ENV="DISKGENIE_SCAN=$HOME/diskgenie-test DISKGENIE_TOUR=1 DISKGENIE_TOUR_MODE=bench DISKGENIE_LICENSE_SIM=1 DISKGENIE_WINDOW=1440x860" \
           bash scripts/ci/mac-benchmark.sh
           cat "$OUT/BENCHMARK.md"
 
@@ -89,7 +89,7 @@ jobs:
       - name: Upload the benchmark artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: diskbytes-macos-benchmark
+          name: diskgenie-macos-benchmark
           path: |
             ${{ runner.temp }}/BENCHMARK-FULL.md
             ${{ runner.temp }}/bench/memory-samples.csv

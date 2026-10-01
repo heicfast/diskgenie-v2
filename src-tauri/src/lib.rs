@@ -1,7 +1,7 @@
-//! DiskBytes `Tauri` app entry (spec §2; doc 02 §2).
+//! DiskGenie `Tauri` app entry (spec §2; doc 02 §2).
 //!
 //! The app crate owns the `WebView` shell, plugins and IPC commands; all
-//! platform-independent logic lives in `diskbytes-core` so it stays
+//! platform-independent logic lives in `diskgenie-core` so it stays
 //! testable on any host (decision D10). M3 registers the scan commands
 //! (doc 03 M3.7); later milestones add layout/cleanup/dupes/apps/
 //! monitor/snapshot commands.
@@ -67,7 +67,7 @@ const MIN_WINDOW_H: f64 = 760.0;
 /// fullscreen on both platforms).
 const WORK_AREA_FRACTION: f64 = 0.86;
 
-/// Parse the `DISKBYTES_WINDOW` dev hook (`1280x760`, case-insensitive
+/// Parse the `DISKGENIE_WINDOW` dev hook (`1280x760`, case-insensitive
 /// `X` separator). `None` on any malformed spec — the fit path runs.
 fn parse_window_spec(spec: &str) -> Option<(f64, f64)> {
     let lowered = spec.trim().to_lowercase();
@@ -81,7 +81,7 @@ fn parse_window_spec(spec: &str) -> Option<(f64, f64)> {
 /// `setup` while the window is still hidden (`visible: false` in the
 /// config) so the resize never flashes.
 ///
-/// The `DISKBYTES_WINDOW=WxH` dev hook (capture workflows) overrides
+/// The `DISKGENIE_WINDOW=WxH` dev hook (capture workflows) overrides
 /// the fit with an exact logical size — still clamped to the design
 /// floor, so on a display smaller than 1280×760 the window exceeds
 /// the screen exactly like the fitted default would (the CI display,

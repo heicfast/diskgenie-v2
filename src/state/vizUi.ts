@@ -2,7 +2,7 @@
  * Explore visualization UI state (spec §7 toolbar): current mode, color
  * mode, depth (2–10, default 7), abbreviate toggle. Per-app-run only
  * (spec doc 05 §4.4: remember last mode/depth per run, not persisted).
- * The dev hook DISKBYTES_MODE seeds the initial mode (spec §15).
+ * The dev hook DISKGENIE_MODE seeds the initial mode (spec §15).
  */
 import { create } from "zustand";
 
@@ -61,7 +61,7 @@ interface VizUiState {
   setTopScope: (scope: TopScope) => void;
 }
 
-/** Dev-hook seeding (§15 DISKBYTES_MODE). */
+/** Dev-hook seeding (§15 DISKGENIE_MODE). */
 function seedMode(): Mode {
   const hook = (window as unknown as { __DB_DEV_MODE__?: string }).__DB_DEV_MODE__;
   if (hook && (MODES as readonly string[]).includes(hook)) return hook as Mode;

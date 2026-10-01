@@ -109,15 +109,15 @@ describe("storage validation", () => {
 
   it("reads the persisted choice and falls back to light", () => {
     expect(readSavedTheme()).toBe("light");
-    storage.setItem("diskbytes.theme", "ember");
+    storage.setItem("diskgenie.theme", "ember");
     expect(readSavedTheme()).toBe("ember");
-    storage.setItem("diskbytes.theme", "bogus");
+    storage.setItem("diskgenie.theme", "bogus");
     expect(readSavedTheme()).toBe("light");
   });
 
   it("persists under the long-standing key", () => {
     persistTheme("tide");
-    expect(storage.getItem("diskbytes.theme")).toBe("tide");
+    expect(storage.getItem("diskgenie.theme")).toBe("tide");
   });
 });
 

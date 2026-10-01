@@ -7,8 +7,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use diskbytes_core::scan::node::Tree;
-use diskbytes_core::scan::scanner::Progress;
+use diskgenie_core::scan::node::Tree;
+use diskgenie_core::scan::scanner::Progress;
 use parking_lot::{Mutex, RwLock};
 
 use crate::commands::dupes::{DupesProgress, DupesResult};
@@ -278,8 +278,8 @@ mod tests {
 
     /// A tree the tests can identify: `Tree::new(gen)` is empty (arena
     /// = one root node); identity is the Arc pointer.
-    fn tree(gen: u64) -> std::sync::Arc<diskbytes_core::scan::node::Tree> {
-        std::sync::Arc::new(diskbytes_core::scan::node::Tree::new(gen))
+    fn tree(gen: u64) -> std::sync::Arc<diskgenie_core::scan::node::Tree> {
+        std::sync::Arc::new(diskgenie_core::scan::node::Tree::new(gen))
     }
 
     #[test]

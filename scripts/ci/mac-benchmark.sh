@@ -4,7 +4,7 @@
 # distill the [bench] lines + samples into a markdown report artifact.
 #
 # The [bench] lines come from the app itself (stderr):
-#   [bench] window size applied: 1280x760    (the DISKBYTES_WINDOW hook)
+#   [bench] window size applied: 1280x760    (the DISKGENIE_WINDOW hook)
 #   [bench] scan done engine=… ms=… files=… dirs=… bytes=…
 #   [bench] scan restored gen=… files=… …     (the flip-cache restore)
 #   [dupes] compute finished at …             (the 3-pass pipeline)
@@ -41,7 +41,7 @@ win_id() {
       var w = list[i];
       var owner = String(w.kCGWindowOwnerName || "").toLowerCase();
       var layer = Number(w.kCGWindowLayer || 0);
-      if (layer === 0 && owner.indexOf("diskbytes") !== -1) {
+      if (layer === 0 && owner.indexOf("diskgenie") !== -1) {
         console.log(String(w.kCGWindowNumber));
       }
     }
@@ -113,7 +113,7 @@ def human(n: int) -> str:
     return f"{size:.2f} TB"
 
 lines = []
-lines.append("# DiskBytes — macOS benchmark report")
+lines.append("# DiskGenie — macOS benchmark report")
 lines.append("")
 lines.append(f"Runner: `macos-latest` · Run window: {run_seconds} s · Time-to-window: **{t2w} ms**")
 if window:

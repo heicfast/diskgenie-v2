@@ -133,7 +133,7 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
   const posture = status?.posture ?? "unlicensed";
   const isPro = posture === "pro" || posture === "grace";
   const complete = isCompleteKey(key);
-  const purchaseUrl = status?.purchaseUrl || "https://diskbytes.app/pricing";
+  const purchaseUrl = status?.purchaseUrl || "https://diskgenie.app/pricing";
 
   const openPurchase = () => {
     track(EVENTS.checkoutOpened, { source: "license-dialog" });
@@ -151,10 +151,10 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
           <CheckIcon size={26} />
         </div>
         <h3>
-          <CheckIcon size={16} /> DiskBytes Pro activated
+          <CheckIcon size={16} /> DiskGenie Pro activated
         </h3>
         <p>
-          Thank you for purchasing DiskBytes. Every tool is unlocked on this
+          Thank you for purchasing DiskGenie. Every tool is unlocked on this
           device — enjoy the clean disk.
         </p>
       </div>
@@ -196,7 +196,7 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
             {status?.graceDaysLeft ?? 0} more day{(status?.graceDaysLeft ?? 0) === 1 ? "" : "s"}.
           </p>
         )}
-        <p className="db-license-thanks">Thank you for purchasing DiskBytes.</p>
+        <p className="db-license-thanks">Thank you for purchasing DiskGenie.</p>
         <div className="db-license-appearance">
           <ThemePicker />
         </div>
@@ -213,7 +213,7 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
           </span>
         </div>
         <p className="db-license-note">
-          DiskBytes couldn't reach the license server for over 14 days, so Pro
+          DiskGenie couldn't reach the license server for over 14 days, so Pro
           features are paused. Reconnect to the internet and check now — your
           license and data are safe.
         </p>
@@ -278,7 +278,7 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
     activated ? null
     : isPro ? (
       <h3>
-        <SparklesIcon size={15} /> DiskBytes Pro
+        <SparklesIcon size={15} /> DiskGenie Pro
       </h3>
     )
     : posture === "degraded" ? (
@@ -288,7 +288,7 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
     )
     : (
       <h3>
-        <LockKeyholeIcon size={15} /> Activate DiskBytes
+        <LockKeyholeIcon size={15} /> Activate DiskGenie
       </h3>
     );
 

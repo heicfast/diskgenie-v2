@@ -29,7 +29,7 @@ export function UnreadableNotice() {
       return;
     }
     try {
-      const raw = window.localStorage.getItem("diskbytes.last-denied");
+      const raw = window.localStorage.getItem("diskgenie.last-denied");
       if (raw) {
         const parsed = JSON.parse(raw) as DeniedInfo;
         setInfo(parsed.count > 0 ? parsed : null);

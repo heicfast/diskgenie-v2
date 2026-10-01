@@ -134,10 +134,10 @@ jobs:
             curl -sS --max-time 30 -X POST "$API/v1/admin/keys" \
               -H "authorization: Bearer $ADMIN" -H "content-type: application/json" -d "$1"
           }
-          LIFETIME=$(gen "{\"tier\":\"lifetime\",\"customerName\":\"Mac E2E Lifetime\",\"customerEmail\":\"mac-e2e-$stamp@diskbytes.test\",\"note\":\"ci macos license e2e\"}")
+          LIFETIME=$(gen "{\"tier\":\"lifetime\",\"customerName\":\"Mac E2E Lifetime\",\"customerEmail\":\"mac-e2e-$stamp@diskgenie.test\",\"note\":\"ci macos license e2e\"}")
           echo "lifetime response: $(echo "$LIFETIME" | python3 -c 'import json,sys; d=json.load(sys.stdin); k=d["keys"][0]["key"]; print("ok tier=" + d["keys"][0]["tier"] + " …" + k[-4:])')"
           KEY_LIFETIME=$(echo "$LIFETIME" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keys"][0]["key"])')
-          YEARLY=$(gen "{\"tier\":\"yearly\",\"days\":365,\"customerName\":\"Mac E2E Yearly\",\"customerEmail\":\"mac-yearly-$stamp@diskbytes.test\",\"note\":\"ci macos license e2e\"}")
+          YEARLY=$(gen "{\"tier\":\"yearly\",\"days\":365,\"customerName\":\"Mac E2E Yearly\",\"customerEmail\":\"mac-yearly-$stamp@diskgenie.test\",\"note\":\"ci macos license e2e\"}")
           KEY_YEARLY=$(echo "$YEARLY" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keys"][0]["key"])')
           echo "yearly response ok …${KEY_YEARLY: -4}"
           # Per-run files under $RUNNER_TEMP (never echoed whole, never committed).
@@ -148,9 +148,9 @@ jobs:
       - name: Phase A — the lifetime-key license tour
         if: steps.mint.outputs.skip != 'true'
         env:
-          DISKBYTES_POSTHOG_KEY: ""
+          DISKGENIE_POSTHOG_KEY: ""
         run: |
-          APP="$PWD/src-tauri/target/release/diskbytes"
+          APP="$PWD/src-tauri/target/release/diskgenie"
           OUT="$RUNNER_TEMP/shots-a"
           mkdir -p "$OUT"
           KEY=$(cat "$RUNNER_TEMP/key-lifetime.txt")
@@ -158,19 +158,19 @@ jobs:
           OUT_DIR="$OUT" \
           FRAMES=42 \
           BOOT_WAIT_S=5 \
-          LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_TOUR=1 DISKBYTES_TOUR_MODE=license DISKBYTES_TOUR_LICENSE_KEY=$KEY" \
+          LAUNCH_ENV="DISKGENIE_SCAN=$HOME/diskgenie-test DISKGENIE_TOUR=1 DISKGENIE_TOUR_MODE=license DISKGENIE_TOUR_LICENSE_KEY=$KEY" \
           bash scripts/ci/mac-capture.sh
           echo "--- app-stderr tail ---"; tail -25 "$OUT/app-stderr.log" || true
 
       - name: Phase B — relaunch (Keychain persistence)
         if: steps.mint.outputs.skip != 'true'
         env:
-          DISKBYTES_POSTHOG_KEY: ""
+          DISKGENIE_POSTHOG_KEY: ""
         run: |
-          APP="$PWD/src-tauri/target/release/diskbytes"
+          APP="$PWD/src-tauri/target/release/diskgenie"
           OUT="$RUNNER_TEMP/shots-b"
           mkdir -p "$OUT"
-          LICENSE_BIN="$HOME/Library/Application Support/DiskBytes/license.bin"
+          LICENSE_BIN="$HOME/Library/Application Support/DiskGenie/license.bin"
           if [ -f "$LICENSE_BIN" ]; then
             echo "[e2e] license.bin present ($(stat -f%z "$LICENSE_BIN") bytes) — activation persisted"
           else
@@ -181,27 +181,27 @@ jobs:
           FRAMES=6 \
           BOOT_WAIT_S=8 \
           CADENCE_MS=3000 \
-          LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_POSTHOG_KEY=" \
+          LAUNCH_ENV="DISKGENIE_SCAN=$HOME/diskgenie-test DISKGENIE_POSTHOG_KEY=" \
           bash scripts/ci/mac-capture.sh
           echo "--- persistence-relaunch stderr tail ---"; tail -12 "$OUT/app-stderr.log" || true
 
       - name: Phase C — the yearly key (tier + expiry rendering, clean state)
         if: steps.mint.outputs.skip != 'true'
         env:
-          DISKBYTES_POSTHOG_KEY: ""
+          DISKGENIE_POSTHOG_KEY: ""
         run: |
-          APP="$PWD/src-tauri/target/release/diskbytes"
+          APP="$PWD/src-tauri/target/release/diskgenie"
           OUT="$RUNNER_TEMP/shots-c"
           mkdir -p "$OUT"
           # Clean local state: the yearly activation runs from the
           # genuine unlicensed entry state (not an overwrite-on-Pro).
-          rm -f "$HOME/Library/Application Support/DiskBytes/license.bin"
+          rm -f "$HOME/Library/Application Support/DiskGenie/license.bin"
           KEY=$(cat "$RUNNER_TEMP/key-yearly.txt")
           APP_BIN="$APP" \
           OUT_DIR="$OUT" \
           FRAMES=42 \
           BOOT_WAIT_S=5 \
-          LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_TOUR=1 DISKBYTES_TOUR_MODE=license DISKBYTES_TOUR_LICENSE_KEY=$KEY" \
+          LAUNCH_ENV="DISKGENIE_SCAN=$HOME/diskgenie-test DISKGENIE_TOUR=1 DISKGENIE_TOUR_MODE=license DISKGENIE_TOUR_LICENSE_KEY=$KEY" \
           bash scripts/ci/mac-capture.sh
 
       - name: Verify the server-side device row (the mac facts landed)
@@ -257,7 +257,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diskbytes-macos-license-e2e
+          name: diskgenie-macos-license-e2e
           path: |
             ${{ runner.temp }}/shots-a
             ${{ runner.temp }}/shots-b

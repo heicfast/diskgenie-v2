@@ -46,18 +46,18 @@ jobs:
       - name: Run the live license lifecycle test
         # The feature gates tests/live_license.rs to nothing in every
         # other build; option_env! reads the admin key at compile time
-        # (same step), the test reads DISKBYTES_LIVE_LICENSE_E2E at
+        # (same step), the test reads DISKGENIE_LIVE_LICENSE_E2E at
         # run time. Key material is never printed (only the last-4).
         env:
-          DISKBYTES_LIVE_ADMIN_KEY: ${{ secrets.LIVE_ADMIN_KEY }}
-          DISKBYTES_LIVE_LICENSE_E2E: "1"
+          DISKGENIE_LIVE_ADMIN_KEY: ${{ secrets.LIVE_ADMIN_KEY }}
+          DISKGENIE_LIVE_LICENSE_E2E: "1"
         shell: pwsh
         run: |
-          if (-not $env:DISKBYTES_LIVE_ADMIN_KEY) {
+          if (-not $env:DISKGENIE_LIVE_ADMIN_KEY) {
             Write-Host "::notice::LIVE_ADMIN_KEY secret not set — skipping the live E2E (set it in repo Settings → Secrets → Actions)."
             exit 0
           }
-          cargo test --manifest-path src-tauri/Cargo.toml -p diskbytes --features live-license-e2e --test live_license -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml -p diskgenie --features live-license-e2e --test live_license -- --nocapture
 
       - name: Post-run health check
         shell: pwsh

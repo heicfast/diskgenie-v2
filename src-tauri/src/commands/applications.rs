@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
-use diskbytes_core::apps::{
+use diskgenie_core::apps::{
     self, AppEntry, AppIdentity, AppSource, LeftoverGroup, RootChild, RootListing,
 };
-use diskbytes_core::platform::{KnownFolder, Platform};
+use diskgenie_core::platform::{KnownFolder, Platform};
 use rayon::prelude::*;
 use serde::Serialize;
 use tauri::State;
@@ -162,7 +162,7 @@ fn enumerate_apps(platform: HostPlatform) -> Vec<AppEntry> {
             .unwrap_or("")
             .to_string();
         let last_used =
-            diskbytes_core::apps::last_used_for_install(&userassist, &r.install_location);
+            diskgenie_core::apps::last_used_for_install(&userassist, &r.install_location);
         entries.push((
             AppEntry {
                 id: r.id.clone(),
@@ -551,7 +551,7 @@ pub fn leftover_root_paths(platform: State<'_, Arc<HostPlatform>>) -> Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diskbytes_core::apps::ROOT_LABELS;
+    use diskgenie_core::apps::ROOT_LABELS;
 
     #[test]
     fn round_up_cluster_math() {
@@ -571,7 +571,7 @@ mod tests {
         assert_eq!(s, 1000);
         // Missing path contributes zero (best effort, no panic).
         assert_eq!(dir_allocated_size("Z:\\nope-XYZ", 4096), 0);
-        diskbytes_core::snapshots::remove_app_data_tree(&dir);
+        diskgenie_core::snapshots::remove_app_data_tree(&dir);
     }
 
     #[test]

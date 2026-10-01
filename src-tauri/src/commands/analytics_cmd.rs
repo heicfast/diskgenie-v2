@@ -22,7 +22,7 @@ pub struct AnalyticsStateView {
 pub fn analytics_opt_out(analytics: State<'_, Analytics>) -> AnalyticsStateView {
     AnalyticsStateView {
         opt_out: analytics.opt_out(),
-        enabled: std::env::var("DISKBYTES_POSTHOG_KEY").is_ok_and(|k| !k.trim().is_empty()),
+        enabled: std::env::var("DISKGENIE_POSTHOG_KEY").is_ok_and(|k| !k.trim().is_empty()),
     }
 }
 

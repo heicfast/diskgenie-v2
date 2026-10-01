@@ -14,7 +14,7 @@ TOKEN_ENV = "GH_TOKEN"
 
 PROMPT = (
     "You are a senior UI/UX design auditor reviewing a real Windows screenshot "
-    "(1920x1080) of DiskBytes, a DaisyDisk-style disk analyzer (Tauri app; "
+    "(1920x1080) of DiskGenie, a DaisyDisk-style disk analyzer (Tauri app; "
     "macOS-native design language: light gray canvas, white cards, coral accent, "
     "pastel chart families, 3-pane layout: sidebar / viz canvas / inspector). "
     "The window is windowed (taskbar visible at bottom is expected and correct). "

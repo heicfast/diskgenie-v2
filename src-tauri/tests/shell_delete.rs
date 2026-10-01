@@ -26,7 +26,7 @@
 // unit.
 #![allow(unsafe_code)]
 
-use diskbytes_lib::recycle::{delete_permanently, move_to_recycle_bin, StagedPath};
+use diskgenie_lib::recycle::{delete_permanently, move_to_recycle_bin, StagedPath};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use windows::core::PCWSTR;
 use windows::Win32::UI::Shell::{SHQueryRecycleBinW, SHQUERYRBINFO};
@@ -265,7 +265,7 @@ fn protected_items_are_refused_before_any_shell_move() {
 
 #[test]
 fn registry_icon_pipeline_extracts_a_real_exe_icon() {
-    let url = diskbytes_lib::apps_test_probe::icon_png_data_url(r"C:\Windows\System32\notepad.exe");
+    let url = diskgenie_lib::apps_test_probe::icon_png_data_url(r"C:\Windows\System32\notepad.exe");
     let Some(url) = url else {
         panic!("SHGetFileInfoW icon extraction failed on a real system exe");
     };
@@ -283,7 +283,7 @@ fn registry_icon_pipeline_extracts_a_real_exe_icon() {
 
 #[test]
 fn find_main_exe_fallback_finds_a_system_exe() {
-    let hit = diskbytes_lib::apps_test_probe::find_main_exe(r"C:\Windows\System32", "notepad");
+    let hit = diskgenie_lib::apps_test_probe::find_main_exe(r"C:\Windows\System32", "notepad");
     assert!(hit.is_some(), "no exe found under System32");
     let p = hit.expect("checked");
     assert!(p.to_lowercase().ends_with(".exe"));
@@ -291,7 +291,7 @@ fn find_main_exe_fallback_finds_a_system_exe() {
 
 #[test]
 fn msix_icon_pipeline_contract_holds() {
-    use diskbytes_lib::apps_test_probe::msix_icon_data_urls;
+    use diskgenie_lib::apps_test_probe::msix_icon_data_urls;
     // No families → no work, no panic.
     assert!(msix_icon_data_urls(&[]).is_empty());
     // Unknown families → empty (never a fake), no panic. A few common

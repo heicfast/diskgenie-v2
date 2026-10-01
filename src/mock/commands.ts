@@ -43,18 +43,18 @@ const snapshots: { id: string; root: string; takenAt: number; total: number; fol
 let license: Record<string, unknown> = {
   posture: "unlicensed", isPro: false, tier: "",
   customerName: "", customerEmail: "", licenseExpiresAt: 0,
-  graceDaysLeft: 0, purchaseUrl: "https://diskbytes.app/pricing",
+  graceDaysLeft: 0, purchaseUrl: "https://diskgenie.app/pricing",
   simulated: false,
 };
 const PRO_SIM = {
   posture: "pro", isPro: true, tier: "lifetime",
-  customerName: "Alex Morgan", customerEmail: "alex@diskbytes.app",
+  customerName: "Alex Morgan", customerEmail: "alex@diskgenie.app",
   licenseExpiresAt: 0, graceDaysLeft: 0,
-  purchaseUrl: "https://diskbytes.app/pricing", simulated: true,
+  purchaseUrl: "https://diskgenie.app/pricing", simulated: true,
 };
 /** The Rust gate marker (require_licensed) — the ipc layer
  * intercepts it and opens the activation flow. */
-const GATE_MSG = "ACTIVATION_REQUIRED — Activate DiskBytes Pro to use this.";
+const GATE_MSG = "ACTIVATION_REQUIRED — Activate DiskGenie Pro to use this.";
 function licenseGate(): void {
   const p = String(license.posture);
   if (p === "pro" || p === "grace") return;
@@ -1225,9 +1225,9 @@ export const commands: Record<string, Cmd> = {
     }
     license = {
       posture: "pro", isPro: true, tier: "lifetime",
-      customerName: "Dev Tester", customerEmail: "dev@diskbytes.local",
+      customerName: "Dev Tester", customerEmail: "dev@diskgenie.local",
       licenseExpiresAt: 0, graceDaysLeft: 0,
-      purchaseUrl: "https://diskbytes.app/pricing", simulated: false,
+      purchaseUrl: "https://diskgenie.app/pricing", simulated: false,
     };
     window.setTimeout(() => {
       emitMockEvent("license-changed", license);
@@ -1238,7 +1238,7 @@ export const commands: Record<string, Cmd> = {
     license = {
       posture: "unlicensed", isPro: false, tier: "",
       customerName: "", customerEmail: "", licenseExpiresAt: 0,
-      graceDaysLeft: 0, purchaseUrl: "https://diskbytes.app/pricing",
+      graceDaysLeft: 0, purchaseUrl: "https://diskgenie.app/pricing",
       simulated: false,
     };
     window.setTimeout(() => {
@@ -1254,7 +1254,7 @@ export const commands: Record<string, Cmd> = {
     license = mode === "pro" ? { ...PRO_SIM } : {
       posture: "unlicensed", isPro: false, tier: "",
       customerName: "", customerEmail: "", licenseExpiresAt: 0,
-      graceDaysLeft: 0, purchaseUrl: "https://diskbytes.app/pricing",
+      graceDaysLeft: 0, purchaseUrl: "https://diskgenie.app/pricing",
       simulated: false,
     };
     emitMockEvent("license-changed", license);

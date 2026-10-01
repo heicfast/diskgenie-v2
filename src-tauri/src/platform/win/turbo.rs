@@ -126,7 +126,7 @@ pub fn turbo_read_mft(volume: &mut std::fs::File, geo: &TurboGeometry) -> Result
     // Geometry-driven cluster size; record 0's $DATA runs live in the
     // record after fixup — reuse the core parser through a tiny shim.
     let runs =
-        diskbytes_core::turbo::record::mft_record0_runs(&mut rec0, geo.bytes_per_sector as usize)
+        diskgenie_core::turbo::record::mft_record0_runs(&mut rec0, geo.bytes_per_sector as usize)
             .map_err(|e| format!("The $MFT run list is corrupt: {e:?}"))?;
 
     // Stage the MFT: sequential reads per run (sparse runs skipped).

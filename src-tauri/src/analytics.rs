@@ -9,7 +9,7 @@
 //! - opt-out (persisted flag) stops ALL Rust captures;
 //! - zero file-system content in events — counts/sizes/durations only;
 //! - the client only exists when a project key is configured
-//!   (env `DISKBYTES_POSTHOG_KEY`); absent key = disabled, not an error.
+//!   (env `DISKGENIE_POSTHOG_KEY`); absent key = disabled, not an error.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -24,8 +24,8 @@ pub struct Analytics {
 
 /// Where the anonymous id persists (plain text: it IS the privacy
 /// boundary — a random UUID with no meaning, doc 07 §3.1). Uses the
-/// platform app-data dir (`%APPDATA%\DiskBytes` on Windows,
-/// `~/Library/Application Support/DiskBytes` on macOS).
+/// platform app-data dir (`%APPDATA%\DiskGenie` on Windows,
+/// `~/Library/Application Support/DiskGenie` on macOS).
 fn id_path() -> std::path::PathBuf {
     crate::platform::os::app_data_dir().join("analytics-id")
 }
@@ -69,7 +69,7 @@ impl Analytics {
     /// Construct the posthog client when a key is configured (US host —
     /// region decision logged; doc 07 §5).
     fn build_client() -> Option<posthog_rs::Client> {
-        let key = std::env::var("DISKBYTES_POSTHOG_KEY").ok()?;
+        let key = std::env::var("DISKGENIE_POSTHOG_KEY").ok()?;
         if key.trim().is_empty() {
             return None;
         }
@@ -110,7 +110,7 @@ impl Analytics {
         } else {
             // App-owned data file removal lives in the core persistence
             // layer (R7.1 grep scope).
-            diskbytes_core::snapshots::remove_app_data_file(&p);
+            diskgenie_core::snapshots::remove_app_data_file(&p);
         }
     }
 
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn capture_without_client_never_panics() {
-        // No DISKBYTES_POSTHOG_KEY in the test env → disabled client.
+        // No DISKGENIE_POSTHOG_KEY in the test env → disabled client.
         let an = Analytics {
             client: None,
             distinct_id: Mutex::new("test-id".into()),
@@ -169,6 +169,6 @@ mod tests {
         // Persisted → stable across calls.
         assert_eq!(load_or_create_id(), s);
         // Cleanup (app-owned data file — core persistence layer).
-        diskbytes_core::snapshots::remove_app_data_file(&id_path());
+        diskgenie_core::snapshots::remove_app_data_file(&id_path());
     }
 }

@@ -1,10 +1,10 @@
-# DiskBytes optional signing pass (doc 03 M11.2): signs every artifact
+# DiskGenie optional signing pass (doc 03 M11.2): signs every artifact
 # in dist-release/ when signtool + a cert are available; otherwise
 # prints the SHA256 manifest and exits 0 (unsigned private testing is
 # legitimate — SmartScreen guidance lives in docs/DISTRIBUTION.md).
 #
 #   scripts/sign.ps1                              # EV/OV cert from store
-#   scripts/sign.ps1 -CertFile .\diskbytes.pfx    # file-based cert
+#   scripts/sign.ps1 -CertFile .\diskgenie.pfx    # file-based cert
 param(
     [string]$AppRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$CertFile,

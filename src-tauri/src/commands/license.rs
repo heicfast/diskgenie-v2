@@ -35,7 +35,7 @@ pub struct LicenseManager {
 /// Managed state constructor: restores the DPAPI/Keychain-cached state.
 /// Under the `ci-license-sim` feature (screenshots workflow ONLY —
 /// never enabled in NSIS/MSIX production builds) the env
-/// `DISKBYTES_LICENSE_SIM=1` seeds a simulated activated state so the
+/// `DISKGENIE_LICENSE_SIM=1` seeds a simulated activated state so the
 /// full app tour can run; `license_sim_set` flips it at runtime.
 #[must_use]
 pub fn license_manager() -> LicenseManager {
@@ -44,7 +44,7 @@ pub fn license_manager() -> LicenseManager {
     #[allow(unused_mut)]
     let mut state = license::dpapi::load().unwrap_or_default();
     #[cfg(feature = "ci-license-sim")]
-    if std::env::var("DISKBYTES_LICENSE_SIM").as_deref() == Ok("1") {
+    if std::env::var("DISKGENIE_LICENSE_SIM").as_deref() == Ok("1") {
         let now = now_unix();
         state = sim_state(now);
     }
@@ -525,10 +525,10 @@ pub fn require_licensed(mgr: &LicenseManager, now: i64) -> Result<(), String> {
     match license::posture(&state, now) {
         LicensePosture::Pro | LicensePosture::Grace { .. } => Ok(()),
         LicensePosture::Degraded => Err(format!(
-            "{GATE_STALE} — DiskBytes couldn't verify your license for over {GRACE_DAYS} days. Reconnect to restore Pro features."
+            "{GATE_STALE} — DiskGenie couldn't verify your license for over {GRACE_DAYS} days. Reconnect to restore Pro features."
         )),
         LicensePosture::Unlicensed => Err(format!(
-            "{GATE_ACTIVATION_REQUIRED} — Activate DiskBytes Pro to use this."
+            "{GATE_ACTIVATION_REQUIRED} — Activate DiskGenie Pro to use this."
         )),
     }
 }
@@ -547,7 +547,7 @@ fn sim_state(now: i64) -> LicenseState {
         platform: platform_string().to_string(),
         tier: "lifetime".to_string(),
         customer_name: "Alex Morgan".to_string(),
-        customer_email: "alex@diskbytes.app".to_string(),
+        customer_email: "alex@diskgenie.app".to_string(),
         license_expires_at: 0,
         token: "sim".to_string(),
         token_exp: now + 365 * 86_400,

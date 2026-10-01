@@ -3,7 +3,7 @@
 //! itself is unchanged this session — disk_storage's callers, not the
 //! probe, are what the mirror checks.
 
-pub use diskbytes_core::platform::{DirListing, KnownFolder, Platform};
+pub use diskgenie_core::platform::{DirListing, KnownFolder, Platform};
 
 /// The OS dispatch module (`platform::os`).
 pub mod os {

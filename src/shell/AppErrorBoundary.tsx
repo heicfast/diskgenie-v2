@@ -23,7 +23,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, State> 
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error("[DiskBytes] UI crashed:", error, info.componentStack);
+    console.error("[DiskGenie] UI crashed:", error, info.componentStack);
     // `componentStack` only arrives HERE (getDerivedStateFromError runs
     // before React composes the info). The old render read a
     // `this.props.info` that never existed, so the stack area was
@@ -46,7 +46,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, State> 
           }}
         >
           <div style={{ maxWidth: 900 }}>
-            <h1 style={{ color: "#ff6b4a", fontSize: 20 }}>DiskBytes hit an error</h1>
+            <h1 style={{ color: "#ff6b4a", fontSize: 20 }}>DiskGenie hit an error</h1>
             <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, lineHeight: 1.6 }}>
               {String(this.state.error?.stack ?? this.state.error)}
             </pre>

@@ -1,4 +1,4 @@
-# DiskBytes
+# DiskGenie
 
 **A Windows disk-space analyzer that shows you where every byte lives — and only ever cleans up through the Recycle Bin.**
 
@@ -12,7 +12,7 @@ Rust core + Tauri 2 (WebView2) + React/TypeScript Canvas UI. No Electron, no bro
 - **Applications**: registry + MSIX uninstaller with bundle sizes, last-used, leftover matching, and a safe uninstall flow (close → the app's own uninstaller → stage leftovers).
 - **Monitor**: live CPU / memory / network / storage + top processes, sampled every 2 seconds with Win32/NT APIs (no shelling out).
 - **Snapshots**: take / diff folder footprints over time.
-- **Cleanup Queue**: stage from anywhere, confirm once, and everything moves to the **Recycle Bin** — DiskBytes never deletes directly and never touches protected or cloud files.
+- **Cleanup Queue**: stage from anywhere, confirm once, and everything moves to the **Recycle Bin** — DiskGenie never deletes directly and never touches protected or cloud files.
 
 ## Safety model
 
@@ -39,7 +39,7 @@ Paid product (yearly or lifetime — one licence covers one Windows PC and one M
 
 Analytics (PostHog) is anonymous by default, off when unconfigured, and one checkbox to disable entirely. No file names, no paths, no screenshots — ever. See `docs/DISTRIBUTION.md` and the in-app License panel.
 
-© 2026 DiskBytes
+© 2026 DiskGenie
 
 ## UI/UX system (v2 — production polish pass)
 
@@ -53,4 +53,4 @@ The frontend speaks one design system, defined in `src/theme/tokens.css`:
 
 ### Why no shadcn / DaisyUI / HeroUI / Radix Themes
 
-DiskBytes' UI is a hand-crafted canvas application (9 viz modes drawn in `<canvas>`) on top of a custom token system tuned per-viewer (VLM) audits. DaisyUI, HeroUI and shadcn/MagicUI are Tailwind-based component systems; installing three of them alongside the existing 4,000-line custom CSS layer would double the CSS payload and put two competing theming systems in conflict — while their value (form controls, marketing-page components) barely intersects this app's surface (charts, trees, tables). The polish pass instead ports what those libraries stand FOR: tokenized spacing/type/motion scales, variant-based components, accessible overlays, and animation choreography — into the existing system. `framer-motion` (already a dependency) covers the animation layer those libraries would have provided.
+DiskGenie' UI is a hand-crafted canvas application (9 viz modes drawn in `<canvas>`) on top of a custom token system tuned per-viewer (VLM) audits. DaisyUI, HeroUI and shadcn/MagicUI are Tailwind-based component systems; installing three of them alongside the existing 4,000-line custom CSS layer would double the CSS payload and put two competing theming systems in conflict — while their value (form controls, marketing-page components) barely intersects this app's surface (charts, trees, tables). The polish pass instead ports what those libraries stand FOR: tokenized spacing/type/motion scales, variant-based components, accessible overlays, and animation choreography — into the existing system. `framer-motion` (already a dependency) covers the animation layer those libraries would have provided.

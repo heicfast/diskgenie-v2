@@ -38,7 +38,7 @@ const shim = {
 // the pushRecent path touches it immediately).
 import { pushRecent, recentTargetLabel } from "./RecentSection";
 
-const stored = (): string[] => JSON.parse(shim.localStorage.getItem("diskbytes.recent") ?? "[]");
+const stored = (): string[] => JSON.parse(shim.localStorage.getItem("diskgenie.recent") ?? "[]");
 
 describe("recentTargetLabel", () => {
   it("normalizes every This-PC spelling to one label", () => {

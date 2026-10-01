@@ -48,7 +48,7 @@ jobs:
 
       - name: Build the app (release, no bundle, ci-license-sim)
         # The license-sim feature seeds a simulated activated license
-        # (DISKBYTES_LICENSE_SIM=1 below) so the tour captures the
+        # (DISKGENIE_LICENSE_SIM=1 below) so the tour captures the
         # WORKING app and — via license_sim_set — the gate + Pro card.
         # It exists in no production bundle build (NSIS/MSIX/DMG).
         run: npx tauri build --no-bundle --features ci-license-sim
@@ -77,16 +77,16 @@ jobs:
 
       - name: Run the app + capture the tour
         env:
-          DISKBYTES_POSTHOG_KEY: ""
+          DISKGENIE_POSTHOG_KEY: ""
         run: |
-          APP="$PWD/src-tauri/target/release/diskbytes"
+          APP="$PWD/src-tauri/target/release/diskgenie"
           OUT="$RUNNER_TEMP/shots"
           mkdir -p "$OUT"
           APP_BIN="$APP" \
           OUT_DIR="$OUT" \
           FRAMES=66 \
           BOOT_WAIT_S=5 \
-          LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_TOUR=1 DISKBYTES_MODE=Folders DISKBYTES_LICENSE_SIM=1 DISKBYTES_WINDOW=1440x860" \
+          LAUNCH_ENV="DISKGENIE_SCAN=$HOME/diskgenie-test DISKGENIE_TOUR=1 DISKGENIE_MODE=Folders DISKGENIE_LICENSE_SIM=1 DISKGENIE_WINDOW=1440x860" \
           bash scripts/ci/mac-capture.sh
           # stdout/stderr live in the out dir — surface the tail for
           # instant diagnosis in the log (full files in the artifact).
@@ -96,7 +96,7 @@ jobs:
       - name: Upload screenshots
         uses: actions/upload-artifact@v4
         with:
-          name: diskbytes-macos-ui-audit
+          name: diskgenie-macos-ui-audit
           path: ${{ runner.temp }}/shots
           retention-days: 14
           if-no-files-found: error

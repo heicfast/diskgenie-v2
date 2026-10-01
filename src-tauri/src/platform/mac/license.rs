@@ -16,8 +16,8 @@ use super::objc::{cf_release, cf_string_to_string};
 // License platform surface (the win.rs M10 section mirrored)
 // ============================================================================
 
-/// Per-user app-support directory for DiskBytes
-/// (`~/Library/Application Support/DiskBytes`, created on demand). `.` when
+/// Per-user app-support directory for DiskGenie
+/// (`~/Library/Application Support/DiskGenie`, created on demand). `.` when
 /// `HOME` is unset (test runners).
 #[must_use]
 pub fn app_data_dir() -> std::path::PathBuf {
@@ -29,7 +29,7 @@ pub fn app_data_dir() -> std::path::PathBuf {
                 .join("Application Support")
         },
     );
-    let dir = base.join("DiskBytes");
+    let dir = base.join("DiskGenie");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -167,7 +167,7 @@ fn sysctl_string(name: &str) -> Option<String> {
 // Keychain persistence (the DPAPI analogue).
 // ─────────────────────────────────────────────────────────────────────
 
-const KEYCHAIN_SERVICE: &str = "com.confines.diskbytes";
+const KEYCHAIN_SERVICE: &str = "app.diskgenie";
 const KEYCHAIN_ACCOUNT: &str = "license-state";
 
 fn cf_key(name: &str) -> *mut c_void {

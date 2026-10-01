@@ -1,4 +1,4 @@
-# DiskBytes Licensing & Store Architecture (v2 — paid-only; wire v2.1)
+# DiskGenie Licensing & Store Architecture (v2 — paid-only; wire v2.1)
 
 Status: **implemented** (session 10 / uiux-15; hardening session 11 /
 uiux-16 — the device-facts wipe fix, race-proof slot binding, rate
@@ -8,7 +8,7 @@ reference for the two-repo system:
 
 - **App** (this repo): Rust license client + command-layer gates + React
   activation/status UI + Microsoft Store MSIX packaging + Store auto-update.
-- **License server** (PRIVATE repo `heictojpgpics/diskbytes-license-server`):
+- **License server** (PRIVATE repo `heictojpgpics/diskgenie-license-server`):
   Cloudflare Worker + D1 — key registry, device binding, Ed25519-signed
   entitlement issuance, revocation, admin API.
 
@@ -16,7 +16,7 @@ reference for the two-repo system:
 
 ## 1. Product decision (owner, session 10)
 
-- DiskBytes has **no free tier**. WinDirStat is free; we charge because we
+- DiskGenie has **no free tier**. WinDirStat is free; we charge because we
   provide more value. Every capability except the **Monitor** tab requires
   an activated license.
 - Two purchase options: **yearly** (expires 365 days after issue) and
@@ -55,7 +55,7 @@ leaves the valuable property protected:
 
 The private Ed25519 signing key exists ONLY as a Worker secret. The app
 embeds only the public key. Consequence: a user who redirects
-`license.diskbytes.app` to a local mimic server gets structurally valid
+`license.diskgenie.app` to a local mimic server gets structurally valid
 JSON back, but the signature check fails → treated as a hard validation
 failure, never as a license.
 
@@ -109,13 +109,13 @@ token is still inside its grace window".
 Headers on every app request:
 
 ```
-X-DB-App: diskbytes
+X-DB-App: diskgenie
 X-DB-Version: <semver>
 X-DB-Timestamp: <unix ms>
 X-DB-Nonce: <16B hex, once per request>
 X-DB-Signature: hex(HMAC-SHA256(CLIENT_SECRET, ts || nonce || method || path || sha256(body)))
 Content-Type: application/json
-User-Agent: DiskBytes-License-Client/1
+User-Agent: DiskGenie-License-Client/1
 ```
 
 Worker: constant-time compare, ±300 s window, nonce single-use
@@ -237,7 +237,7 @@ Posture semantics (strict):
 
 ## 7. Frontend states
 
-Activation dialog ("Activate DiskBytes"):
+Activation dialog ("Activate DiskGenie"):
 1. Empty key → buttons **Later** / **Purchase Licence** (opens the
    purchase page URL in the browser). Purchase page (external, owner
    roadmap) collects name + email + billing address; the payment webhook
@@ -246,12 +246,12 @@ Activation dialog ("Activate DiskBytes"):
    **Activate** (with key icon, busy state "Activating…", typed error
    copy under the field, inline retry — transient network errors
    auto-retry twice with jitter before surfacing).
-3. Success → "DiskBytes Pro activated — thank you for purchasing!" state
+3. Success → "DiskGenie Pro activated — thank you for purchasing!" state
    (~1.4 s) → dialog closes itself; license chip flips to "Pro".
 
 Pro status card (License chip / dialog): **Pro** title, `Status: Active`
 chip, name, email, **Active until** `<date>` or `Lifetime`, tier row,
-"Thank you for purchasing DiskBytes." + Validate now / Deactivate /
+"Thank you for purchasing DiskGenie." + Validate now / Deactivate /
 Done. Grace shows the offline-days row; degraded shows reconnect copy.
 
 Locked tabs render `ActivationGate`: lock glyph, per-tab value pitch
@@ -263,7 +263,7 @@ untouched); a small dot marks locked tabs.
 
 `ci-license-sim` cargo feature (NEVER enabled in NSIS/MSIX/production
 builds; only `ui-screenshots.yml` builds with `--features
-ci-license-sim`): env `DISKBYTES_LICENSE_SIM=1` seeds a simulated
+ci-license-sim`): env `DISKGENIE_LICENSE_SIM=1` seeds a simulated
 activated state at boot; the `license_sim_set` command (feature-gated)
 lets the tour flip pro ↔ unlicensed. TourDriver gains steps:
 `license-status-card` (Pro status card — name/email/active
@@ -317,12 +317,12 @@ Server (Worker secrets via `wrangler secret put`, vars via
 - `ADMIN_API_KEY` — 32+ char random (secret)
 - `CLIENT_REQUEST_SECRET` — 64-hex HMAC secret, same value as the app
   const (secret; the app embeds it — see §2 L2 honesty note)
-- `D1 binding DB` → database `diskbytes-license` (wrangler.jsonc)
+- `D1 binding DB` → database `diskgenie-license` (wrangler.jsonc)
 - `TOKEN_TTL_DAYS` (var, default 14), `GRACE_24H` constants in code
 
 App (compile-time consts, `src-tauri/src/license.rs`):
 - `LICENSE_API_BASE` — e.g. `https://license.<your-domain>/` (change to
-  your deployed Worker URL; env `DISKBYTES_LICENSE_API` overrides for
+  your deployed Worker URL; env `DISKGENIE_LICENSE_API` overrides for
   tests/CI)
 - `LICENSE_PUBLIC_KEY` — 32-byte Ed25519 public key (hex const; must
   match the server's private key)

@@ -20,7 +20,7 @@ use super::wide;
 #[derive(Debug, Clone, Default)]
 pub struct RawMonitor {
     /// `GetSystemTimes` ticks (kernel INCLUDES idle).
-    pub ticks: diskbytes_core::monitor::CpuTicks,
+    pub ticks: diskgenie_core::monitor::CpuTicks,
     pub threads: u32,
     pub processes: u32,
     pub mem_total: u64,
@@ -37,7 +37,7 @@ pub struct RawMonitor {
     pub net_in: u64,
     pub net_out: u64,
     /// Fixed + removable volumes.
-    pub volumes: Vec<diskbytes_core::monitor::VolumeSample>,
+    pub volumes: Vec<diskgenie_core::monitor::VolumeSample>,
     /// (pid, name, kernel_100ns, user_100ns, working set) — PID 0
     /// (System Idle) excluded.
     pub procs: Vec<(u32, String, u64, u64, u64)>,
@@ -96,7 +96,7 @@ pub fn monitor_raw() -> RawMonitor {
 }
 
 /// `GetSystemTimes` as tick counters.
-fn system_times() -> diskbytes_core::monitor::CpuTicks {
+fn system_times() -> diskgenie_core::monitor::CpuTicks {
     use windows::Win32::Foundation::FILETIME;
     use windows::Win32::System::Threading::GetSystemTimes;
     let (mut idle, mut kernel, mut user) = (
@@ -107,10 +107,10 @@ fn system_times() -> diskbytes_core::monitor::CpuTicks {
     // SAFETY: three FILETIME out-structs, valid for the call.
     let ok = unsafe { GetSystemTimes(Some(&mut idle), Some(&mut kernel), Some(&mut user)).is_ok() };
     if !ok {
-        return diskbytes_core::monitor::CpuTicks::default();
+        return diskgenie_core::monitor::CpuTicks::default();
     }
     let q = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
-    diskbytes_core::monitor::CpuTicks {
+    diskgenie_core::monitor::CpuTicks {
         idle: q(idle),
         kernel: q(kernel),
         user: q(user),
@@ -312,7 +312,7 @@ fn memory_compression_ws(procs: &[(u32, String, u64, u64, u64)]) -> Option<u64> 
 }
 
 /// Fixed + removable mounted volumes with labels + free space.
-fn volume_samples() -> Vec<diskbytes_core::monitor::VolumeSample> {
+fn volume_samples() -> Vec<diskgenie_core::monitor::VolumeSample> {
     use windows::Win32::Storage::FileSystem::GetDriveTypeW;
     use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
     const DRIVE_REMOVABLE: u32 = 2; // winbase.h
@@ -364,7 +364,7 @@ fn volume_samples() -> Vec<diskbytes_core::monitor::VolumeSample> {
             )
         };
         let label_len = label.iter().position(|&c| c == 0).unwrap_or(label.len());
-        out.push(diskbytes_core::monitor::VolumeSample {
+        out.push(diskgenie_core::monitor::VolumeSample {
             root: root.clone(),
             label: String::from_utf16_lossy(&label[..label_len]),
             total,

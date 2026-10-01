@@ -23,12 +23,12 @@
 #      8 s poll budget + a 5 s boot wait — frame 00 lands at ~7 s.
 #
 # Usage (env-driven):
-#   APP_BIN=src-tauri/target/release/diskbytes  # required
+#   APP_BIN=src-tauri/target/release/diskgenie  # required
 #   OUT_DIR=$RUNNER_TEMP/shots                  # required
 #   FRAMES=48                                   # capture count
 #   CADENCE_MS=2600                             # frame cadence
 #   BOOT_WAIT_S=5                               # pre-first-frame settle
-#   LAUNCH_ENV="DISKBYTES_SCAN=... DISKBYTES_TOUR=1"  # app env
+#   LAUNCH_ENV="DISKGENIE_SCAN=... DISKGENIE_TOUR=1"  # app env
 #   DISPLAY_BUMP=1920x1080                      # 0 = skip the bump
 #   KEEP_RUNNING=1                              # do not quit at the end
 #   FULL_CONTEXT=1                              # also capture whole-screen frames
@@ -83,7 +83,7 @@ WINID_BIN=""
 make_winid_bin() {
   local src bin
   src=$(mktemp -t winid).swift
-  bin="$RUNNER_TEMP/diskbytes-winid"
+  bin="$RUNNER_TEMP/diskgenie-winid"
   cat >"$src" <<'SWIFT'
 import CoreGraphics
 let opts = CGWindowListOption(arrayLiteral: .optionOnScreenOnly)
@@ -91,7 +91,7 @@ guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String:
 for w in list {
     let owner = (w["kCGWindowOwnerName"] as? String ?? "").lowercased()
     let layer = (w["kCGWindowLayer"] as? Int) ?? 0
-    if layer == 0 && owner.contains("diskbytes") {
+    if layer == 0 && owner.contains("diskgenie") {
         if let num = w["kCGWindowNumber"] as? Int { print(num); exit(0) }
     }
 }
@@ -116,7 +116,7 @@ win_id() {
       var w = list[i];
       var owner = String(w.kCGWindowOwnerName || "").toLowerCase();
       var layer = Number(w.kCGWindowLayer || 0);
-      if (layer === 0 && owner.indexOf("diskbytes") !== -1) {
+      if (layer === 0 && owner.indexOf("diskgenie") !== -1) {
         console.log(String(w.kCGWindowNumber));
       }
     }

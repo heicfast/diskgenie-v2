@@ -1,6 +1,6 @@
-//! # diskbytes-core
+//! # diskgenie-core
 //!
-//! Platform-independent heart of `DiskBytes` (`BuildPrompt` §2, §4, §7, §13):
+//! Platform-independent heart of `DiskGenie` (`BuildPrompt` §2, §4, §7, §13):
 //! the in-memory node arena, roll-up, file categories, layout engines,
 //! quick-wins matching, age analysis, snapshot diffing and duplicate
 //! grouping. This crate must build on ANY host without a `WebView` shell so

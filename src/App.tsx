@@ -1,9 +1,9 @@
 /**
- * DiskBytes app shell (spec §3): 56px top bar (brand, tabs, window drag
+ * DiskGenie app shell (spec §3): 56px top bar (brand, tabs, window drag
  * region, Windows caption buttons / macOS traffic-light reserve) → body
  * (sidebar | main | inspector on Explore only), 1px dividers. Hosts the
  * 5 tabs, the inspector, the preview overlay, the cleanup queue popover,
- * and the license dialog. Also mounts the DISKBYTES_TOUR driver (dev
+ * and the license dialog. Also mounts the DISKGENIE_TOUR driver (dev
  * hook §15 — CI screenshot tours).
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
@@ -249,7 +249,7 @@ function AppShell() {
     // an explicit user toggle always wins over this one-time nudge.
     const v = useViewStore.getState();
     if (!v.inspectorTouched) v.setInspectorVisible(true);
-    // CI tour hook: the DISKBYTES_SCAN dev-hook target lands in Recents
+    // CI tour hook: the DISKGENIE_SCAN dev-hook target lands in Recents
     // here (user-started scans are pushed on the scanning transition
     // below — the dev hook bypasses the UI click). The RAW value
     // (e.g. "ThisPC" from an elevated --scan relaunch) is normalized

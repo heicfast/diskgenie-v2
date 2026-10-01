@@ -1,13 +1,13 @@
 [package]
-name = "diskbytes-core"
+name = "diskgenie-core"
 version = "0.1.0"
-description = "DiskBytes platform-independent core: node arena, roll-up, categories, layouts, quick-wins, format, age, snapshots, duplicate grouping."
-authors = ["DiskBytes"]
+description = "DiskGenie platform-independent core: node arena, roll-up, categories, layouts, quick-wins, format, age, snapshots, duplicate grouping."
+authors = ["DiskGenie"]
 edition = "2021"
 rust-version = "1.80"
 
 [lib]
-name = "diskbytes_core"
+name = "diskgenie_core"
 path = "src/lib.rs"
 
 [dependencies]

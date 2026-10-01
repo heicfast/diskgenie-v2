@@ -2,7 +2,7 @@
 
 use std::ffi::{c_void, CStr, CString};
 
-use diskbytes_core::monitor::{CpuTicks, VolumeSample};
+use diskgenie_core::monitor::{CpuTicks, VolumeSample};
 
 use super::dir::{is_browsable_volume, statfs_of, volume_inventory};
 use super::ffi::{

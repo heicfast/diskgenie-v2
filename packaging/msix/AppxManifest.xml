@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  DiskBytes MSIX manifest TEMPLATE (packaged by .github/workflows/msix-build.yml).
+  DiskGenie MSIX manifest TEMPLATE (packaged by .github/workflows/msix-build.yml).
 
   Placeholders (substituted in CI):
     __IDENTITY_NAME__  Partner Center package identity Name (the reserved
@@ -28,10 +28,10 @@
             Version="__VERSION__"
             ProcessorArchitecture="x64" />
   <Properties>
-    <DisplayName>DiskBytes</DisplayName>
-    <PublisherDisplayName>DiskBytes</PublisherDisplayName>
+    <DisplayName>DiskGenie</DisplayName>
+    <PublisherDisplayName>DiskGenie</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
-    <Description>DiskBytes — see exactly what fills your disk. Full-disk map, safe cleanup, duplicates, snapshots and a live monitor.</Description>
+    <Description>DiskGenie — see exactly what fills your disk. Full-disk map, safe cleanup, duplicates, snapshots and a live monitor.</Description>
   </Properties>
   <Resources>
     <Resource Language="en-US" />
@@ -44,10 +44,10 @@
     <Capability Name="internetClient" />
   </Capabilities>
   <Applications>
-    <Application Id="DiskBytes"
-                 Executable="DiskBytes.exe"
+    <Application Id="DiskGenie"
+                 Executable="DiskGenie.exe"
                  EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="DiskBytes"
+      <uap:VisualElements DisplayName="DiskGenie"
                           Description="See exactly what fills your disk"
                           BackgroundColor="#F05A28"
                           Square44x44Logo="Assets\Square44x44Logo.targetsize-44.png"
