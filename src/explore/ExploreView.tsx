@@ -217,9 +217,11 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
   // ── Shared actions ──────────────────────────────────────────────────
   const actions = useMemo(
     () => ({
-      // Open (session 14): folders drill in (the app's universal Open
-      // semantic); files launch their default app via open_node — the
-      // context menu and the inspector share this one contract.
+      // Open: folders drill in (the app's universal Open semantic);
+      // files launch their default app via open_node — the context
+      // menu's contract (the inspector's slot 3 moved on to
+      // "Duplicates here" in session 15; drill/launch still live here,
+      // on double-click, and in the preview overlay).
       open: (id: number, isDir: boolean) => {
         track(EVENTS.searchUsed, { mode });
         if (isDir) {

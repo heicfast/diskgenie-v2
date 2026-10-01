@@ -13,3 +13,5 @@ upload/
 # Local visual-audit captures (agent-browser sessions) — not CI artifacts
 ci-artifacts/local-audit/
 ci-artifacts/s14/
+ci-artifacts/s15/
+scripts/scratch-win/target/

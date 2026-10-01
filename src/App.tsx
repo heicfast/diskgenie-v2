@@ -28,7 +28,7 @@ import { useLicenseStore, attachLicenseEvents } from "./state/license";
 import { bootstrapMonitor } from "./state/monitor";
 import { bootstrapDupes } from "./state/dupes";
 import { preloadApplications } from "./state/applications";
-import { getBreadcrumb, openNode, type CrumbData } from "./viz/exploreIpc";
+import { getBreadcrumb, getNodeDetails, openNode, type CrumbData } from "./viz/exploreIpc";
 import { invoke } from "./lib/ipc";
 import { pushRecent, recentTargetLabel } from "./sidebar/RecentSection";
 import { TourDriver } from "./shell/TourDriver";
@@ -278,16 +278,29 @@ function AppShell() {
     }
   }, [status]);
 
-  // Breadcrumb chain refreshes on navigation + generation changes.
+  // Breadcrumb chain + THE view-location resolver (session 15): one
+  // effect resolves "where is the view" (crumbs for the top bar, the
+  // path + name into the explore store) on every navigation and
+  // generation change. The store's viewPath is the single source of
+  // truth every sidebar consumer derives from — before this, each
+  // section re-resolved it ad-hoc and the Disk Storage card keyed on
+  // [generation, status], neither of which changes on a C:↔D:
+  // navigation INSIDE the standing tree (the owner's flip report: the
+  // main view moved to D:, the sidebar kept C:'s card).
   useEffect(() => {
     if (status !== "done") {
       setCrumbs([]);
+      useExploreStore.setState({ viewPath: "", viewName: null });
       return;
     }
     let disposed = false;
     void (async () => {
       const chain = await getBreadcrumb(generation, currentFolder).catch(() => null);
       if (!disposed && chain) setCrumbs(chain);
+      const d = await getNodeDetails(generation, currentFolder).catch(() => null);
+      if (!disposed && d) {
+        useExploreStore.setState({ viewPath: d.path, viewName: d.name });
+      }
     })();
     return () => {
       disposed = true;

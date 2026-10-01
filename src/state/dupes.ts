@@ -39,6 +39,10 @@ export interface DupesResult {
   groups: DupeGroup[];
   wastedTotal: number;
   files: number;
+  /** The folder the scan was scoped to (session 15 "Duplicates
+   * here": null = the whole tree — the groups are byte-identical
+   * files fully INSIDE the scope). */
+  scopePath: string | null;
 }
 
 /** The `dupes-progress` event payload (camelCase DTO from Rust). */
@@ -64,6 +68,9 @@ export interface DupesStatusSnapshot {
   progress: DupesProgress | null;
   result: DupesResult | null;
   error: string | null;
+  /** The scoped folder of the run / sticky result (null = whole
+   * tree) — a remounted view shows the scope it re-attached to. */
+  scopePath: string | null;
 }
 
 interface DupesStore {
@@ -75,8 +82,13 @@ interface DupesStore {
   progress: DupesProgress | null;
   result: DupesResult | null;
   error: string | null;
-  /** Start (or join) a scan against `generation`. Re-entrant safe. */
-  start: (generation: number) => void;
+  /** The folder the CURRENT run (or sticky result) is scoped to —
+   * null = whole tree (session 15 "Duplicates here"). */
+  scopePath: string | null;
+  /** Start (or join) a scan against `generation` — optionally scoped
+   * to a folder's subtree (`node`: the inspector's launchpad, which
+   * also passes the folder's PATH for the busy-row framing). */
+  start: (generation: number, node?: number, scopePath?: string) => void;
   /** Ask the backend for its app-lifetime status (mount re-attach). */
   refresh: () => Promise<void>;
   /** Cooperative cancel (quiet reset — no error banner). */
@@ -115,11 +127,22 @@ export const useDupesStore = create<DupesStore>((set, get) => ({
   progress: null,
   result: null,
   error: null,
+  scopePath: null,
 
-  start: (generation) => {
+  start: (generation, node, scopePath) => {
     if (get().running) return; // the engine also rejects ("already running")
-    set({ running: true, cancelling: false, progress: null, result: null, error: null });
-    void invoke<DupesResult>("find_duplicates", { generation })
+    set({
+      running: true,
+      cancelling: false,
+      progress: null,
+      result: null,
+      error: null,
+      // The optimistic scope (the caller's framing) — the RESULT's
+      // scopePath is authoritative (the backend normalizes a root
+      // scope to null).
+      scopePath: scopePath ?? null,
+    });
+    void invoke<DupesResult>("find_duplicates", { generation, node: node ?? null })
       .then((res) => {
         // A tree swap (fresh scan / cleanup commit) landed while the
         // engine hashed: the groups reference the OLD arena — drop them
@@ -135,17 +158,26 @@ export const useDupesStore = create<DupesStore>((set, get) => ({
           progress: null,
           result: stillCurrent ? res : null,
           error: null,
+          // The backend owns the framing: it normalizes a root scope
+          // to null and reports the real folder path otherwise.
+          scopePath: stillCurrent ? res.scopePath : null,
         });
         if (stillCurrent) {
-          track(EVENTS.duplicatesScanCompleted, { groups: res.groups.length, wasted: res.wastedTotal });
+          track(EVENTS.duplicatesScanCompleted, {
+            groups: res.groups.length,
+            wasted: res.wastedTotal,
+            scoped: res.scopePath != null,
+          });
         }
       })
       .catch((e: unknown) => {
         // Cancellation is a USER action, not a failure — quiet reset.
+        // Either way the scope framing dies with the run: a retry
+        // re-declares it through start()'s own arguments.
         if (!/cancel/i.test(String(e))) {
-          set({ running: false, cancelling: false, progress: null, error: userFacingError(e) });
+          set({ running: false, cancelling: false, progress: null, error: userFacingError(e), scopePath: null });
         } else {
-          set({ running: false, cancelling: false, progress: null, error: null });
+          set({ running: false, cancelling: false, progress: null, error: null, scopePath: null });
         }
       });
   },
@@ -162,6 +194,7 @@ export const useDupesStore = create<DupesStore>((set, get) => ({
         progress: st.running ? st.progress : null,
         result: st.result,
         error: st.error,
+        scopePath: st.scopePath,
       });
     } catch {
       // Command missing (older engine) — keep local state.
@@ -181,7 +214,7 @@ export const useDupesStore = create<DupesStore>((set, get) => ({
   invalidate: (generation) => {
     const s = get();
     if (s.result && s.result.generation !== generation) {
-      set({ result: null, error: null, progress: null });
+      set({ result: null, error: null, progress: null, scopePath: null });
     }
     // A running scan against a dead tree: the backend's start_scan
     // already bumped the cancel generation; the invoke resolves on its
@@ -222,5 +255,12 @@ export function __resetDupesForTests(): void {
   pending = null;
   if (flushTimer !== null) window.clearTimeout(flushTimer);
   flushTimer = null;
-  useDupesStore.setState({ running: false, cancelling: false, progress: null, result: null, error: null });
+  useDupesStore.setState({
+    running: false,
+    cancelling: false,
+    progress: null,
+    result: null,
+    error: null,
+    scopePath: null,
+  });
 }

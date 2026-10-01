@@ -2,9 +2,12 @@
  * Item context menu (spec §7): Open / Preview / Show in Explorer /
  * Copy Path / Add to Cleanup — protected items disable stage with a
  * tooltip ("Windows manages this item"), cloud items refuse preview.
- * "Open" (session 14): folders drill in (the app's Open semantic);
- * files launch their default app (`open_node`) — same behavior as the
- * inspector's Open and the preview overlay, one consistent contract.
+ * "Open": folders drill in (the app's Open semantic); files launch
+ * their default app (`open_node`) — the same behavior as the preview
+ * overlay's open and the mode rows' double-click, one consistent
+ * contract. (The INSPECTOR's grid slot retired Open in session 15 for
+ * "Duplicates here" — a right-click menu keeping Open/Preview side by
+ * side matches Explorer's own pattern.)
  */
 import { useEffect, useRef, useState } from "react";
 import { EyeIcon, FolderOpenIcon, CopyIcon, LockKeyholeIcon, PlusIcon, ExternalLinkIcon } from "./Icon";

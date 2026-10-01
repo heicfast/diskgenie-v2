@@ -28,6 +28,15 @@ import { useScanStore } from "../state/scan";
 import { useViewStore } from "../state/view";
 import { EVENTS, track } from "../lib/analytics";
 
+/** The drive the view is currently inside ("C:" from "C:\Users\…";
+ *  null at the whole-PC view or while the location is unknown) — the
+ *  chips' "you are here" marker, derived from the same single source
+ *  of truth the storage card probes. */
+function currentDriveOf(viewPath: string): string | null {
+  if (viewPath.length < 2 || viewPath[1] !== ":") return null;
+  return `${viewPath[0]}:`;
+}
+
 interface DriveChip {
   letter: string;
   target: string;
@@ -40,6 +49,7 @@ export function ScanSection() {
   const generation = useScanStore((s) => s.generation);
   const setTab = useViewStore((s) => s.setTab);
   const openFolder = useExploreStore((s) => s.openFolder);
+  const viewPath = useExploreStore((s) => s.viewPath);
   const [drives, setDrives] = useState<DriveChip[]>([]);
   const [home, setHome] = useState<string | null>(null);
 
@@ -176,19 +186,24 @@ export function ScanSection() {
       </div>
       {drives.length > 0 && (
         <div className="db-drives" role="group" aria-label="Drives">
-          {drives.map((d) => (
-            <button
-              key={d.target}
-              type="button"
-              className="db-chip"
-              disabled={busy}
-              onClick={() => void openDrive(d)}
-              title={`Open ${d.letter}`}
-            >
-              <HardDriveIcon size={12} />
-              {d.letter}
-            </button>
-          ))}
+          {drives.map((d) => {
+            const current = currentDriveOf(viewPath) === d.letter;
+            return (
+              <button
+                key={d.target}
+                type="button"
+                className="db-chip"
+                data-active={current || undefined}
+                aria-pressed={current}
+                disabled={busy}
+                onClick={() => void openDrive(d)}
+                title={current ? `You are viewing ${d.letter}` : `Open ${d.letter}`}
+              >
+                <HardDriveIcon size={12} />
+                {d.letter}
+              </button>
+            );
+          })}
         </div>
       )}
     </section>

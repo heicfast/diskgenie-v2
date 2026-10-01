@@ -57,8 +57,8 @@ const resetStores = (): void => {
     turboFallback: null,
     turboReport: null,
   });
-  useDupesStore.setState({ running: false, cancelling: false, progress: null, result: null, error: null });
-  useExploreStore.setState({ currentFolder: 0, selectedNode: null, folderStack: [] });
+  useDupesStore.setState({ running: false, cancelling: false, progress: null, result: null, error: null, scopePath: null });
+  useExploreStore.setState({ currentFolder: 0, selectedNode: null, folderStack: [], viewPath: "", viewName: null });
 };
 
 describe("startScan instant restore (session 14 drive-flip fix)", () => {
@@ -109,7 +109,7 @@ describe("startScan instant restore (session 14 drive-flip fix)", () => {
 
   it("a restored adoption retires a stale duplicates result (the unified invalidation)", async () => {
     useDupesStore.setState({
-      result: { generation: 999, groups: [], wastedTotal: 0, files: 0 },
+      result: { generation: 999, groups: [], wastedTotal: 0, files: 0, scopePath: null },
     });
     setMockBackend(async (cmd) => {
       if (cmd === "start_scan") {
@@ -155,7 +155,7 @@ describe("adoptDone unification (the reconcile gap)", () => {
     // path now runs the SAME invalidations as the event path (the
     // session-14 latent bug: it skipped them).
     useDupesStore.setState({
-      result: { generation: 999, groups: [], wastedTotal: 0, files: 0 },
+      result: { generation: 999, groups: [], wastedTotal: 0, files: 0, scopePath: null },
     });
     setMockBackend(async (cmd) => {
       if (cmd === "start_scan") {

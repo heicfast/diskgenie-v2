@@ -183,6 +183,12 @@ pub struct DupesResult {
     pub wasted_total: u64,
     /// Files considered.
     pub files: u64,
+    /// The folder the scan was scoped to (session 15 "Duplicates
+    /// here": `None` = the whole tree; a path = the subtree walked).
+    /// Byte-identical groups found INSIDE the scope — copies that live
+    /// outside it are not candidates, so "wasted" is reclaimable in
+    /// context, not a claim about the rest of the disk.
+    pub scope_path: Option<String>,
 }
 
 /// Live progress snapshot for the `dupes-progress` event (camelCase
@@ -534,20 +540,50 @@ fn hardlink_identity(_path: &std::path::Path) -> Option<(u64, u64)> {
     None
 }
 
+/// Resolve the scan scope (session 15 "Duplicates here"): the walk
+/// start node + the folder path the status/result report. Unknown
+/// nodes and FILES reject (the UI's disabled-file contract has a
+/// server-side twin); a scope at the tree ROOT is the whole-tree run
+/// (normalized to `None` so the status record, the result and the tab
+/// all frame it identically).
+///
+/// # Errors
+/// String error for an unknown node or a file node.
+fn resolve_scope(tree: &Tree, node: Option<u32>) -> Result<(u32, Option<String>), String> {
+    match node {
+        None => Ok((tree.root, None)),
+        Some(id) if id == tree.root => Ok((tree.root, None)),
+        Some(id) => {
+            let n = tree.node(id).ok_or_else(|| format!("unknown node {id}"))?;
+            if !n.is_dir() {
+                return Err("Duplicates scans a folder — select a folder.".into());
+            }
+            Ok((id, Some(tree.node_path(id))))
+        }
+    }
+}
+
 /// Find duplicates in the current tree (spec §10 3-pass) with live
 /// progress, cooperative cancellation, and an APP-LIFETIME state
 /// record (page switches can no longer orphan the run: the UI
 /// re-attaches via [`dupes_status`]).
 ///
+/// `node` scopes the scan to a folder's subtree (session 15
+/// "Duplicates here" — the inspector's launchpad): the collect walk
+/// starts there, so only byte-identical groups fully INSIDE the scope
+/// are reported. `None` (the tab's own button) walks the whole tree.
+///
 /// # Errors
 /// String error when no scan exists, the generation is stale, a run
-/// is already in flight ("already running" — the UI no-ops), the
-/// pipeline was cancelled, or the blocking thread failed.
+/// is already in flight ("already running" — the UI no-ops), the node
+/// is unknown or not a folder, the pipeline was cancelled, or the
+/// blocking thread failed.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
 #[allow(clippy::print_stderr)] // liveness tracing (doc 07 perf-watchdog pattern)
 pub async fn find_duplicates(
     generation: u64,
+    node: Option<u32>,
     app: AppHandle,
     state: State<'_, AppState>,
     license: State<'_, crate::commands::license::LicenseManager>,
@@ -572,6 +608,9 @@ pub async fn find_duplicates(
         }
         Arc::clone(tree)
     };
+    // Resolve the scope BEFORE marking running: a bad node must
+    // reject without touching the run state.
+    let (start, scope_path) = resolve_scope(&tree, node)?;
     // The run-state gate: mark running BEFORE spawning so a same-tick
     // second click (or a stale view's invoke) is rejected cleanly
     // instead of stacking a second pipeline. The sticky result dies
@@ -586,8 +625,13 @@ pub async fn find_duplicates(
         st.progress = None;
         st.result = None;
         st.error = None;
+        st.scope_path.clone_from(&scope_path);
     }
-    eprintln!("[dupes] start gen={generation} tree_nodes={}", tree.len());
+    eprintln!(
+        "[dupes] start gen={generation} scope={:?} tree_nodes={}",
+        scope_path,
+        tree.len()
+    );
     let t_start = Instant::now();
     let ctl = Arc::new(DupesCtl::live(app, Arc::clone(&state.dupes_cancel)));
     let status_out = Arc::clone(&state.dupes_status);
@@ -623,7 +667,7 @@ pub async fn find_duplicates(
     // place (below) settles the record for every outcome.
     let joined = tauri::async_runtime::spawn_blocking(move || {
         eprintln!("[dupes] spawn_blocking task ENTERED");
-        let out = compute_dupes(&tree, compute_ctl.as_ref());
+        let out = compute_dupes(&tree, compute_ctl.as_ref(), start);
         eprintln!("[dupes] compute finished at {:?}", started.elapsed());
         out
     })
@@ -680,6 +724,7 @@ pub fn dupes_status(state: State<'_, AppState>) -> DupesStatusView {
         progress: st.progress.clone(),
         result: st.result.clone(),
         error: st.error.clone(),
+        scope_path: st.scope_path.clone(),
     }
 }
 
@@ -692,6 +737,9 @@ pub struct DupesStatusView {
     pub progress: Option<DupesProgress>,
     pub result: Option<DupesResult>,
     pub error: Option<String>,
+    /// The scoped folder (None = whole tree) — a remounted view shows
+    /// the scope it re-attached to.
+    pub scope_path: Option<String>,
 }
 
 /// Cancel the running duplicates scan. Idempotent; safe when nothing
@@ -712,17 +760,31 @@ pub fn cancel_duplicates(state: State<'_, AppState>) -> u64 {
 /// scanning neighbours) instead of the global pool's work-stolen
 /// random order; see the pool docs for the throughput story.
 ///
+/// `start` scopes the collect walk (session 15 "Duplicates here"):
+/// everything downstream — size buckets, screens, hashes, ranking —
+/// operates on the collected candidate list, so a subtree start scopes
+/// the WHOLE pipeline with no per-pass changes.
+///
 /// # Errors
 /// `Err("cancelled")` when the user cancelled mid-pipeline.
 #[allow(clippy::too_many_lines)] // 3-pass pipeline; the pass structure is the spec
 #[allow(clippy::print_stderr)] // liveness tracing
-fn compute_dupes(tree: &Tree, ctl: &DupesCtl) -> Result<DupesResult, String> {
+fn compute_dupes(tree: &Tree, ctl: &DupesCtl, start: u32) -> Result<DupesResult, String> {
     // Pass 0: collect live files. Cloud placeholders NEVER open (R7.3)
     // and Windows-managed (protected) files never hash or stage (§4 —
     // pagefile.sys is not a "duplicate" anyone should reclaim).
+    // The walk starts at `start` (the tree root for whole-tree scans,
+    // the scoped folder for "Duplicates here") — the scope decides
+    // which files are candidates; nothing downstream knows the
+    // difference.
     ctl.set_phase(PHASE_COLLECT, 0, 0);
+    // The result's scope framing, resolved once where `start` lives
+    // (both finish_pipeline routes carry it through): None when the
+    // walk covered the whole tree (the tab's default framing), the
+    // folder's path for "Duplicates here".
+    let scope_path: Option<String> = (start != tree.root).then(|| tree.node_path(start));
     let mut candidates: Vec<Candidate> = Vec::new();
-    tree.walk(tree.root, |id, n| {
+    tree.walk(start, |id, n| {
         if !n.is_dir()
             && !n.is_removed()
             && !n.is_cloud_placeholder()
@@ -827,7 +889,7 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl) -> Result<DupesResult, String> {
             .into_iter()
             .filter(|(_, g)| g.len() >= 2)
             .collect();
-        return finish_pipeline(tree, ctl, &candidates, total_files, &survivors);
+        return finish_pipeline(tree, ctl, &candidates, total_files, &survivors, scope_path);
     }
     let mid_bytes: u64 = mid_candidates.len() as u64 * 2 * SAMPLE;
     ctl.set_phase(PHASE_SCREEN, mid_candidates.len() as u64, mid_bytes);
@@ -885,7 +947,7 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl) -> Result<DupesResult, String> {
             (kept.len() >= 2).then_some(((size, digest), kept))
         })
         .collect();
-    finish_pipeline(tree, ctl, &candidates, total_files, &survivors)
+    finish_pipeline(tree, ctl, &candidates, total_files, &survivors, scope_path)
 }
 
 /// Pass 3 + ranking: shared tail for both routes (with/without the
@@ -902,6 +964,7 @@ fn finish_pipeline(
     candidates: &[Candidate],
     total_files: u64,
     survivors: &[Bucket],
+    scope_path: Option<String>,
 ) -> Result<DupesResult, String> {
     // Every survivor full-hashes now (the XXH3 screens decide nothing
     // on their own — SHA-256 is the authority for every group).
@@ -996,6 +1059,10 @@ fn finish_pipeline(
         groups: views,
         wasted_total,
         files: total_files,
+        // The caller-computed scope (compute_dupes resolved it from
+        // `start`: None for whole-tree runs, the folder path for
+        // "Duplicates here").
+        scope_path,
     })
 }
 
@@ -1010,6 +1077,34 @@ mod tests {
         // B starts at size-SAMPLE = PREFIX+SAMPLE).
         let size = PREFIX + 2 * SAMPLE;
         assert_eq!(PREFIX + SAMPLE, size - SAMPLE);
+    }
+
+    #[test]
+    fn result_dto_carries_scope_path() {
+        // The session-15 shape: the tab's scope framing reads
+        // scopePath — serde must camelCase it (and the status view's
+        // twin). The expected fragment is BUILT by serde itself so the
+        // backslash escaping of real Windows paths can't drift.
+        let r = DupesResult {
+            generation: 7,
+            groups: vec![],
+            wasted_total: 0,
+            files: 0,
+            scope_path: Some("C:\\Users\\dev".into()),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let scope_json = serde_json::to_string(&r.scope_path).unwrap();
+        assert!(json.contains(&format!("\"scopePath\":{scope_json}")));
+        assert!(serde_json::to_string(&DupesStatusView {
+            running: false,
+            generation: 7,
+            progress: None,
+            result: None,
+            error: None,
+            scope_path: None,
+        })
+        .unwrap()
+        .contains("\"scopePath\":null"));
     }
 
     #[test]
@@ -1254,7 +1349,7 @@ mod tests {
             // The exact production pipeline (quiet ctl, no events).
             let t0 = Instant::now();
             let ctl = DupesCtl::quiet(Arc::new(AtomicU64::new(0)));
-            let result = compute_dupes(&tree, &ctl).expect("pipeline");
+            let result = compute_dupes(&tree, &ctl, tree.root).expect("pipeline");
             let elapsed = t0.elapsed();
 
             // Exactly 2 groups: the 8 MiB triple and the 300 KiB pair.
@@ -1549,7 +1644,7 @@ mod tests {
 
             let t0 = Instant::now();
             let ctl = DupesCtl::quiet(Arc::new(AtomicU64::new(0)));
-            let result = compute_dupes(&tree, &ctl).expect("pipeline");
+            let result = compute_dupes(&tree, &ctl, tree.root).expect("pipeline");
             let elapsed = t0.elapsed();
             let read_bytes = ctl.bytes_all.load(Ordering::Relaxed);
             let mps = read_bytes as f64 / elapsed.as_secs_f64() / (mib as f64);
@@ -1662,7 +1757,7 @@ mod tests {
             // Simulate a cancel landing after collect: bump before the
             // prefix pass checks it.
             gen.fetch_add(1, Ordering::SeqCst);
-            let out = compute_dupes(&tree, &ctl);
+            let out = compute_dupes(&tree, &ctl, tree.root);
             assert_eq!(out.err(), Some("cancelled".to_string()));
         }
     }

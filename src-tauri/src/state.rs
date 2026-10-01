@@ -69,6 +69,11 @@ pub struct DupesStatus {
     pub result: Option<DupesResult>,
     /// Terminal error, if the last run failed (cancellations excluded).
     pub error: Option<String>,
+    /// The folder the run is scoped to (session 15 "Duplicates here":
+    /// the inspector hands a node to scan INSIDE; `None` = the whole
+    /// tree). Mirrored into the result and the status view so a
+    /// remounted Duplicates tab shows the scope it re-attached to.
+    pub scope_path: Option<String>,
 }
 
 /// How many finished trees the flip cache keeps (the current tree is

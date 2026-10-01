@@ -204,6 +204,18 @@
   color: var(--text);
   border-color: var(--control-active);
 }
+/* "You are here" (session 15): the chip of the drive the view is
+ * inside — the same ink-tint language as the mode picker's active
+ * chip, so navigation state reads identically everywhere. */
+.db-chip[data-active="true"] {
+  background: var(--ink-soft);
+  color: var(--ink-strong);
+  border-color: color-mix(in srgb, var(--ink) 38%, transparent);
+}
+.db-chip[data-active="true"]:hover {
+  background: var(--ink-soft);
+  color: var(--ink-strong);
+}
 
 /* ── Recent ─────────────────────────────────────────────────────────── */
 .db-recent {

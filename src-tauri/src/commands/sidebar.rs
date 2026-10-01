@@ -81,8 +81,10 @@ pub fn resolve_path(generation: u64, path: String, state: State<'_, AppState>) -
     tree.resolve_display_path(&path)
 }
 
-/// The disk storage snapshot (spec §6.5) for the volume containing the
-/// current scan root (system drive when there is no scan).
+/// The disk storage snapshot (spec §6.5): the volume containing the
+/// current VIEW (session 15 — the sidebar follows navigation, so a
+/// C:↔D: flip swaps the card), the scan root when no view path is
+/// offered, the system drive when there is no scan.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageInfo {
@@ -94,22 +96,139 @@ pub struct StorageInfo {
     pub used_pct: f64,
 }
 
-/// Read the storage snapshot.
+/// Split a display path into `\`-`/` segments (the core
+/// `resolve_display_path` convention — matching must agree with the
+/// path resolver that drives navigation).
+fn path_segments(path: &str) -> Vec<String> {
+    path.split(['\\', '/'])
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The longest tree root whose segments prefix `path` (case-insensitive
+/// — `eq_ignore_ascii_case`, exactly like `Tree::resolve_display_path`).
+fn containing_root<'a>(roots: &'a [String], path: &str) -> Option<&'a String> {
+    let incoming = path_segments(path);
+    let mut best: Option<(usize, &String)> = None;
+    for root in roots {
+        let root_segs = path_segments(root);
+        if root_segs.is_empty() || root_segs.len() > incoming.len() {
+            continue;
+        }
+        if root_segs
+            .iter()
+            .zip(&incoming)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+            && best.map_or(true, |(l, _)| root_segs.len() > l)
+        {
+            best = Some((root_segs.len(), root));
+        }
+    }
+    best.map(|(_, r)| r)
+}
+
+/// Volume label for the card: bare on single-root scans (the reference
+/// design's "Macintosh HD"); on multi-root trees two volumes can share
+/// a label ("Local Disk" ×2), so the drive letter rides along.
+fn volume_label(raw: &str, root: &str, multi_root: bool) -> String {
+    let label = raw.trim_end_matches('\0').trim();
+    if !multi_root {
+        return label.to_string();
+    }
+    // The letter from the root's first segment ("C:" from "C:\").
+    let letter = root
+        .split(['\\', '/'])
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_default();
+    if letter.is_empty() {
+        label.to_string()
+    } else {
+        format!("{label} ({letter})")
+    }
+}
+
+/// Read the storage snapshot for the CURRENT VIEW (`path` from the
+/// sidebar's view-location store) — the volume containing that path.
+/// The whole-PC view (the virtual root label, or any path outside the
+/// tree) aggregates every root of the standing tree instead, so the
+/// card answers "how full is what I'm looking at" at every level.
 ///
 /// # Errors
 /// String error when the volume cannot be queried.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
-pub fn disk_storage(state: State<'_, AppState>) -> Result<StorageInfo, String> {
-    // Prefer the current scan root's volume; fall back to the system
-    // drive (spec §6.5).
-    let path: Option<String> = {
+pub fn disk_storage(
+    path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<StorageInfo, String> {
+    let roots: Vec<String> = {
         let guard = state.tree.read();
         guard
             .as_ref()
-            .and_then(|t| t.roots.first().map(|r| r.path.clone()))
+            .map(|t| t.roots.iter().map(|r| r.path.clone()).collect())
+            .unwrap_or_default()
     };
-    let probe = path.unwrap_or_else(|| {
+    // The view's volume when the path resolves inside the tree…
+    if let Some(view) = path.as_deref() {
+        if let Some(root) = containing_root(&roots, view) {
+            let snap = crate::platform::os::disk_storage(root)
+                .ok_or_else(|| "Couldn't read this volume's free space.".to_string())?;
+            let label = volume_label(
+                &String::from_utf16_lossy(&snap.label.0),
+                root,
+                roots.len() > 1,
+            );
+            return Ok(StorageInfo {
+                label,
+                total: snap.total,
+                used: snap.used,
+                free: snap.free,
+                used_pct: if snap.total > 0 {
+                    snap.used as f64 / snap.total as f64
+                } else {
+                    0.0
+                },
+            });
+        }
+    }
+    // …the multi-root aggregate for the whole-PC view (and any path the
+    // tree doesn't cover): sums across every probeable root, labelled
+    // with the app's own whole-scan name. A root that fails to probe
+    // (an unplugged removable) is skipped, not fatal — the card stays
+    // honest for the volumes that are there.
+    if roots.len() > 1 {
+        let mut total = 0u64;
+        let mut used = 0u64;
+        let mut free = 0u64;
+        let mut probed = 0usize;
+        for root in &roots {
+            if let Some(snap) = crate::platform::os::disk_storage(root) {
+                total = total.saturating_add(snap.total);
+                used = used.saturating_add(snap.used);
+                free = free.saturating_add(snap.free);
+                probed += 1;
+            }
+        }
+        if probed > 0 {
+            return Ok(StorageInfo {
+                label: "This PC".to_string(),
+                total,
+                used,
+                free,
+                used_pct: if total > 0 {
+                    used as f64 / total as f64
+                } else {
+                    0.0
+                },
+            });
+        }
+        return Err("Couldn't read this volume's free space.".into());
+    }
+    // Single root / no view path / no tree: the standing root's volume
+    // (the pre-session-15 behavior), else the system drive (spec §6.5).
+    let probe = roots.first().cloned().unwrap_or_else(|| {
         if cfg!(target_os = "macos") {
             "/".to_string()
         } else {
@@ -118,12 +237,9 @@ pub fn disk_storage(state: State<'_, AppState>) -> Result<StorageInfo, String> {
     });
     let snap = crate::platform::os::disk_storage(&probe)
         .ok_or_else(|| "Couldn't read this volume's free space.".to_string())?;
-    let label = String::from_utf16_lossy(&snap.label.0)
-        .trim_end_matches('\0')
-        .trim()
-        .to_string();
+    let label = String::from_utf16_lossy(&snap.label.0);
     Ok(StorageInfo {
-        label,
+        label: volume_label(&label, &probe, false),
         total: snap.total,
         used: snap.used,
         free: snap.free,
@@ -408,6 +524,56 @@ pub fn file_types(generation: u64, state: State<'_, AppState>) -> Result<Vec<Typ
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn containing_root_matches_longest_prefix() {
+        // The multi-root This-PC tree: a view path resolves to ITS drive.
+        let roots = vec!["C:\\".to_string(), "D:\\".to_string()];
+        assert_eq!(
+            containing_root(&roots, "C:\\Users\\dev"),
+            Some(&"C:\\".to_string())
+        );
+        assert_eq!(
+            containing_root(&roots, "d:\\Games\\Steam"),
+            Some(&"D:\\".to_string())
+        );
+        // The virtual-root LABEL matches nothing → the aggregate path.
+        assert_eq!(containing_root(&roots, "This PC"), None);
+    }
+
+    #[test]
+    fn containing_root_prefers_nested_folder_scan_root() {
+        // A folder scan's root is itself the longest matching prefix.
+        let roots = vec!["C:\\Users\\dev".to_string()];
+        assert_eq!(
+            containing_root(&roots, "C:\\Users\\dev\\Desktop"),
+            Some(&"C:\\Users\\dev".to_string())
+        );
+        assert_eq!(
+            containing_root(&roots, "C:\\Users\\dev"),
+            Some(&"C:\\Users\\dev".to_string())
+        );
+        // Outside the scan (a different user's folder): no match.
+        assert_eq!(containing_root(&roots, "C:\\Windows"), None);
+    }
+
+    #[test]
+    fn volume_letter_only_on_multi_root() {
+        // Single-root scans keep the bare label (the reference design).
+        assert_eq!(volume_label("Local Disk", "C:\\", false), "Local Disk");
+        // Multi-root trees disambiguate same-named volumes.
+        assert_eq!(volume_label("Local Disk", "C:\\", true), "Local Disk (C:)");
+        assert_eq!(volume_label("Games", "D:\\", true), "Games (D:)");
+        // A label-less root degrades to the bare label.
+        assert_eq!(volume_label("Games", "", true), "Games");
+    }
+
+    #[test]
+    fn path_segments_split_both_separators() {
+        assert_eq!(path_segments("C:\\Users\\dev"), vec!["C:", "Users", "dev"]);
+        assert_eq!(path_segments("/Users/dev"), vec!["Users", "dev"]);
+        assert_eq!(path_segments("This PC"), vec!["This PC"]);
+    }
 
     #[test]
     fn quick_win_row_shape() {

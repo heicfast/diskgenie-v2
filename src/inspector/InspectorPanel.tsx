@@ -3,20 +3,25 @@
  * name + kind, full path (selectable mono), big size + % of scan,
  * Details card with the conditional savings (green) / cluster overhead
  * (secondary) rows, Largest Inside ranked list, action buttons
- * (Reveal / Preview / Open / Copy Path), and the Add-to-Cleanup
- * toggle (disabled + tooltip for protected items).
+ * (Reveal / Preview / Duplicates here / Copy Path), and the
+ * Add-to-Cleanup toggle (disabled + tooltip for protected items).
  *
- * "Open" (session 14, replaces the dead Focus button): folders drill
- * in — the app's universal Open semantic (canvas click, list row,
- * context menu); files launch their default app (`open_node` —
- * ShellExecuteW "open", the preview overlay's affordance promoted to
- * the always-visible action row). The ONE behavior every file
- * manager's inspector needs: check what a file IS before deleting it.
+ * "Duplicates here" (session 15 — the Focus slot's second life): the
+ * one question this panel couldn't answer — "is this big folder full
+ * of copies?" The button scopes the 3-pass engine to the folder's
+ * subtree and hands off to the Duplicates tab (byte-identical groups
+ * fully INSIDE the folder, each stageable from there). The slot's
+ * predecessors: Focus (DaisyDisk's map zoom — dead on arrival for
+ * files, never wired), then Open (session 14 — retired this session:
+ * Preview already answers "what is this file" in-app, and folders
+ * drill on double-click, so a third open-like action no longer earned
+ * its place in the 2×2). Files disable the button honestly — the
+ * engine walks folders.
  */
 import { useEffect, useRef, useState } from "react";
-import { CopyIcon, EyeIcon, ExternalLinkIcon, FolderIcon, FolderOpenIcon, HardDriveIcon, LockKeyholeIcon, SparklesIcon, Trash2Icon, CheckIcon, CloudIcon, TONE_KEYS } from "../components/Icon";
+import { CopyIcon, EyeIcon, ExternalLinkIcon, FolderIcon, HardDriveIcon, LockKeyholeIcon, SearchIcon, SparklesIcon, Trash2Icon, CheckIcon, CloudIcon, TONE_KEYS } from "../components/Icon";
 import { categoryIcon } from "../components/Icon";
-import { getNodeDetails, openNode, type NodeDetailsData } from "../viz/exploreIpc";
+import { getNodeDetails, type NodeDetailsData } from "../viz/exploreIpc";
 import { invoke } from "../lib/ipc";
 import { bytes, relativeAge } from "../lib/format";
 import { TailPath } from "../components/TailPath";
@@ -24,6 +29,8 @@ import { Spinner } from "../components/buttons";
 import { useExploreStore } from "../state/explore";
 import { useScanStore } from "../state/scan";
 import { useCleanupStore } from "../state/cleanup";
+import { useDupesStore } from "../state/dupes";
+import { useViewStore } from "../state/view";
 
 // One tone order app-wide (Icon.tsx is the source).
 const TONES = TONE_KEYS;
@@ -46,7 +53,6 @@ export function InspectorPanel({ onPreview }: { onPreview: (id: number) => void 
   const status = useScanStore((s) => s.status);
   const currentFolder = useExploreStore((s) => s.currentFolder);
   const selectedNode = useExploreStore((s) => s.selectedNode);
-  const openFolder = useExploreStore((s) => s.openFolder);
   // The queue ITEMS (not just the contains() helper — a stable
   // function selector never re-renders, so the Add-to-Cleanup button
   // kept its unstaged copy after a + click in a mode row while the
@@ -54,6 +60,11 @@ export function InspectorPanel({ onPreview }: { onPreview: (id: number) => void 
   const queuedIds = useCleanupStore((s) => new Set(s.items.map((i) => i.id)));
   const stage = useCleanupStore((s) => s.stage);
   const unstage = useCleanupStore((s) => s.unstage);
+  // The scoped-duplicates launchpad (session 15): one handoff — the
+  // button switches to the Duplicates tab and starts the scoped run.
+  const startDupes = useDupesStore((s) => s.start);
+  const dupesRunning = useDupesStore((s) => s.running);
+  const setTab = useViewStore((s) => s.setTab);
   const [details, setDetails] = useState<NodeDetailsData | null>(null);
 
   const target = selectedNode ?? currentFolder;
@@ -248,21 +259,28 @@ export function InspectorPanel({ onPreview }: { onPreview: (id: number) => void 
         <button
           type="button"
           className="db-outline"
+          disabled={!details.isDir || dupesRunning}
           title={
-            details.isDir
-              ? "Open this folder here (drill in)"
-              : "Open with the default app"
+            !details.isDir
+              ? "Duplicates scans a folder — select a folder to scope it"
+              : dupesRunning
+                ? "A duplicates scan is already running"
+                : isVirtualRoot
+                  ? "Scan the whole tree for duplicates"
+                  : `Find byte-identical files inside ${details.name}`
           }
           onClick={() => {
-            if (details.isDir) {
-              openFolder(details.id);
-              return;
-            }
-            // openNode toasts on failure — never a silent no-op.
-            void openNode(generation, details.id);
+            if (!details.isDir) return;
+            // The handoff: switch to the Duplicates tab and scope the
+            // run to this folder's subtree. The store takes the PATH
+            // too (it already holds it here) for the busy-row framing;
+            // the RESULT's scopePath is authoritative. A root/whole-PC
+            // click runs the whole tree (the backend normalizes).
+            setTab("duplicates");
+            startDupes(generation, details.id, isVirtualRoot ? undefined : details.path);
           }}
         >
-          <FolderOpenIcon size={14} /> Open
+          <SearchIcon size={14} /> Duplicates here
         </button>
         <button
           type="button"

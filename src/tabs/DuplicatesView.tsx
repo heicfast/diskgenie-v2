@@ -114,6 +114,7 @@ export function DuplicatesView() {
   const running = useDupesStore((s) => s.running);
   const result = useDupesStore((s) => s.result);
   const error = useDupesStore((s) => s.error);
+  const scopePath = useDupesStore((s) => s.scopePath);
   const start = useDupesStore((s) => s.start);
   const cancel = useDupesStore((s) => s.cancel);
   const refresh = useDupesStore((s) => s.refresh);
@@ -177,15 +178,25 @@ export function DuplicatesView() {
   const stale = result != null && result.generation !== generation;
 
   const subtitle = useMemo(() => {
-    if (running) return "Scanning for duplicates — you can keep using the app, this tab updates live.";
+    if (running) {
+      return scopePath
+        ? `Scanning for duplicates inside ${scopePath} — this tab updates live.`
+        : "Scanning for duplicates — you can keep using the app, this tab updates live.";
+    }
     if (!result || stale) return "Byte-identical files, grouped for safe removal.";
-    if (result.groups.length === 0) return "No duplicates found.";
+    if (result.groups.length === 0) {
+      return result.scopePath
+        ? `No duplicates inside ${result.scopePath}.`
+        : "No duplicates found.";
+    }
     return (
       <>
-        <b>{bytes(result.wastedTotal)}</b> could be reclaimed across <b>{result.groups.length.toLocaleString()}</b> groups · {result.files.toLocaleString()} files considered
+        <b>{bytes(result.wastedTotal)}</b> could be reclaimed across <b>{result.groups.length.toLocaleString()}</b>{" "}
+        {result.groups.length === 1 ? "group" : "groups"}
+        {result.scopePath ? <> inside <b>{result.scopePath}</b></> : undefined} · {result.files.toLocaleString()} files considered
       </>
     );
-  }, [running, result, stale]);
+  }, [running, result, stale, scopePath]);
 
   if (status !== "done") {
     return (
@@ -236,7 +247,11 @@ export function DuplicatesView() {
         <EmptyState
           icon={<CopyIcon size={28} />}
           title="Find duplicate files"
-          body="Three passes — size groups, 64 KB prefix hash, full SHA-256 — group byte-identical files so you can keep one copy and stage the rest."
+          body={
+            scopePath
+              ? `Byte-identical files inside ${scopePath} — keep one copy, stage the rest. The button scans your whole tree; select a folder in Explore and press “Duplicates here” to scope it.`
+              : "Three passes — size groups, 64 KB prefix hash, full SHA-256 — group byte-identical files so you can keep one copy and stage the rest. Select a folder in Explore and press “Duplicates here” to scan just that folder."
+          }
           action={
             <button type="button" className="db-ink-button auto" onClick={scan}>
               <SearchIcon size={15} /> Scan for Duplicates
@@ -246,7 +261,15 @@ export function DuplicatesView() {
       )}
 
       {result && result.groups.length === 0 && !running && (
-        <EmptyState icon={<CheckIcon size={28} />} title="No duplicates" body="Every file on this scan is unique — nothing to reclaim." />
+        <EmptyState
+          icon={<CheckIcon size={28} />}
+          title="No duplicates"
+          body={
+            result.scopePath
+              ? `Every file inside ${result.scopePath} is unique — nothing to reclaim.`
+              : "Every file on this scan is unique — nothing to reclaim."
+          }
+        />
       )}
 
       {result && !stale && result.groups.map((g) => {

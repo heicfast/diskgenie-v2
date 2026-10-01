@@ -1,0 +1,38 @@
+[package]
+name = "scratch-win"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.80"
+publish = false
+
+# The local compile gate for the app-crate files this session touched
+# (state.rs, commands/{sidebar,dupes,snapshots_cmd}.rs). The FULL app
+# crate cannot cross-compile on this host (aws-lc-sys builds C code),
+# so the mirror #[path]-includes the REAL files against a stub `tauri`
+# crate and a stub platform seam. Two verification modes:
+#   cargo test                                  — the real unit tests run on the HOST
+#   cargo clippy --target x86_64-pc-windows-msvc — the windows-cfg code compiles + lints
+# The mirror is COMMITTED (sandbox resets killed the session-14 one).
+
+[dependencies]
+diskbytes-core = { path = "../../src-tauri/core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+parking_lot = "0.12"
+rayon = "1.10"
+sha2 = "0.10"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+tauri = { path = "tauri-stub" }
+
+[lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = "allow"
+doc_markdown = "allow"
+unreadable_literal = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"

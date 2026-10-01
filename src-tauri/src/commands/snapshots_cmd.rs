@@ -79,14 +79,25 @@ pub fn list_snapshots() -> Vec<SnapshotView> {
     idx.iter().map(std::convert::Into::into).collect()
 }
 
-/// Take a snapshot of the current tree (folders ≥ 1 MiB; atomic write).
+/// Take a snapshot of the current view's subtree (folders ≥ 1 MiB;
+/// atomic write).
+///
+/// `node` (sent by the Snapshots view since the tab shipped — the
+/// command silently ignored it, so a snapshot taken while viewing
+/// D:\Stuff was LABELED "C:\" — the first root — while containing the
+/// whole multi-root tree) scopes both the pairs and the recorded root.
+/// `None` (or the tree root) snapshots the whole tree — the node
+/// resolver reports the virtual whole-PC root's LABEL ("This PC") as
+/// its path, which is now the honest recorded root.
 ///
 /// # Errors
-/// String error when no scan exists or the write fails.
+/// String error when no scan exists, the generation is stale, or the
+/// write fails.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
 pub fn take_snapshot(
     generation: u64,
+    node: Option<u32>,
     state: State<'_, crate::state::AppState>,
     license: State<'_, crate::commands::license::LicenseManager>,
 ) -> Result<SnapshotView, String> {
@@ -107,18 +118,30 @@ pub fn take_snapshot(
             generation, tree.generation
         ));
     }
-    // Folders ≥ 1 MiB (spec §13 — MIN_1MIB above).
-    let root_path = tree
-        .roots
-        .first()
-        .map_or_else(|| tree.name(tree.root), |r| r.path.clone());
+    // The scope: the caller's node (default the whole tree at its
+    // root). An unknown node rejects; a file node rejects — a snapshot
+    // is a folder footprint.
+    let start = match node {
+        None => tree.root,
+        Some(id) => {
+            let n = tree.node(id).ok_or_else(|| format!("unknown node {id}"))?;
+            if !n.is_dir() {
+                return Err("Snapshots capture a folder's footprint — select a folder.".into());
+            }
+            id
+        }
+    };
+    // The root path the diff's same-root check compares: node_path
+    // reports the virtual whole-PC root as its LABEL, which is exactly
+    // the honest "whole tree" marker.
+    let root_path = tree.node_path(start);
+    // Folders ≥ 1 MiB (spec §13 — MIN_1MIB above), INSIDE the scope.
     let mut pairs: Vec<(String, u64)> = Vec::new();
-    for id in 0..tree.len() as u32 {
-        let Some(n) = tree.node(id) else { continue };
+    tree.walk(start, |id, n| {
         if n.is_dir() && n.on_disk >= MIN_1MIB {
             pairs.push((tree.node_path(id), n.on_disk));
         }
-    }
+    });
     let taken_at = now_unix();
     // Path-safe id: strip BOTH separators (POSIX roots carry '/', the
     // old code only handled '\\' — a macOS snapshot write would have

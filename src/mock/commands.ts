@@ -34,6 +34,9 @@ let dupesRunning = false;
 let dupesLastProgress: Record<string, unknown> | null = null;
 let dupesResult: Record<string, unknown> | null = null;
 let dupesError: string | null = null;
+/** The scoped folder of the current run / sticky result (session 15
+ * "Duplicates here" parity — null = whole tree). */
+let dupesScopePath: string | null = null;
 const snapshots: { id: string; root: string; takenAt: number; total: number; folders: number; map: Map<string, number> }[] = [];
 /** License mock (mirrors the Rust LicenseStatusView): starts
  * unlicensed; `license_sim_set` (the CI tour hook) flips it. */
@@ -605,7 +608,9 @@ function commitShellDeleteMock(
   return result;
 }
 
-const commands: Record<string, Cmd> = {
+/** The command registry (exported for the vitest parity tests — the
+ * browser install wraps it with the async IPC boundary). */
+export const commands: Record<string, Cmd> = {
   // ── scan lifecycle ────────────────────────────────────────────────
   get_dev_hooks: () => ({
     scan: new URLSearchParams(location.search).get("scan") ?? null,
@@ -671,7 +676,32 @@ const commands: Record<string, Cmd> = {
   },
   get_drive_chips: () => [{ letter: "C:", target: "C:\\" }, { letter: "D:", target: "D:\\" }],
   get_home_path: () => "C:\\Users\\dev",
-  disk_storage: () => ({ label: "Local Disk", total: 512 * GB, used: 450.6 * GB, free: 61.4 * GB, usedPct: 0.880 }),
+  // Rust `disk_storage(path)` parity (session 15): the probe follows
+  // the VIEW — a C: path returns the C: volume (letter-suffixed on
+  // the multi-drive shape like the real multi-root trees), a D: path
+  // the Games volume, and anything unmatched ("This PC", null) the
+  // multi-volume aggregate. The old one-shape answer is exactly the
+  // bug the owner reported: the sidebar never changed on a flip.
+  disk_storage: (a) => {
+    const path = typeof a?.path === "string" ? a.path : null;
+    if (path && /^c:/i.test(path)) {
+      return { label: "Local Disk (C:)", total: 512 * GB, used: 450.6 * GB, free: 61.4 * GB, usedPct: 0.880 };
+    }
+    if (path && /^d:/i.test(path)) {
+      const total = 2048 * GB;
+      const free = 812 * GB;
+      const used = total - free;
+      return { label: "Games (D:)", total, used, free, usedPct: used / total };
+    }
+    if (path) {
+      // Unmatched view paths ("This PC") get the aggregate, exactly
+      // like the real command's multi-root branch.
+      const total = 512 * GB + 2048 * GB;
+      const used = 450.6 * GB + (2048 * GB - 812 * GB);
+      return { label: "This PC", total, used, free: total - used, usedPct: used / total };
+    }
+    return { label: "Local Disk (C:)", total: 512 * GB, used: 450.6 * GB, free: 61.4 * GB, usedPct: 0.880 };
+  },
   is_elevated: () => true,
   // Parity with the Rust flow: the real command either exits (success)
   // or emits `admin-restart-failed`. The mock can't restart, so it
@@ -962,17 +992,45 @@ const commands: Record<string, Cmd> = {
   // status record mirrors the Rust `AppState.dupes_status` — a page
   // switch mid-scan re-attaches via `dupes_status`. Cancellation
   // rejects with "cancelled" exactly like the engine.
-  find_duplicates: () =>
+  find_duplicates: (a) =>
     new Promise((resolve, reject) => {
       licenseGate();
       if (dupesRunning) {
         reject("already running");
         return;
       }
+      // Rust parity (session 15 "Duplicates here"): a node scopes the
+      // run — only groups whose paths are ALL inside the scope's
+      // subtree survive (internal duplication, the semantic the
+      // engine's subtree walk produces); a root/absent scope is the
+      // whole tree. A file node rejects exactly like the Rust command.
+      let scopePath: string | null = null;
+      const node = a.node == null ? null : Number(a.node);
+      if (node != null && node !== 0) {
+        const n = tree.nodes[node];
+        if (n == null) {
+          reject(`unknown node ${node}`);
+          return;
+        }
+        if (!n.isDir) {
+          reject("Duplicates scans a folder — select a folder.");
+          return;
+        }
+        scopePath = fmtPath(node);
+      }
+      // Normalize the scope to exactly one trailing separator, then
+      // prefix-match case-insensitively (Windows semantics).
+      const scopePrefix = scopePath
+        ? `${scopePath.toLowerCase().replace(/[\\/]+$/, "")}\\`
+        : null;
+      const groups = scopePrefix
+        ? DUPES.filter((g) => g.paths.every((p) => p.toLowerCase().startsWith(scopePrefix)))
+        : DUPES;
       dupesRunning = true;
       dupesResult = null;
       dupesError = null;
       dupesLastProgress = null;
+      dupesScopePath = scopePath;
       const latch = dupesCancelGen;
       const started = performance.now();
       const totalFiles = 1_420;
@@ -1035,9 +1093,10 @@ const commands: Record<string, Cmd> = {
           emit("done", 1);
           const res = {
             generation: tree.generation,
-            groups: DUPES,
-            wastedTotal: DUPES.reduce((sm, g) => sm + g.wasted, 0),
+            groups,
+            wastedTotal: groups.reduce((sm, g) => sm + g.wasted, 0),
             files: 3_821,
+            scopePath,
           };
           dupesRunning = false;
           dupesResult = res;
@@ -1055,6 +1114,7 @@ const commands: Record<string, Cmd> = {
     progress: dupesRunning ? dupesLastProgress : null,
     result: dupesResult,
     error: dupesError,
+    scopePath: dupesScopePath,
   }),
   cancel_duplicates: () => {
     dupesCancelGen += 1;

@@ -1,0 +1,12 @@
+[package]
+name = "tauri-command-macro"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# The identity `#[command]` attribute: the mirror compiles command
+# functions as PLAIN functions (the real macro generates the IPC glue;
+# none of the mirrored code depends on that glue at compile time).
+
+[lib]
+proc-macro = true

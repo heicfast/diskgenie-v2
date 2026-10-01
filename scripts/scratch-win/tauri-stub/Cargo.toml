@@ -1,0 +1,15 @@
+[package]
+name = "tauri"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# The compile-check stub of the tauri surface the mirrored files use:
+# the `#[tauri::command]` attribute, `State<'_, T>`, `AppHandle` +
+# `Emitter`, and `async_runtime::spawn_blocking`. Never linked in a
+# real build — the mirror exists to type-check the REAL command files
+# without the webview stack.
+
+[dependencies]
+serde = "1"
+tauri-command-macro = { path = "../tauri-command-macro" }
