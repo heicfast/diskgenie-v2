@@ -1,0 +1,102 @@
+name: macOS UI Audit
+
+# The macOS deep UI verification battery (session 17 — the owner's
+# mac-quality ask): the REAL app (license-sim feature, exactly like
+# the Windows UI Screenshots flow) over a BALANCED synthetic tree,
+# with the tour covering every mode, every tab, all five themes, the
+# license dialog states, AND the responsive window extremes
+# (window-min 1280x760 / window-full). Captures are WINDOW-EXACT
+# (`screencapture -l`) on a display bumped to 1920x1080 — the old
+# full-screen 1024x768 captures cropped the inspector away and read
+# as "zoomed" (the session-17 root cause).
+#
+# Artifacts: the frames + the app logs + this run's environment
+# report — pulled and VLM-audited per session.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: macos-ui-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ui-audit-macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Build the app (release, no bundle, ci-license-sim)
+        # The license-sim feature seeds a simulated activated license
+        # (DISKBYTES_LICENSE_SIM=1 below) so the tour captures the
+        # WORKING app and — via license_sim_set — the gate + Pro card.
+        # It exists in no production bundle build (NSIS/MSIX/DMG).
+        run: npx tauri build --no-bundle --features ci-license-sim
+        env:
+          CARGO_INCREMENTAL: 0
+
+      - name: Stage the synthetic tree
+        run: bash scripts/ci/mac-stage-tree.sh
+
+      - name: Install the resolution tool (best-effort display bump)
+        # The runner display defaults to 1024x768 — smaller than the
+        # app's 1280x760 design floor, so the window exceeded the
+        # screen and every capture cropped the right column ("zoomed").
+        # displayplacer bumps it to 1920x1080 (the Windows flow's
+        # Set-DisplayResolution equivalent).
+        run: |
+          brew install displayplacer 2>&1 | tail -1 || true
+          displayplacer list 2>&1 | head -12 || true
+
+      - name: Environment report
+        run: |
+          echo "== macOS =="; sw_vers
+          echo "== display =="; system_profiler SPDisplaysDataType 2>/dev/null | sed -n '1,14p'
+          echo "== disk free =="; df -h / | tail -1
+          echo "== cores/mem =="; sysctl -n hw.ncpu hw.memsize
+
+      - name: Run the app + capture the tour
+        env:
+          DISKBYTES_POSTHOG_KEY: ""
+        run: |
+          APP="$PWD/src-tauri/target/release/diskbytes"
+          OUT="$RUNNER_TEMP/shots"
+          mkdir -p "$OUT"
+          APP_BIN="$APP" \
+          OUT_DIR="$OUT" \
+          FRAMES=66 \
+          BOOT_WAIT_S=9 \
+          LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_TOUR=1 DISKBYTES_MODE=Folders DISKBYTES_LICENSE_SIM=1 DISKBYTES_WINDOW=1440x860" \
+          bash scripts/ci/mac-capture.sh
+          # stdout/stderr live in the out dir — surface the tail for
+          # instant diagnosis in the log (full files in the artifact).
+          echo "--- app-stderr tail ---"; tail -30 "$OUT/app-stderr.log" || true
+          echo "--- app-stdout tail ---"; tail -10 "$OUT/app-stdout.log" || true
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: diskbytes-macos-ui-audit
+          path: ${{ runner.temp }}/shots
+          retention-days: 14
+          if-no-files-found: error

@@ -67,14 +67,40 @@ const MIN_WINDOW_H: f64 = 760.0;
 /// fullscreen on both platforms).
 const WORK_AREA_FRACTION: f64 = 0.86;
 
+/// Parse the `DISKBYTES_WINDOW` dev hook (`1280x760`, case-insensitive
+/// `X` separator). `None` on any malformed spec — the fit path runs.
+fn parse_window_spec(spec: &str) -> Option<(f64, f64)> {
+    let (w, h) = spec.trim().to_lowercase().split_once('x')?;
+    let (w, h) = (w.trim().parse::<f64>().ok()?, h.trim().parse::<f64>().ok()?);
+    (w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0).then_some((w, h))
+}
+
 /// Clamp the main window to a premium default size that fits the
 /// primary monitor's work area, then center and show it. Runs in
 /// `setup` while the window is still hidden (`visible: false` in the
 /// config) so the resize never flashes.
+///
+/// The `DISKBYTES_WINDOW=WxH` dev hook (capture workflows) overrides
+/// the fit with an exact logical size — still clamped to the design
+/// floor, so on a display smaller than 1280×760 the window exceeds
+/// the screen exactly like the fitted default would (the CI display,
+/// not the app, must grow — the harness bumps the runner's resolution
+/// before launching).
 fn fit_window_to_work_area(app: &tauri::App) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    if let Some(spec) = commands::scan::read_dev_hooks().window {
+        if let Some((w, h)) = parse_window_spec(&spec) {
+            let (w, h) = (w.max(MIN_WINDOW_W), h.max(MIN_WINDOW_H));
+            let _ = window.set_size(tauri::LogicalSize::new(w, h));
+            let _ = window.center();
+            eprintln!("[bench] window size applied: {w}x{h}");
+            let _ = window.show();
+            let _ = window.set_focus();
+            return;
+        }
+    }
     let monitor = window
         .primary_monitor()
         .ok()
@@ -201,4 +227,25 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod window_spec_tests {
+    use super::parse_window_spec;
+
+    #[test]
+    fn parses_width_x_height_with_padding_and_case() {
+        assert_eq!(parse_window_spec("1280x760"), Some((1280.0, 760.0)));
+        assert_eq!(parse_window_spec(" 1440 X 860 "), Some((1440.0, 860.0)));
+    }
+
+    #[test]
+    fn rejects_malformed_specs() {
+        assert_eq!(parse_window_spec(""), None);
+        assert_eq!(parse_window_spec("1280"), None);
+        assert_eq!(parse_window_spec("axb"), None);
+        assert_eq!(parse_window_spec("0x760"), None);
+        assert_eq!(parse_window_spec("-5x760"), None);
+        assert_eq!(parse_window_spec("1280x760x9"), None);
+    }
 }

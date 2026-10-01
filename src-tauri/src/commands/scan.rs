@@ -193,6 +193,14 @@ pub async fn start_scan(
             }
         };
         let root_stats = tree.root_stats();
+        // Structured line for the benchmark harness: an instant restore
+        // proves the flip cache served the tree (no walk happened).
+        eprintln!(
+            "[bench] scan restored gen={generation} files={} dirs={} bytes={}",
+            root_stats.2,
+            root_stats.3,
+            root_stats.1
+        );
         // swap_tree files the tree being displaced under ITS key
         // (the symmetric flip-back) — the restore consumes the
         // cache entry, the swap refills it with what was on screen.
@@ -282,6 +290,16 @@ pub async fn start_scan(
         match outcome {
             ScanOutcome::Done(tree) => {
                 swap_tree(&state_inner, Arc::new(tree), generation, &key_for_thread);
+                // Structured timing line for the capture/benchmark
+                // harnesses (plain stderr; same posture as the dupes
+                // pipeline's eprintln diagnostics).
+                eprintln!(
+                    "[bench] scan done engine={engine_label} gen={generation} ms={} files={} dirs={} bytes={}",
+                    started.elapsed().as_millis(),
+                    state_inner.tree.read().as_ref().map_or(0, |t| t.root_stats().2),
+                    state_inner.tree.read().as_ref().map_or(0, |t| t.root_stats().3),
+                    state_inner.tree.read().as_ref().map_or(0, |t| t.root_stats().1)
+                );
                 // Layout caches are generation-keyed; drop stale entries on
                 // swap (doc 03 M4.1). Same for the regroup / Top Sizes /
                 // Age Map caches (spec §7.7/§7.8: cached per generation).
@@ -497,6 +515,22 @@ pub struct DevHooks {
     /// screenshot passes can capture every state of the real app
     /// without interactive automation.
     pub tour: bool,
+    /// `DISKBYTES_TOUR_MODE` — the tour PROGRAM: unset/`"ui"` = the
+    /// full UI sweep; `"license"` = the live-key lifecycle (entry →
+    /// bad-format → unknown-key → REAL activation → status card →
+    /// validate → unlocked app, the macOS license E2E workflow);
+    /// `"bench"` = the benchmark program (scan → cache-restore →
+    /// duplicates, the macOS benchmark workflow).
+    pub tour_mode: Option<String>,
+    /// `DISKBYTES_TOUR_LICENSE_KEY` — a real, freshly-minted key the
+    /// license tour activates with (the workflow mints it via the
+    /// admin API; never hardcoded, never logged).
+    pub tour_license_key: Option<String>,
+    /// `DISKBYTES_WINDOW` (`WxH`, e.g. `1280x760`) — the initial window
+    /// size for capture workflows (the screenshot tour must fit the
+    /// runner's display; the logical size also feeds the responsive
+    /// window-min/window-full tour steps).
+    pub window: Option<String>,
 }
 
 /// Read the §15 dev hooks once (flags/env; empty when not set).
@@ -529,6 +563,21 @@ pub fn read_dev_hooks() -> DevHooks {
     }
     if let Ok(v) = std::env::var("DISKBYTES_TOUR") {
         hooks.tour = v == "1";
+    }
+    if let Ok(v) = std::env::var("DISKBYTES_TOUR_MODE") {
+        if !v.is_empty() {
+            hooks.tour_mode = Some(v);
+        }
+    }
+    if let Ok(v) = std::env::var("DISKBYTES_TOUR_LICENSE_KEY") {
+        if !v.is_empty() {
+            hooks.tour_license_key = Some(v);
+        }
+    }
+    if let Ok(v) = std::env::var("DISKBYTES_WINDOW") {
+        if !v.is_empty() {
+            hooks.window = Some(v);
+        }
     }
     hooks
 }

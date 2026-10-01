@@ -51,3 +51,24 @@ pub mod async_runtime {
         Ok(f())
     }
 }
+
+/// The managed-state registry access (`app.state::<T>()` /
+/// `app.try_state::<T>()` — the real Manager trait's surface the
+/// scan.rs clear-caches + telemetry paths call).
+pub trait Manager {
+    /// The infallible lookup (real tauri panics on a missing type; the
+    /// stub unreachable — compile-check only, never called).
+    fn state<T: 'static>(&self) -> State<'_, T>;
+
+    /// The fallible lookup (`if let Some(an) = ...`).
+    fn try_state<T: 'static>(&self) -> Option<State<'_, T>>;
+}
+
+impl Manager for AppHandle {
+    fn state<T: 'static>(&self) -> State<'_, T> {
+        unreachable!("compile-check stub")
+    }
+    fn try_state<T: 'static>(&self) -> Option<State<'_, T>> {
+        None
+    }
+}

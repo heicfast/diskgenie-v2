@@ -45,6 +45,37 @@ pub mod os {
     pub fn hardlink_identity(_path: &std::path::Path) -> Option<(u64, u64)> {
         None
     }
+
+    /// The NTFS turbo geometry (compile-check shape; the fields mirror
+    /// the real win.rs struct).
+    #[derive(Debug, Clone, Copy)]
+    pub struct TurboGeometry {
+        /// Bytes per logical sector.
+        pub bytes_per_sector: u32,
+        /// Bytes per filesystem cluster.
+        pub bytes_per_cluster: u32,
+        /// Bytes per MFT record.
+        pub bytes_per_record: u32,
+        /// Valid data length of the $MFT stream.
+        pub mft_valid_data_length: u64,
+    }
+
+    /// Always errors (the turbo engine is Windows-only; the callers
+    /// under mirror coverage check the Err arm).
+    pub fn turbo_geometry(_drive_root: &str) -> Result<(std::fs::File, TurboGeometry), String> {
+        Err("stub".into())
+    }
+
+    /// Always errors (see turbo_geometry).
+    pub fn turbo_read_mft(_volume: &mut std::fs::File, _geo: &TurboGeometry) -> Result<Vec<u8>, String> {
+        Err("stub".into())
+    }
+
+    /// The elevation grant probe (false on the stub).
+    #[must_use]
+    pub fn enable_backup_privilege() -> bool {
+        false
+    }
 }
 
 /// The platform host (`Arc<HostPlatform>` in managed state) — a Copy

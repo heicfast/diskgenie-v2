@@ -618,6 +618,13 @@ export const commands: Record<string, Cmd> = {
     turbo: false,
     verify: false,
     tour: new URLSearchParams(location.search).get("tour") === "1",
+    // Session-17 parity: the tour PROGRAM (ui/license/bench) + the
+    // real-key hook + the window spec — the mock parses them from the
+    // URL the same way (mock tests drive the license tour with
+    // ?tourMode=license&tourLicenseKey=DB…).
+    tourMode: new URLSearchParams(location.search).get("tourMode") ?? null,
+    tourLicenseKey: new URLSearchParams(location.search).get("tourLicenseKey") ?? null,
+    window: new URLSearchParams(location.search).get("window") ?? null,
   }),
   get_status: () => ({
     generation: tree.generation,

@@ -1,0 +1,99 @@
+name: macOS Benchmark
+
+# The macOS performance benchmark (session 17): launch time,
+# scan-engine timing on the staged tree, the flip-cache instant
+# restore, the duplicates pipeline, memory/CPU envelopes — distilled
+# into a BENCHMARK.md artifact from the app's own [bench] stderr
+# lines (same source the dupes diagnostics use) + this harness's
+# process sampling. Runs the ci-license-sim build so the whole
+# measurement window is licensed, like a real customer machine.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1" # weekly Monday 06:17 UTC (off-peak)
+
+concurrency:
+  group: macos-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark-macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Build the app (release, no bundle, ci-license-sim)
+        run: npx tauri build --no-bundle --features ci-license-sim
+        env:
+          CARGO_INCREMENTAL: 0
+
+      - name: Stage the synthetic tree
+        run: bash scripts/ci/mac-stage-tree.sh
+
+      - name: Machine profile (the report's context)
+        run: |
+          {
+            echo "## Machine"
+            echo "- macOS: $(sw_vers -productVersion) ($(uname -m))"
+            echo "- CPU: $(sysctl -n machdep.cpu.brand_string) — $(sysctl -n hw.ncpu) cores"
+            echo "- RAM: $(python3 -c "print(round($(sysctl -n hw.memsize)/2**30))") GB"
+            echo "- Disk free: $(df -h / | tail -1 | awk '{print $4}')"
+            echo "- Rust: $(rustc --version | cut -d' ' -f2)"
+          } > "$RUNNER_TEMP/machine.md"
+          cat "$RUNNER_TEMP/machine.md"
+
+      - name: Run the benchmark window
+        env:
+          DISKBYTES_POSTHOG_KEY: ""
+        run: |
+          APP="$PWD/src-tauri/target/release/diskbytes"
+          OUT="$RUNNER_TEMP/bench"
+          mkdir -p "$OUT"
+          # The bench tour: boot scan (timed) → the flip-cache restore
+          # probe → the duplicates pipeline → done. 96 s covers the
+          # scan + restore + dupes on the ~12 GB tree with margin.
+          APP_BIN="$APP" \
+          OUT_DIR="$OUT" \
+          RUN_SECONDS=96 \
+          LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_TOUR=1 DISKBYTES_TOUR_MODE=bench DISKBYTES_LICENSE_SIM=1 DISKBYTES_WINDOW=1440x860" \
+          bash scripts/ci/mac-benchmark.sh
+          cat "$OUT/BENCHMARK.md"
+
+      - name: Assemble the report
+        run: |
+          {
+            cat "$RUNNER_TEMP/machine.md"
+            echo ""
+            cat "$RUNNER_TEMP/bench/BENCHMARK.md"
+          } > "$RUNNER_TEMP/BENCHMARK-FULL.md"
+
+      - name: Upload the benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: diskbytes-macos-benchmark
+          path: |
+            ${{ runner.temp }}/BENCHMARK-FULL.md
+            ${{ runner.temp }}/bench/memory-samples.csv
+            ${{ runner.temp }}/bench/app-stderr.log
+            ${{ runner.temp }}/bench/app-stdout.log
+          retention-days: 30
+          if-no-files-found: error

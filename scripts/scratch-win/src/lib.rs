@@ -29,3 +29,17 @@ mod commands;
 mod platform;
 #[path = "../../../src-tauri/src/state.rs"]
 mod state;
+
+/// The analytics stub (`crate::analytics`): scan.rs's telemetry
+/// (`try_state::<Analytics>()` + `capture`). Signature parity only —
+/// the real layer is untouched this session.
+mod analytics {
+    /// The real manager's stand-in.
+    pub struct Analytics;
+
+    impl Analytics {
+        /// The real capture signature.
+        #[allow(clippy::unused_self)] // signature parity with the real layer
+        pub fn capture(&self, _event: &str, _props: &[(&str, serde_json::Value)]) {}
+    }
+}
