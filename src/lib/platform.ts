@@ -12,7 +12,12 @@ declare global {
 }
 
 function detect(): Platform {
-  const ua = navigator.userAgent;
+  // Host-safe: unit tests import this module transitively (the Recent
+  // row → ROOT_VIEW_LABEL) under a plain Node environment, where the
+  // navigator global does not exist before Node 21 (CI's vitest node is
+  // 20). An unknown host answers "other" — the same semantics as an
+  // unrecognized browser, not a crash at import time.
+  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
   if (ua.includes("Macintosh")) return "macos";
   if (ua.includes("Windows")) return "windows";
   return "other";
