@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { Clock3Icon, CameraIcon, Trash2Icon } from "../components/Icon";
 import { TailPath } from "../components/TailPath";
+import { SCAN_THIS_PC } from "../lib/platform";
 import { EmptyState, SkeletonRows } from "../components/buttons";
 import { invoke } from "../lib/ipc";
 import { bytes } from "../lib/format";
@@ -123,7 +124,7 @@ export function SnapshotsView() {
           action={
             status !== "scanning" ? (
               <button type="button" className="db-ink-button auto" onClick={() => void startScan("ThisPC")}>
-                <CameraIcon size={14} /> Scan This PC
+                <CameraIcon size={14} /> {SCAN_THIS_PC}
               </button>
             ) : undefined
           }

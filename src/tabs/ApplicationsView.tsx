@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AppWindowIcon, CheckIcon, PackageOpenIcon, RefreshCwIcon, Trash2Icon, UacShieldIcon } from "../components/Icon";
 import { TailPath } from "../components/TailPath";
+import { SCAN_THIS_PC } from "../lib/platform";
 import { EmptyState, SkeletonRows, Spinner } from "../components/buttons";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { bytes } from "../lib/format";
@@ -62,7 +63,7 @@ export function ApplicationsView() {
           action={
             status !== "scanning" ? (
               <button type="button" className="db-ink-button auto" onClick={() => void startScan("ThisPC")}>
-                <RefreshCwIcon size={14} /> Scan This PC
+                <RefreshCwIcon size={14} /> {SCAN_THIS_PC}
               </button>
             ) : undefined
           }

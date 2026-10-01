@@ -34,3 +34,19 @@ export const REVEAL_NAME = IS_MAC ? "Reveal in Finder" : "Show in Explorer";
 
 /** CTA copy on the sidebar ink button (spec §6.1 / Mac prompt §5.1). */
 export const SCAN_THIS_PC = IS_MAC ? "Scan Full Mac" : "Scan This PC";
+
+/** The synthetic whole-machine view's display name — the ROOT of a
+ * This-PC scan, the Recents row, the storage card's aggregate label,
+ * the inspector's virtual-root title. The Windows convention is "This
+ * PC"; the Mac vocabulary matches the "Scan Full Mac" CTA (Mac prompt
+ * §5.1). The command-seam identity stays "ThisPC" on both platforms —
+ * this is the DISPLAY label only. */
+export const ROOT_VIEW_LABEL = IS_MAC ? "Full Mac" : "This PC";
+
+/** The machine noun for hero copy ("Map every byte on your …"). */
+export const MACHINE_NOUN = IS_MAC ? "Mac" : "PC";
+
+/** Who owns protected/system items in the inspector's copy ("… manages
+ * this item"): macOS on Mac (SIP/Full-Disk-Access denials), Windows
+ * on Windows (ACL-protected system files). */
+export const SYSTEM_OWNER = IS_MAC ? "macOS" : "Windows";

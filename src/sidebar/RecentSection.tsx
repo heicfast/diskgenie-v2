@@ -25,15 +25,16 @@ const RECENTS_EVENT = "diskbytes.recents-changed";
  * hook value vs the scanning-transition's normalized one). Every
  * entry is display-shaped BEFORE the dedupe, so any spelling of the
  * same target collapses to one row. */
+import { ROOT_VIEW_LABEL } from "../lib/platform";
+
 export function recentTargetLabel(path: string): string {
-  return /^this ?pc$/i.test(path.trim()) ? "This PC" : path;
+  return /^this ?pc$/i.test(path.trim()) ? ROOT_VIEW_LABEL : path;
 }
 
 /** Case-insensitive recents identity (Windows paths; "C:\A" and
  * "c:\a" are the same destination). */
 const sameTarget = (a: string, b: string): boolean =>
   a.toLowerCase() === b.toLowerCase();
-
 export function pushRecent(path: string): void {
   try {
     const label = recentTargetLabel(path);
@@ -76,14 +77,14 @@ export function RecentSection() {
   if (recent.length === 0) return null;
 
   /** Navigate into the current tree when possible; scan otherwise.
-   * "This PC" navigates to the tree ROOT when the standing scan
-   * already IS the whole-PC scan (the session-13 report: the row
-   * restarted a full rescan every click, even seconds after the scan
-   * finished). */
+   * The whole-machine row (ROOT_VIEW_LABEL) navigates to the tree
+   * ROOT when the standing scan already IS the whole-PC scan (the
+   * session-13 report: the row restarted a full rescan every click,
+   * even seconds after the scan finished). */
   const open = async (p: string) => {
     setTab("explore");
     const label = recentTargetLabel(p);
-    if (label === "This PC") {
+    if (label === ROOT_VIEW_LABEL) {
       if (status === "done" && /^this ?pc$/i.test(useScanStore.getState().scanTarget)) {
         useExploreStore.getState().resetNavigation();
         return;

@@ -235,6 +235,22 @@ fn resolved_apps_roots<P: Platform>(platform: &P) -> Vec<String> {
     roots
 }
 
+/// The synthetic whole-machine root's display label. The Windows
+/// convention ("This PC", the Explorer name) and the Mac one ("Full
+/// Mac" — the sidebar CTA "Scan Full Mac" vocabulary, Mac BuildPrompt
+/// §5.1) both describe the same virtual root; the label is DATA (the
+/// root node's name, the breadcrumb root crumb, the inspector title,
+/// the snapshot root label, the sidebar storage card's aggregate
+/// label) and flows from this ONE point.
+#[must_use]
+pub fn this_pc_display_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Full Mac"
+    } else {
+        "This PC"
+    }
+}
+
 /// Build the initial tree: synthetic This PC root with drive children,
 /// or a single root carrying its path.
 fn build_root<P: Platform>(
@@ -245,8 +261,9 @@ fn build_root<P: Platform>(
     let mut t = Tree::new(generation);
     match target {
         ScanTarget::ThisPc => {
-            t.set_name(0, "This PC");
-            t.this_pc_label = Some("This PC".into());
+            let label = this_pc_display_label();
+            t.set_name(0, label);
+            t.this_pc_label = Some(label.into());
             let drives = platform.fixed_drive_roots();
             if drives.is_empty() {
                 return Err("no fixed drives found".into());
@@ -813,7 +830,7 @@ mod tests {
             ScanOutcome::Done(t) => t,
             other => panic!("expected Done, got {other:?}"),
         };
-        assert_eq!(tree.node_path(0), "This PC");
+        assert_eq!(tree.node_path(0), this_pc_display_label());
         assert_eq!(tree.roots.len(), 2);
         assert_eq!(tree.node_path(1), "C:\\");
         assert_eq!(tree.node_path(2), "D:\\");
@@ -854,7 +871,7 @@ mod tests {
         let progress2: Arc<Mutex<Progress>> = Arc::new(Mutex::new(Progress::default()));
         let out2 = scan(platform2, &ScanTarget::ThisPc, 8, &cancel2, &progress2);
         if let ScanOutcome::Done(t2) = out2 {
-            assert_eq!(t2.name(0), "This PC");
+            assert_eq!(t2.name(0), this_pc_display_label());
         }
     }
 

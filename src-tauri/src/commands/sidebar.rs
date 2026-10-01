@@ -213,7 +213,7 @@ pub fn disk_storage(
         }
         if probed > 0 {
             return Ok(StorageInfo {
-                label: "This PC".to_string(),
+                label: diskbytes_core::scan::scanner::this_pc_display_label().to_string(),
                 total,
                 used,
                 free,

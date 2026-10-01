@@ -11,6 +11,7 @@ import { ExternalLinkIcon, FolderIcon, HardDriveIcon, RefreshCwIcon, ScanLineIco
 import { EmptyState } from "../components/buttons";
 import { UnreadableNotice } from "../sidebar";
 import { recentTargetLabel } from "../sidebar/RecentSection";
+import { MACHINE_NOUN, SCAN_THIS_PC } from "../lib/platform";
 import { ExploreHeader } from "./ExploreHeader";
 import { FoldersMode } from "./modes/FoldersMode";
 import { CanvasMode } from "./modes/CanvasMode";
@@ -278,8 +279,11 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
           <span className="db-idle-art">
             <FolderIcon size={34} />
           </span>
-          <h2>Map every byte on your PC</h2>
-          <p>Scan your whole PC, your Home folder, or any folder — DiskBytes builds a complete tree and shows you exactly where the space went.</p>
+          <h2>Map every byte on your {MACHINE_NOUN}</h2>
+          <p>
+            Scan your whole {MACHINE_NOUN}, your Home folder, or any folder — DiskBytes builds a
+            complete tree and shows you exactly where the space went.
+          </p>
           <div className="db-state-actions">
             <button
               type="button"
@@ -289,7 +293,7 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
                 void useScanStore.getState().startScan("ThisPC");
               }}
             >
-              <ScanLineIcon size={16} /> Scan This PC
+              <ScanLineIcon size={16} /> {SCAN_THIS_PC}
             </button>
             <button
               type="button"

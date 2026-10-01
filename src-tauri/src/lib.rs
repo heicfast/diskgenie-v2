@@ -70,7 +70,8 @@ const WORK_AREA_FRACTION: f64 = 0.86;
 /// Parse the `DISKBYTES_WINDOW` dev hook (`1280x760`, case-insensitive
 /// `X` separator). `None` on any malformed spec — the fit path runs.
 fn parse_window_spec(spec: &str) -> Option<(f64, f64)> {
-    let (w, h) = spec.trim().to_lowercase().split_once('x')?;
+    let lowered = spec.trim().to_lowercase();
+    let (w, h) = lowered.split_once('x')?;
     let (w, h) = (w.trim().parse::<f64>().ok()?, h.trim().parse::<f64>().ok()?);
     (w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0).then_some((w, h))
 }

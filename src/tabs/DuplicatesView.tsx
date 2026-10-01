@@ -16,6 +16,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { CopyIcon, FileIcon, SearchIcon, CheckIcon, Trash2Icon, XIcon } from "../components/Icon";
 import { TailPath } from "../components/TailPath";
+import { SCAN_THIS_PC } from "../lib/platform";
 import { EmptyState } from "../components/buttons";
 import { bytes } from "../lib/format";
 import { useScanStore } from "../state/scan";
@@ -208,7 +209,7 @@ export function DuplicatesView() {
           action={
             status !== "scanning" ? (
               <button type="button" className="db-ink-button auto" onClick={() => void startScan("ThisPC")}>
-                <SearchIcon size={15} /> Scan This PC
+                <SearchIcon size={15} /> {SCAN_THIS_PC}
               </button>
             ) : undefined
           }

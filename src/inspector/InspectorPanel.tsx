@@ -26,6 +26,7 @@ import { invoke } from "../lib/ipc";
 import { bytes, relativeAge } from "../lib/format";
 import { TailPath } from "../components/TailPath";
 import { Spinner } from "../components/buttons";
+import { ROOT_VIEW_LABEL, SYSTEM_OWNER } from "../lib/platform";
 import { useExploreStore } from "../state/explore";
 import { useScanStore } from "../state/scan";
 import { useCleanupStore } from "../state/cleanup";
@@ -303,9 +304,9 @@ export function InspectorPanel({ onPreview }: { onPreview: (id: number) => void 
         disabled={details.isProtected || isVirtualRoot}
         title={
           details.isProtected
-            ? "Windows manages this item"
+            ? `${SYSTEM_OWNER} manages this item`
             : isVirtualRoot
-              ? "This PC is a view of all drives — open a drive or folder, then stage what you want to clean"
+              ? `${ROOT_VIEW_LABEL} is a view of all drives — open a drive or folder, then stage what you want to clean`
               : staged
                 ? "Staged — click to unstage"
                 : "Add to the Cleanup Queue"
@@ -316,14 +317,14 @@ export function InspectorPanel({ onPreview }: { onPreview: (id: number) => void 
         {staged
           ? "Staged for Cleanup"
           : details.isProtected
-            ? "Managed by Windows"
+            ? `Managed by ${SYSTEM_OWNER}`
             : isVirtualRoot
               ? "Open a drive or folder first"
               : "Add to Cleanup"}
       </button>
       {details.isProtected && (
         <div className="db-cloud-note" style={{ marginTop: 8 }}>
-          <LockKeyholeIcon size={12} /> Windows manages this item — it can’t be staged.
+          <LockKeyholeIcon size={12} /> {SYSTEM_OWNER} manages this item — it can’t be staged.
         </div>
       )}
     </aside>
