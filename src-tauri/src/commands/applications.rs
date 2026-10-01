@@ -467,9 +467,31 @@ fn run_uninstall(platform: HostPlatform, id: &str) -> Result<UninstallResult, St
     };
 
     // 2. Run the uninstaller (registry) or RemovePackageAsync (MSIX).
+    // On macOS there IS no uninstaller string (mac apps uninstall by
+    // removing the bundle): the .app moves to the Trash through the
+    // SAME verified recycle pipeline the cleanup queue uses — the old
+    // code called the uninstaller launcher with the empty string and
+    // errored out ("No uninstaller on macOS") on every mac uninstall.
     let mut exit_code = 0i32;
     if is_msix {
         crate::platform::os::msix_remove_package(&full_name)?;
+    } else if cfg!(target_os = "macos") {
+        if !install_location.is_empty() {
+            let staged = vec![crate::recycle::StagedPath {
+                id: 0,
+                path: install_location.clone(),
+                size: 0,
+                protected: false,
+            }];
+            let outcome = crate::recycle::move_to_recycle_bin(staged)?;
+            if !outcome.failed.is_empty() {
+                return Err(format!(
+                    "couldn't move {} to the Trash: {}",
+                    install_location, outcome.failed[0].reason
+                ));
+            }
+        }
+        exit_code = 0;
     } else {
         exit_code = crate::platform::os::launch_and_wait_uninstaller(&uninstall_string)?;
     }
