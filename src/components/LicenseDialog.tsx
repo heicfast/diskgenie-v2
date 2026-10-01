@@ -11,6 +11,12 @@
  *  * v2 (owner feedback): NO Deactivate button — a user never needs
  *    to deactivate ("Validate now" + "Done" only); moving a license
  *    between machines is support's slot-reset flow.
+ *  * v2.1 (session 16): the appearance settings — the ThemePicker
+ *    (five palettes incl. the three new ones) lives in BOTH the
+ *    entry and the Pro status bodies. Theming is an app-level
+ *    cosmetic, never license-gated (the Monitor page is free, and
+ *    so is making the app feel like yours); the entry-state picker
+ *    is also the preview surface that sells the premium feel.
  *
  * Motion (the app's settle-in contract — same family as the toast +
  * popover + preview overlay, never framer for these paths):
@@ -28,6 +34,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { CheckIcon, KeyIcon, LockKeyholeIcon, SparklesIcon } from "./Icon";
+import { ThemePicker } from "./ThemePicker";
 import { useLicenseStore } from "../state/license";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { formatKey, isCompleteKey, normalizeKey } from "../lib/licenseKey";
@@ -190,6 +197,9 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
           </p>
         )}
         <p className="db-license-thanks">Thank you for purchasing DiskBytes.</p>
+        <div className="db-license-appearance">
+          <ThemePicker />
+        </div>
       </div>
     );
   } else if (posture === "degraded") {
@@ -256,6 +266,9 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
           <div>
             <CheckIcon size={13} /> 14-day offline grace
           </div>
+        </div>
+        <div className="db-license-appearance">
+          <ThemePicker />
         </div>
       </div>
     );

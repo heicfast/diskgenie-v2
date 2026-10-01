@@ -14,4 +14,5 @@ upload/
 ci-artifacts/local-audit/
 ci-artifacts/s14/
 ci-artifacts/s15/
+ci-artifacts/s16/
 scripts/scratch-win/target/

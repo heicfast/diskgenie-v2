@@ -145,7 +145,7 @@ export function CanvasViz(props: CanvasVizProps) {
       theme.current = readTheme();
       repaintRef.current?.();
     });
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-scheme"] });
     return () => obs.disconnect();
   }, []);
 
@@ -334,7 +334,7 @@ export function CanvasViz(props: CanvasVizProps) {
       if (hv && hv !== sel) {
         if (mode === "sunburst" && (hv.flags & 0b111) === CELL_KIND.ARC) {
           const darkOverlay =
-            document.documentElement.getAttribute("data-theme") === "dark";
+            document.documentElement.getAttribute("data-scheme") === "dark";
           ringPathTrace(ctx, hv, layout);
           ctx.fillStyle = darkOverlay
             ? `rgba(255,255,255,${0.13 * ringAlpha})`
@@ -494,7 +494,7 @@ export function CanvasViz(props: CanvasVizProps) {
               {/* Theme-matched chip: the canvas cells saturate in dark
                * mode (cssRgbaTheme); the chips used the raw pastel and
                * read washed-out next to them. */}
-              <i style={{ background: cssRgbaTheme((g.color << 8) | 0xff, document.documentElement.getAttribute("data-theme") === "dark") }} />
+              <i style={{ background: cssRgbaTheme((g.color << 8) | 0xff, document.documentElement.getAttribute("data-scheme") === "dark") }} />
               {g.name}
             </span>
           ))}
@@ -745,7 +745,7 @@ function drawCells(
 
   // Dark theme: enrich the pastel families (saturation boost at
   // constant lightness) — see cssRgbaTheme. Read once per paint.
-  const darkCells = document.documentElement.getAttribute("data-theme") === "dark";
+  const darkCells = document.documentElement.getAttribute("data-scheme") === "dark";
   for (const c of layout.cells) {
     const kind = c.flags & 0b111;
     const fill = cssRgbaTheme(c.rgba, darkCells);

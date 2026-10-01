@@ -79,7 +79,7 @@
   border-color: var(--control-active);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
-[data-theme="dark"] .db-outline {
+[data-scheme="dark"] .db-outline {
   /* Card fill (#2c2c2e) is nearly identical to the panel behind it
    * (#28282b) — on sidebar/main surfaces the button read as floating
    * text (VLM dark audit: "border almost invisible", 1.8:1). The fill
@@ -92,7 +92,7 @@
   border-color: var(--control-border);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
-[data-theme="dark"] .db-outline:hover {
+[data-scheme="dark"] .db-outline:hover {
   background: rgba(255, 255, 255, 0.075);
   border-color: #8d8d98;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -413,8 +413,8 @@
  * mix percentage drops (vivid carries ~4× the chroma of a pastel)
  * so the pill keeps its place in the dark lightness scale while
  * actually reading as its hue. */
-[data-theme="dark"] .db-quick-list .db-quick-icon {
-  background: color-mix(in oklab, var(--tone, var(--vivid-blue)) 30%, #26262a);
+[data-scheme="dark"] .db-quick-list .db-quick-icon {
+  background: color-mix(in oklab, var(--tone, var(--vivid-blue)) 30%, var(--panel));
   color: var(--text);
 }
 .db-quick-list button:hover .db-quick-chevron,
@@ -442,14 +442,14 @@
  * chroma — every dark recipe that mixes --tone into a surface gray
  * (rank bars, quick pills, inspector icon, folder cards) re-tunes its
  * percentages where needed. One seam, all surfaces consistent. */
-[data-theme="dark"] .tone-blue { --tone: var(--vivid-blue); }
-[data-theme="dark"] .tone-mint { --tone: var(--vivid-mint); }
-[data-theme="dark"] .tone-violet { --tone: var(--vivid-violet); }
-[data-theme="dark"] .tone-amber { --tone: var(--vivid-amber); }
-[data-theme="dark"] .tone-rose { --tone: var(--vivid-rose); }
-[data-theme="dark"] .tone-green { --tone: var(--vivid-green); }
-[data-theme="dark"] .tone-sky { --tone: var(--vivid-sky); }
-[data-theme="dark"] .tone-slate { --tone: var(--vivid-slate); }
+[data-scheme="dark"] .tone-blue { --tone: var(--vivid-blue); }
+[data-scheme="dark"] .tone-mint { --tone: var(--vivid-mint); }
+[data-scheme="dark"] .tone-violet { --tone: var(--vivid-violet); }
+[data-scheme="dark"] .tone-amber { --tone: var(--vivid-amber); }
+[data-scheme="dark"] .tone-rose { --tone: var(--vivid-rose); }
+[data-scheme="dark"] .tone-green { --tone: var(--vivid-green); }
+[data-scheme="dark"] .tone-sky { --tone: var(--vivid-sky); }
+[data-scheme="dark"] .tone-slate { --tone: var(--vivid-slate); }
 
 /* ── File types ─────────────────────────────────────────────────────── */
 .db-types-bar {

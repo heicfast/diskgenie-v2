@@ -139,7 +139,7 @@
   background: var(--ink-grad);
   border-radius: var(--radius-m);
   z-index: -1;
-  box-shadow: 0 2px 8px rgba(255, 107, 74, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  box-shadow: var(--ink-glow), inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 .db-mode-picker button span {
   white-space: nowrap;
@@ -672,45 +672,47 @@
   color: var(--on-pastel-secondary);
 }
 
-/* ── Dark mode: folder cards become MUTED TINTS, not bright pastel
- * slabs. A 148 px light-pastel card on #1e1e20 is glare (VLM dark
+/* ── Dark family: folder cards become MUTED TINTS, not bright pastel
+ * slabs. A 148 px light-pastel card on a dark surface is glare (VLM dark
  * audit: "text dark grey/black against light blue background" — the
  * reference keeps dark surfaces with tinted accents in dark mode).
  * Same folder metaphor: tone washes into the dark surface, text flips
- * to the theme ink. ──────────────────────────────────────────────── */
-[data-theme="dark"] .db-folder-card {
-  background: color-mix(in oklab, var(--tone, var(--vivid-blue)) 14%, #1e1e20);
+ * to the theme ink. The mix bases speak TOKENS so the washes land on
+ * each dark-family palette's own surfaces (graphite, espresso,
+ * marine). ──────────────────────────────────────────────── */
+[data-scheme="dark"] .db-folder-card {
+  background: color-mix(in oklab, var(--tone, var(--vivid-blue)) 14%, var(--background));
   color: var(--text);
   border-color: color-mix(in oklab, var(--tone, var(--vivid-blue)) 26%, transparent);
 }
-[data-theme="dark"] .db-folder-card::before {
+[data-scheme="dark"] .db-folder-card::before {
   background: linear-gradient(
     125deg,
-    color-mix(in oklab, var(--tone) 20%, #232326),
-    color-mix(in oklab, var(--tone) 9%, #1b1b1e)
+    color-mix(in oklab, var(--tone) 20%, var(--card)),
+    color-mix(in oklab, var(--tone) 9%, var(--background))
   );
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
-[data-theme="dark"] .db-folder-tab {
-  background: color-mix(in oklab, var(--tone) 21%, #232326);
+[data-scheme="dark"] .db-folder-tab {
+  background: color-mix(in oklab, var(--tone) 21%, var(--card));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
-[data-theme="dark"] .db-folder-meta {
+[data-scheme="dark"] .db-folder-meta {
   /* Base rule colors meta with --on-pastel-secondary (#334155, designed
    * for LIGHT pastel fills). Dark cards are slate tone-washes (#595e68
    * class) — that ink is near-invisible on them. The strong override
    * below existed; the container text ("N items") was missed. */
   color: var(--text-secondary);
 }
-[data-theme="dark"] .db-folder-meta strong {
+[data-scheme="dark"] .db-folder-meta strong {
   color: var(--text-secondary);
 }
-[data-theme="dark"] .db-folder-meta i {
+[data-scheme="dark"] .db-folder-meta i {
   /* Vivid seam: 60%-pastel (a near-gray border on near-gray dots) →
    * 45%-vivid — the file-count dots keep their hue identity. */
-  border-color: color-mix(in oklab, var(--tone) 45%, #3a3a3e);
+  border-color: color-mix(in oklab, var(--tone) 45%, var(--divider));
 }
-[data-theme="dark"] .db-folder-protected-badge {
+[data-scheme="dark"] .db-folder-protected-badge {
   color: var(--text-tertiary);
 }
 

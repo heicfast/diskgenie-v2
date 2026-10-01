@@ -32,8 +32,8 @@
   flex: none;
 }
 /* Dark: muted tint + theme ink. */
-[data-theme="dark"] .db-hover-chip .db-hc-icon {
-  background: color-mix(in oklab, var(--hc-color, var(--pastel-blue)) 42%, #2a2a2e);
+[data-scheme="dark"] .db-hover-chip .db-hc-icon {
+  background: color-mix(in oklab, var(--hc-color, var(--pastel-blue)) 42%, var(--card));
   color: var(--text);
 }
 .db-hover-chip .db-hc-body {
@@ -1033,4 +1033,135 @@
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--text-secondary);
+}
+
+/* ── Theme picker (session 16 — the appearance settings in the
+ * license dialog) ────────────────────────────────────────────────
+ * A labeled row of five miniature "app window" swatches. Each canvas
+ * shows its palette's surface with the accent gradient pill — the
+ * richness is visible BEFORE selecting (fixed preview literals; the
+ * live CSS vars would resolve to the ACTIVE theme and every swatch
+ * would render identical). The ring + check are live-token: the
+ * selected swatch speaks the current theme's own ink.
+ * Motion: none of its own — the picker enters with the dialog body
+ * (db-settle-in family) and a selection rides the document-wide View
+ * Transitions crossfade (useTheme.setTheme), so the whole app —
+ * dialog included — crossfades between palettes. */
+.db-license-appearance {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--divider);
+}
+
+.db-theme-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.db-theme-picker-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.db-theme-picker-head span:first-child {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-secondary);
+  /* Same label voice as the LICENSE KEY field label above it — one
+   * section grammar, not two. */
+  letter-spacing: 0.04em;
+}
+
+.db-theme-picker-current {
+  font-size: 11px;
+  font-weight: 620;
+  color: var(--ink);
+}
+
+.db-theme-swatches {
+  display: flex;
+  gap: 8px;
+  /* Wrap never expected at the dialog's min width (5×54 + 4×8 = 302px
+   * inside the 400px dialog), but a narrower future container
+   * degrades gracefully instead of clipping. */
+  flex-wrap: wrap;
+}
+
+.db-theme-swatch {
+  position: relative;
+  width: 54px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-m);
+  background: var(--card);
+  transition: border-color var(--fade) ease, transform var(--fade) ease,
+    box-shadow var(--fade) ease;
+}
+
+.db-theme-swatch:hover {
+  border-color: var(--ink);
+  transform: translateY(-1px);
+}
+
+.db-theme-swatch:active {
+  transform: scale(0.97);
+}
+
+/* The selected swatch: the current theme's OWN ink ring (the ring
+ * re-colors with the palette it certifies — self-referential by
+ * design). Outline, not border — the geometry never shifts. */
+.db-theme-swatch[data-active="true"] {
+  border-color: var(--ink);
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.db-theme-swatch-canvas {
+  display: block;
+  position: absolute;
+  inset: 0;
+  border-radius: calc(var(--radius-m) - 1px);
+  overflow: hidden;
+  /* A soft top-light — the same card-sheen move the app's surfaces
+   * use, so the swatch reads as a surface, not a flat chip. */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.db-theme-swatch-pill {
+  position: absolute;
+  left: 7px;
+  bottom: 7px;
+  width: 22px;
+  height: 7px;
+  border-radius: 999px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.db-theme-swatch-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--on-ink);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* Reduced motion: the hover lift is a transform — honor the OS
+ * preference (the app's global kill switch covers animations; this
+ * covers the transition). */
+@media (prefers-reduced-motion: reduce) {
+  .db-theme-swatch {
+    transition: none;
+  }
+  .db-theme-swatch:hover {
+    transform: none;
+  }
 }

@@ -65,17 +65,28 @@ export function TourDriver() {
         });
       }
       // theme flips — 3× dwell (see Step.dwell): guarantees the CI
-      // 2.6 s capture cadence samples each theme at least twice
-      steps.push({
-        name: "dark-theme",
-        dwell: 3,
-        apply: () => document.documentElement.setAttribute("data-theme", "dark"),
-      });
-      steps.push({
-        name: "light-theme",
-        dwell: 3,
-        apply: () => document.documentElement.setAttribute("data-theme", "light"),
-      });
+      // 2.6 s capture cadence samples each theme at least twice.
+      // Session 16: ALL five themes (the two shipped + the three
+      // picker palettes) — both attributes together, exactly like
+      // useTheme/applyThemeAttributes writes them (data-scheme drives
+      // the canvas tone family + the dark-family CSS).
+      const themeSteps: [string, string, string][] = [
+        ["light", "light-theme", "light"],
+        ["dark", "dark-theme", "dark"],
+        ["ember", "ember-theme", "dark"],
+        ["tide", "tide-theme", "dark"],
+        ["blossom", "blossom-theme", "light"],
+      ];
+      for (const [id, name, scheme] of themeSteps) {
+        steps.push({
+          name,
+          dwell: 3,
+          apply: () => {
+            document.documentElement.setAttribute("data-theme", id);
+            document.documentElement.setAttribute("data-scheme", scheme);
+          },
+        });
+      }
       // the other tabs
       for (const t of ["duplicates", "applications", "monitor", "snapshots"] as const) {
         steps.push({

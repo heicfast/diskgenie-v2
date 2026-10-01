@@ -190,17 +190,17 @@
  * C≈0.03). Vivid tokens carry C≈0.12, so the mix lands L≈0.45-0.55 with
  * real hue separation; white name text on the strongest stop keeps
  * ≈4:1 (the old washed bar was ≈2.6:1 — this is a contrast win too). */
-[data-theme="dark"] .rank-bar::before {
+[data-scheme="dark"] .rank-bar::before {
   background: linear-gradient(
     90deg,
-    color-mix(in oklab, var(--tone, var(--vivid-blue)) 62%, #242429),
-    color-mix(in oklab, var(--tone, var(--vivid-blue)) 40%, #1e1e20)
+    color-mix(in oklab, var(--tone, var(--vivid-blue)) 62%, var(--card)),
+    color-mix(in oklab, var(--tone, var(--vivid-blue)) 40%, var(--background))
   );
 }
-[data-theme="dark"] .rank-bar strong {
+[data-scheme="dark"] .rank-bar strong {
   color: var(--text);
 }
-[data-theme="dark"] .rank-bar small {
+[data-scheme="dark"] .rank-bar small {
   color: var(--text-secondary);
 }
 

@@ -12,28 +12,45 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <style>
       /* Pre-CSS paint: the WebView's first frame matches the app canvas
-         (#F5F5F7 light / #1C1C20 dark) instead of flashing white before
-         the stylesheet arrives. Pairs with the window backgroundColor. */
+         of the ACTIVE theme instead of flashing white before the
+         stylesheet arrives. Pairs with the window backgroundColor. */
       html {
         background: #f5f5f7;
       }
       html[data-theme="dark"] {
         background: #1e1e20;
       }
+      html[data-theme="ember"] {
+        background: #201a15;
+      }
+      html[data-theme="tide"] {
+        background: #101722;
+      }
+      html[data-theme="blossom"] {
+        background: #fbf1ee;
+      }
     </style>
     <script>
       // Pre-mount theme application (BuildPrompt §14): the saved theme
       // (localStorage) is applied BEFORE React mounts so there is no
       // flash. Runs synchronously in <head>. Default on first launch is
-      // LIGHT (owner decision — the app ships light; the toggle still
-      // persists a saved choice forever).
+      // LIGHT (owner decision — the app ships light; the picker still
+      // persists a saved choice forever). Session 16: five themes; the
+      // theme registry lives in src/theme/themes.ts — this inline copy
+      // mirrors its ids/families (kept in sync by themes.test.ts).
       (function () {
         try {
           var saved = localStorage.getItem("diskbytes.theme");
-          var theme = saved === "light" || saved === "dark" ? saved : "light";
+          var theme = ["light", "dark", "ember", "tide", "blossom"].indexOf(saved) >= 0
+            ? saved
+            : "light";
+          var scheme =
+            theme === "dark" || theme === "ember" || theme === "tide" ? "dark" : "light";
           document.documentElement.setAttribute("data-theme", theme);
+          document.documentElement.setAttribute("data-scheme", scheme);
         } catch (e) {
           document.documentElement.setAttribute("data-theme", "light");
+          document.documentElement.setAttribute("data-scheme", "light");
         }
       })();
     </script>
