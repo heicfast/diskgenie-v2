@@ -157,8 +157,8 @@ mod tests {
             f("empty.txt", 0, 1, 1, 0xAA),
             f("only-one.bin", 100, 1, 2, 0xBB),
         ];
-        assert!(rank(&files).is_empty());
-        assert!(group_by_size(&files).is_empty());
+        assert_eq!(rank(&files).len(), 0);
+        assert_eq!(group_by_size(&files).len(), 0);
     }
 
     #[test]
@@ -178,7 +178,7 @@ mod tests {
             f("a/x.dat", 500, 7, 42, 0x01),
             f("b/y.dat", 500, 7, 43, 0x02),
         ];
-        assert!(rank(&files).is_empty());
+        assert_eq!(rank(&files).len(), 0);
     }
 
     #[test]

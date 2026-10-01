@@ -237,7 +237,7 @@ fn resolved_apps_roots<P: Platform>(platform: &P) -> Vec<String> {
 
 /// The synthetic whole-machine root's display label. The Windows
 /// convention ("This PC", the Explorer name) and the Mac one ("Full
-/// Mac" — the sidebar CTA "Scan Full Mac" vocabulary, Mac BuildPrompt
+/// Mac" — the sidebar CTA "Scan Full Mac" vocabulary, Mac `BuildPrompt`
 /// §5.1) both describe the same virtual root; the label is DATA (the
 /// root node's name, the breadcrumb root crumb, the inspector title,
 /// the snapshot root label, the sidebar storage card's aggregate

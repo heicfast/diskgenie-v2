@@ -137,7 +137,11 @@ WINDOW_ID=""
 # became a 77 s poll (the first benchmark's time-to-window). 8 s of
 # WALL CLOCK, enforced here.
 WIN_DEADLINE=$(python3 -c 'import time; print(time.time() + 8)')
-while [ "$(python3 -c 'import time; print(time.time() < $WIN_DEADLINE)')" = "True" ]; do
+# NOTE: the -c body must be DOUBLE-quoted so $WIN_DEADLINE expands before
+# python parses it — the single-quoted form shipped a Python SyntaxError on
+# every iteration (the literal `$WIN_DEADLINE` is invalid Python), so the
+# "time-bounded" loop body NEVER RAN and the probe was never given a chance.
+while [ "$(python3 -c "import time; print(time.time() < $WIN_DEADLINE)")" = "True" ]; do
   WINDOW_ID=$(win_id)
   if [ -n "$WINDOW_ID" ]; then break; fi
   sleep 0.1
@@ -147,6 +151,25 @@ if [ -n "$WINDOW_ID" ]; then
   echo "[bench] window visible after=$((LAUNCH_T1 - LAUNCH_T0))ms winid=$WINDOW_ID probe=${WINID_BIN:+swift}${WINID_BIN:-jxa}"
 else
   echo "[bench] window NOT FOUND within 8s — falling back to full-screen capture"
+  # Diagnostics: WHY did the probe miss? Dump the layer-0 window owners the
+  # runner actually exposes (the owner name may differ from the expected
+  # bundle name; privacy filtering may return empty names — both visible
+  # in one line).
+  osascript -l JavaScript -e '
+    ObjC.import("CoreGraphics");
+    var list;
+    try { list = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0)); }
+    catch (e) { list = []; }
+    if (!list) list = [];
+    var owners = [];
+    for (var i = 0; i < list.length; i++) {
+      var w = list[i];
+      if (Number(w.kCGWindowLayer || 0) === 0) {
+        owners.push(String(w.kCGWindowOwnerName || "<no-name>"));
+      }
+    }
+    console.log("layer0 owners: " + owners.join(" | "));
+  ' 2>/dev/null || true
 fi
 
 # ── 5. Boot settle, then the cadence loop ─────────────────────────

@@ -353,7 +353,7 @@ mod tests {
     fn circles_nested_and_non_overlapping() {
         let t = build();
         let buf = bubbles(&t, 0, 800.0, 800.0, 3, ColorMode::ByType, 1).unwrap();
-        assert!(!buf.cells.is_empty());
+        assert_ne!(buf.cells.len(), 0);
         // Every child circle sits inside its parent circle (root center
         // 400,400; level-1 circles inside root radius).
         let root = buf.cells.iter().find(|c| c.depth == 0).unwrap();
@@ -468,7 +468,7 @@ mod tests {
         let root = buf.cells.iter().find(|c| c.depth == 0).unwrap();
         let usable = root.g[2] - PAD;
         let kids: Vec<&Cell> = buf.cells.iter().filter(|c| c.depth == 1).collect();
-        assert!(!kids.is_empty());
+        assert_ne!(kids.len(), 0);
         // Every child fully inside the parent's usable radius (nesting
         // exact) …
         for k in &kids {

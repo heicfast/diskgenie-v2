@@ -573,7 +573,7 @@ mod tests {
     fn treemap_emits_cells_within_budget() {
         let t = build_tree();
         let buf = treemap(&t, 0, 1200.0, 800.0, 4, ColorMode::ByFolder, 100).unwrap();
-        assert!(!buf.cells.is_empty());
+        assert_ne!(buf.cells.len(), 0);
         assert!(buf.cells.len() <= crate::layout::MAX_CELLS);
         // All cells in bounds.
         for c in &buf.cells {

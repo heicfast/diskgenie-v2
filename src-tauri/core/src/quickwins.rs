@@ -632,7 +632,7 @@ mod tests {
             assert!(get("temp_caches").is_none(), "no Library/Caches in fixture");
         } else {
             let tc = get("temp_caches").expect("temp row");
-            assert!(!tc.items.is_empty());
+            assert_ne!(tc.items.len(), 0);
             assert!(tc.items.contains(&8));
         }
     }
@@ -714,7 +714,7 @@ mod tests {
         let m = match_pattern(&t, "C:\\Users\\z\\AppData\\Local", &["Temp"]);
         assert!(m.contains(&8));
         let bad = match_pattern(&t, "C:\\Does\\Not\\Exist", &["Temp"]);
-        assert!(bad.is_empty());
+        assert_eq!(bad.len(), 0);
     }
 
     /// The browser-cache pattern table must match per-PROFILE cache

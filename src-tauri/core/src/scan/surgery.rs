@@ -385,7 +385,7 @@ mod tests {
         // Program Files must still show x.dll.
         assert_eq!(t.children_sorted(2).to_vec(), vec![4]);
         // Users' slice is now empty but VALID (not corrupted).
-        assert!(t.children_sorted(3).is_empty());
+        assert_eq!(t.children_sorted(3).len(), 0);
         // Every folder's slice stays consistent after ANY surgery.
         for id in 0..t.arena.len() as u32 {
             if let Some(n) = t.node(id) {

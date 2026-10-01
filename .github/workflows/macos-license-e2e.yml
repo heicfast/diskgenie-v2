@@ -65,16 +65,34 @@ jobs:
       - name: Install the resolution tool
         run: brew install displayplacer 2>&1 | tail -1 || true
 
+      - name: Set up a writable Keychain (SecItemAdd targets the default)
+        # The probe proved SecItemAdd BLOCKS on the runner's login
+        # keychain (the Security agent wants UI a headless session
+        # cannot show). The standard CI remedy: create a dedicated
+        # keychain with a known password, unlock it, disable its lock
+        # timeout, and make it the DEFAULT — SecItemAdd then targets an
+        # unlocked keychain and returns without any agent round-trip.
+        # (Codesigning CI has used this exact recipe for a decade.)
+        run: |
+          KC="$RUNNER_TEMP/diskgenie-ci.keychain-db"
+          security create-keychain -p "ci-pass" "$KC"
+          security set-keychain-settings -lut 7200 "$KC"
+          security unlock-keychain -p "ci-pass" "$KC"
+          security default-keychain -s "$KC"
+          echo "[kc] default keychain -> $KC"
+          security default-keychain
+
       - name: Probe the runner's Keychain (write path evidence)
-        # The activation persists via SecItemAdd (a login-keychain
-        # generic-password item). On a headless runner the Security
-        # framework CAN block on the security agent — a direct Swift
-        # probe answers it before the app run muddies the water.
+        # The activation persists via SecItemAdd (a generic-password
+        # item in the DEFAULT keychain). The dedicated unlocked keychain
+        # above is now that target; this direct Swift probe answers
+        # whether the write path works BEFORE the app run muddies the
+        # water.
         run: |
           cat > "$RUNNER_TEMP/kcprobe.swift" <<'SWIFT'
           import Foundation
           import Security
-          let service = "com.confines.diskbytes.probe" as CFString
+          let service = "app.diskgenie.ci-probe" as CFString
           let account = "ci-probe" as CFString
           var add: [String: Any] = [
               kSecClass as String: kSecClassGenericPassword,
@@ -98,7 +116,7 @@ jobs:
           exit(rstatus == errSecSuccess ? 0 : 1)
           SWIFT
           swiftc -O -o "$RUNNER_TEMP/kcprobe" "$RUNNER_TEMP/kcprobe.swift"
-          timeout 15 "$RUNNER_TEMP/kcprobe" || echo "::warning::Keychain probe FAILED/timed out — SecItemAdd blocks on this runner (the activation hang's root cause)"
+          timeout 15 "$RUNNER_TEMP/kcprobe" || echo "::warning::Keychain probe FAILED/timed out — SecItemAdd still blocks with a dedicated unlocked default keychain"
 
       - name: Mint the run's license keys
         id: mint
@@ -202,11 +220,13 @@ jobs:
           d = json.loads(os.environ["LOOK"])
           lic = d["license"]
           print(f"[e2e] license id={lic['id']} email={lic['customerEmail']}")
-          macs = [x for x in d.get("devices", []) if (x.get("osVersion") or "").startswith("macOS") or (x.get("arch") or "") in ("arm64", "x86_64")]
+          macs = [x for x in d.get("devices", []) if (x.get("osVersion") or "").startswith("macOS") or (x.get("arch") or "") in ("aarch64", "arm64", "x86_64")]
           assert macs, "no mac device row — the activation facts never landed server-side"
           dev = macs[0]
           print(f"[e2e] mac device: hostname={dev.get('hostname')} os={dev.get('osVersion')} arch={dev.get('arch')} ram={dev.get('ramMb')} model={dev.get('machineModel')}")
-          assert (dev.get("arch") or "") in ("arm64", "x86_64"), "arch missing"
+          # Rust's std::env::consts::ARCH reports "aarch64" on Apple Silicon
+          # (the OS/CLT spelling is "arm64" — both are Apple-Silicon truths).
+          assert (dev.get("arch") or "") in ("aarch64", "arm64", "x86_64"), "arch missing"
           assert dev.get("osVersion"), "os_version missing"
           assert dev.get("hostname"), "hostname missing"
           print("[e2e] device-row facts VERIFIED")

@@ -211,74 +211,117 @@ fn keychain_dict(
     }
 }
 
-/// Encrypt-and-store (a Keychain "generic password" item; the Keychain
-/// itself provides the confidentiality DPAPI gives on Windows).
-///
-/// # Errors
-/// When the Keychain refuses the upsert (status != 0).
-pub fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
-    unsafe {
-        let service = cf_key(KEYCHAIN_SERVICE);
-        let account = cf_key(KEYCHAIN_ACCOUNT);
-        // SAFETY: Create-rule CFData over the slice.
-        let cf_data = CFDataCreate(std::ptr::null(), data.as_ptr(), data.len() as isize);
-        // Replace any existing item first (idempotent upsert).
-        let del_query = keychain_dict(service, account, std::ptr::null());
-        SecItemDelete(del_query);
-        cf_release(del_query);
-        let add_attrs = keychain_dict(service, account, cf_data);
-        let status = SecItemAdd(add_attrs, std::ptr::null_mut());
-        cf_release(add_attrs);
-        cf_release(cf_data);
-        cf_release(service);
-        cf_release(account);
-        if status != 0 {
-            return Err(format!("Keychain write failed (status {status})"));
-        }
-        // The stored form is the raw payload (the Keychain is the
-        // protection); return it so callers keep one byte contract.
-        Ok(data.to_vec())
-    }
+/// Run a Keychain FFI call on a worker thread under a hard wall-clock
+/// bound. A locked keychain (or a headless session whose Security agent
+/// cannot show its prompt) makes `SecItem*` block INDEFINITELY — the
+/// licensing commands must answer the user even then. Real Keychain
+/// operations complete in single-digit milliseconds, so 10 s is >1000x
+/// headroom; on the timeout the stuck thread is abandoned (a one-thread
+/// leak in an already-pathological session beats an eternal spinner).
+fn with_keychain_watchdog<T>(op: impl FnOnce() -> T + Send + 'static) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("keychain-op".into())
+        .spawn(move || {
+            // Send best-effort: a receiver drop (timeout) must not panic
+            // the worker thread.
+            let _ = tx.send(op());
+        })
+        .map_err(|e| format!("Keychain worker spawn failed ({e})"))?;
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .map_err(|_| "Keychain did not respond within 10 s (locked or unavailable)".to_string())
 }
 
-/// Fetch-and-decrypt from the Keychain.
+/// Encrypt-and-store (a Keychain "generic password" item; the Keychain
+/// itself provides the confidentiality DPAPI gives on Windows).
+/// Watchdog-bounded: a blocked Security agent returns an error, never a
+/// hang (the CI runner's login keychain blocks exactly this way).
 ///
 /// # Errors
-/// When the Keychain holds no item or returns no data.
+/// When the Keychain refuses the upsert (status != 0) or never answers.
+pub fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
+    let payload = data.to_vec();
+    with_keychain_watchdog(move || {
+        // SAFETY: the FFI sequence below is the whole closure body; all
+        // Create-rule objects are released on every path.
+        unsafe {
+            let service = cf_key(KEYCHAIN_SERVICE);
+            let account = cf_key(KEYCHAIN_ACCOUNT);
+            // SAFETY: Create-rule CFData over the owned payload.
+            let cf_data = CFDataCreate(
+                std::ptr::null(),
+                payload.as_ptr(),
+                payload.len() as isize,
+            );
+            // Replace any existing item first (idempotent upsert).
+            let del_query = keychain_dict(service, account, std::ptr::null());
+            SecItemDelete(del_query);
+            cf_release(del_query);
+            let add_attrs = keychain_dict(service, account, cf_data);
+            let status = SecItemAdd(add_attrs, std::ptr::null_mut());
+            cf_release(add_attrs);
+            cf_release(cf_data);
+            cf_release(service);
+            cf_release(account);
+            if status != 0 {
+                return Err(format!("Keychain write failed (status {status})"));
+            }
+            // The stored form is the raw payload (the Keychain is the
+            // protection); return it so callers keep one byte contract.
+            Ok(payload)
+        }
+    })
+    .and_then(std::convert::identity)
+}
+
+/// Fetch-and-decrypt from the Keychain. Watchdog-bounded like the
+/// write path: a locked keychain at boot must fail fast (the app runs
+/// unlicensed and re-validates) instead of stalling the window.
+///
+/// # Errors
+/// When the Keychain holds no item, returns no data, or never answers.
 pub fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
     // `data` is the caller's fallback blob; when the Keychain holds the
     // item it wins (that IS the persisted state).
     let _ = data;
-    unsafe {
-        let service = cf_key(KEYCHAIN_SERVICE);
-        let account = cf_key(KEYCHAIN_ACCOUNT);
-        let query = keychain_dict(service, account, std::ptr::null());
-        let return_data_key = cf_key("kSecReturnData");
-        // SAFETY: kCFBooleanTrue singleton (immutable).
-        let yes = cf_boolean_true() as *mut c_void;
-        CFDictionaryAddValue(query, return_data_key, yes);
-        let mut result: *const c_void = std::ptr::null();
-        let status = SecItemCopyMatching(query, &mut result);
-        cf_release(query);
-        cf_release(return_data_key);
-        cf_release(service);
-        cf_release(account);
-        if status != 0 || result.is_null() {
-            return Err("License state not found in the Keychain".into());
+    with_keychain_watchdog(|| {
+        // SAFETY: same FFI lifetime discipline as the write path; every
+        // Create-rule object is released on every path.
+        unsafe {
+            let service = cf_key(KEYCHAIN_SERVICE);
+            let account = cf_key(KEYCHAIN_ACCOUNT);
+            let query = keychain_dict(service, account, std::ptr::null());
+            let return_data_key = cf_key("kSecReturnData");
+            // SAFETY: kCFBooleanTrue singleton (immutable).
+            let yes = cf_boolean_true() as *mut c_void;
+            CFDictionaryAddValue(query, return_data_key, yes);
+            let mut result: *const c_void = std::ptr::null();
+            let status = SecItemCopyMatching(query, &mut result);
+            cf_release(query);
+            cf_release(return_data_key);
+            cf_release(service);
+            cf_release(account);
+            if status != 0 || result.is_null() {
+                return Err("License state not found in the Keychain".into());
+            }
+            // SAFETY: CFData accessors on the returned item.
+            let len = unsafe { CFDataGetLength(result) };
+            let ptr = unsafe { CFDataGetBytePtr(result) };
+            let out = if len > 0 {
+                // SAFETY: ptr valid for len bytes per the CFData contract.
+                unsafe { std::slice::from_raw_parts(ptr, len as usize) }.to_vec()
+            } else {
+                Vec::new()
+            };
+            // SAFETY: release the returned item.
+            cf_release(result);
+            Ok(out)
         }
-        // SAFETY: CFData accessors on the returned item.
-        let len = unsafe { CFDataGetLength(result) };
-        let ptr = unsafe { CFDataGetBytePtr(result) };
-        let out = if len > 0 {
-            // SAFETY: ptr valid for len bytes per the CFData contract.
-            unsafe { std::slice::from_raw_parts(ptr, len as usize) }.to_vec()
-        } else {
-            Vec::new()
-        };
-        // SAFETY: release the returned item.
-        cf_release(result);
-        Ok(out)
-    }
+    })
+    .and_then(std::convert::identity)
 }
 
 /// POSIX stat() hardlink identity (st_dev, st_ino) — the dupes
