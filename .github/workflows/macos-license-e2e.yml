@@ -65,6 +65,41 @@ jobs:
       - name: Install the resolution tool
         run: brew install displayplacer 2>&1 | tail -1 || true
 
+      - name: Probe the runner's Keychain (write path evidence)
+        # The activation persists via SecItemAdd (a login-keychain
+        # generic-password item). On a headless runner the Security
+        # framework CAN block on the security agent — a direct Swift
+        # probe answers it before the app run muddies the water.
+        run: |
+          cat > "$RUNNER_TEMP/kcprobe.swift" <<'SWIFT'
+          import Foundation
+          import Security
+          let service = "com.confines.diskbytes.probe" as CFString
+          let account = "ci-probe" as CFString
+          var add: [String: Any] = [
+              kSecClass as String: kSecClassGenericPassword,
+              kSecAttrService as String: service,
+              kSecAttrAccount as String: account,
+              kSecValueData as String: Data("probe".utf8),
+          ]
+          let t0 = Date()
+          SecItemDelete(add as CFDictionary)
+          let status = SecItemAdd(add as CFDictionary, nil)
+          print("[kcprobe] SecItemAdd status=\(status) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+          var query: [String: Any] = [
+              kSecClass as String: kSecClassGenericPassword,
+              kSecAttrService as String: service,
+              kSecAttrAccount as String: account,
+              kSecReturnData as String: true,
+          ]
+          var out: AnyObject?
+          let rstatus = SecItemCopyMatching(query as CFDictionary, &out)
+          print("[kcprobe] SecItemCopyMatching status=\(rstatus) data=\(out != nil)")
+          exit(rstatus == errSecSuccess ? 0 : 1)
+          SWIFT
+          swiftc -O -o "$RUNNER_TEMP/kcprobe" "$RUNNER_TEMP/kcprobe.swift"
+          timeout 15 "$RUNNER_TEMP/kcprobe" || echo "::warning::Keychain probe FAILED/timed out — SecItemAdd blocks on this runner (the activation hang's root cause)"
+
       - name: Mint the run's license keys
         id: mint
         env:
@@ -104,7 +139,7 @@ jobs:
           APP_BIN="$APP" \
           OUT_DIR="$OUT" \
           FRAMES=42 \
-          BOOT_WAIT_S=9 \
+          BOOT_WAIT_S=5 \
           LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_TOUR=1 DISKBYTES_TOUR_MODE=license DISKBYTES_TOUR_LICENSE_KEY=$KEY" \
           bash scripts/ci/mac-capture.sh
           echo "--- app-stderr tail ---"; tail -25 "$OUT/app-stderr.log" || true
@@ -147,7 +182,7 @@ jobs:
           APP_BIN="$APP" \
           OUT_DIR="$OUT" \
           FRAMES=42 \
-          BOOT_WAIT_S=9 \
+          BOOT_WAIT_S=5 \
           LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_TOUR=1 DISKBYTES_TOUR_MODE=license DISKBYTES_TOUR_LICENSE_KEY=$KEY" \
           bash scripts/ci/mac-capture.sh
 
@@ -161,20 +196,21 @@ jobs:
           LOOK=$(curl -sS --max-time 30 -X POST "$API/v1/admin/lookup" \
             -H "authorization: Bearer $ADMIN" -H "content-type: application/json" \
             -d "{\"key\":\"$KEY\"}")
-          echo "$LOOK" | python3 -c '
-            import json, sys
-            d = json.load(sys.stdin)
-            lic = d["license"]
-            print(f"[e2e] license id={lic[\"id\"]} email={lic[\"customerEmail\"]}")
-            macs = [x for x in d.get("devices", []) if (x.get("osVersion") or "").startswith("macOS") or (x.get("arch") or "") == "arm64"]
-            assert macs, "no mac device row — the activation facts never landed server-side"
-            dev = macs[0]
-            print(f"[e2e] mac device: hostname={dev.get(\"hostname\")} os={dev.get(\"osVersion\")} arch={dev.get(\"arch\")} ram={dev.get(\"ramMb\")} model={dev.get(\"machineModel\")}")
-            assert (dev.get("arch") or "") in ("arm64", "x86_64"), "arch missing"
-            assert dev.get("osVersion"), "os_version missing"
-            assert dev.get("hostname"), "hostname missing"
-            print("[e2e] device-row facts VERIFIED")
-          '
+          LOOK="$LOOK" KEY="$KEY" python3 <<'PYEOF'
+          import json
+          import os
+          d = json.loads(os.environ["LOOK"])
+          lic = d["license"]
+          print(f"[e2e] license id={lic['id']} email={lic['customerEmail']}")
+          macs = [x for x in d.get("devices", []) if (x.get("osVersion") or "").startswith("macOS") or (x.get("arch") or "") in ("arm64", "x86_64")]
+          assert macs, "no mac device row — the activation facts never landed server-side"
+          dev = macs[0]
+          print(f"[e2e] mac device: hostname={dev.get('hostname')} os={dev.get('osVersion')} arch={dev.get('arch')} ram={dev.get('ramMb')} model={dev.get('machineModel')}")
+          assert (dev.get("arch") or "") in ("arm64", "x86_64"), "arch missing"
+          assert dev.get("osVersion"), "os_version missing"
+          assert dev.get("hostname"), "hostname missing"
+          print("[e2e] device-row facts VERIFIED")
+          PYEOF
 
       - name: Revoke the run's keys (cleanup)
         if: always() && steps.mint.outputs.skip != 'true'
@@ -183,13 +219,18 @@ jobs:
         run: |
           API="https://diskbytes-license.heictojpg-pics.workers.dev"
           for f in "$RUNNER_TEMP/key-lifetime.txt" "$RUNNER_TEMP/key-yearly.txt"; do
+            [ -f "$f" ] || { echo "[e2e] no key file $f — skipping"; continue; }
             KEY=$(cat "$f")
             ID=$(curl -sS --max-time 30 -X POST "$API/v1/admin/lookup" \
               -H "authorization: Bearer $ADMIN" -H "content-type: application/json" \
               -d "{\"key\":\"$KEY\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["license"]["id"])')
-            curl -sS --max-time 30 -X POST "$API/v1/admin/keys/$ID/revoke" \
-              -H "authorization: Bearer $ADMIN" -H "content-type: application/json" -d "{}" | head -c 120
-            echo " — revoked key …${KEY: -4}"
+            if [ -n "$ID" ]; then
+              curl -sS --max-time 30 -X POST "$API/v1/admin/keys/$ID/revoke" \
+                -H "authorization: Bearer $ADMIN" -H "content-type: application/json" -d "{}" | head -c 120
+              echo " — revoked key …${KEY: -4}"
+            else
+              echo "::warning::lookup failed for key …${KEY: -4} — revoke by hand"
+            fi
           done
 
       - name: Upload phase artifacts

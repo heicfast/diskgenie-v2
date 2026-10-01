@@ -151,16 +151,50 @@ pub fn license_status(mgr: State<'_, LicenseManager>) -> LicenseStatusView {
 /// / spoofed response) — the user-readable reason, never a silent
 /// fallback.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
-pub fn activate_license(
-    key: &str,
+pub async fn activate_license(
+    key: String,
     mgr: State<'_, LicenseManager>,
     app: AppHandle,
 ) -> Result<LicenseStatusView, String> {
+    // ALL blocking work (facts + network retries + Keychain persist)
+    // runs on the blocking pool: a SYNC command executes on the MAIN
+    // thread, and the 30 s-timeout network + Keychain writes froze the
+    // whole window for their entire duration (the mac license E2E's
+    // permanently-"Activating" dialog — captured frame-perfect).
+    let app_blocking = app.clone();
+    let state =
+        tauri::async_runtime::spawn_blocking(move || activate_blocking(&key, &app_blocking))
+            .await
+            .map_err(|e| format!("activation task failed: {e}"))??;
+    let now = now_unix();
+    let v = view(&state, now);
+    *mgr.state.lock() = state;
+    let _ = app.emit("license-changed", &v);
+    Ok(v)
+}
+
+/// The blocking core of [`activate_license`] (runs off the main
+/// thread): normalize → facts → server activate with retries → local
+/// Ed25519 verification → Keychain persist. Returns the next state.
+///
+/// # Errors
+/// The typed [`LicenseError`] copy (invalid key / device slot /
+/// expired / spoofed response) — the user-readable reason, never a
+/// silent fallback.
+fn activate_blocking(key: &str, app: &AppHandle) -> Result<LicenseState, String> {
+    let t0 = std::time::Instant::now();
     let Some(normalized) = normalize_key(key) else {
         return Err(LicenseError::InvalidKey.to_string());
     };
+    eprintln!(
+        "[bench] license activate start key_last4={}",
+        &normalized[normalized.len().saturating_sub(4)..]
+    );
     let facts = license::collect_device_facts()?;
+    eprintln!(
+        "[bench] license facts collected ms={}",
+        t0.elapsed().as_millis()
+    );
     let hw = facts.hardware_hash.clone();
     let http = ReqwestLicense::new()?;
     let api = LicenseApi::new(http);
@@ -186,6 +220,11 @@ pub fn activate_license(
         ));
         outcome = api.activate(&normalized, &facts);
     }
+    eprintln!(
+        "[bench] license network done attempts={} ms={}",
+        attempt + 1,
+        t0.elapsed().as_millis()
+    );
     let dto = outcome.map_err(|e| {
         if let Some(an) = app.try_state::<crate::analytics::Analytics>() {
             an.capture(
@@ -209,12 +248,14 @@ pub fn activate_license(
 
     let mut state = state_from_entitlement(&dto, &claims, &normalized, &hw, now);
     state.last_known_good = now;
+    eprintln!(
+        "[bench] license token verified ms={}",
+        t0.elapsed().as_millis()
+    );
     license::dpapi::save(&state)?;
-    identify_after_activation(&app, &normalized);
-    let v = view(&state, now);
-    *mgr.state.lock() = state;
-    let _ = app.emit("license-changed", &v);
-    Ok(v)
+    eprintln!("[bench] license persisted ms={}", t0.elapsed().as_millis());
+    identify_after_activation(app, &normalized);
+    Ok(state)
 }
 
 /// Verify a fresh entitlement: signature, key binding, hardware
@@ -275,9 +316,30 @@ pub fn identify_after_activation(app: &AppHandle, key: &str) {
 /// # Errors
 /// String error when the remote deactivate fails with a hard error.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
-pub fn deactivate_license(mgr: State<'_, LicenseManager>, app: AppHandle) -> Result<(), String> {
-    let state = mgr.state.lock().clone();
+pub async fn deactivate_license(
+    mgr: State<'_, LicenseManager>,
+    app: AppHandle,
+) -> Result<(), String> {
+    // The server-side slot free is network work — off the main thread
+    // (see activate_license for the freeze this prevents).
+    let current = mgr.state.lock().clone();
+    let hard_err = tauri::async_runtime::spawn_blocking(move || deactivate_blocking(&current))
+        .await
+        .map_err(|e| format!("deactivation task failed: {e}"))?;
+    hard_err?;
+    let now = now_unix();
+    *mgr.state.lock() = LicenseState::default();
+    let v = view(&LicenseState::default(), now);
+    let _ = app.emit("license-changed", &v);
+    Ok(())
+}
+
+/// The blocking core of [`deactivate_license`]: frees the server-side
+/// platform slot (network) and clears the Keychain item.
+///
+/// # Errors
+/// String error when the remote deactivate fails with a hard error.
+fn deactivate_blocking(state: &LicenseState) -> Result<(), String> {
     if state.license_key.is_empty() {
         return Ok(());
     }
@@ -292,10 +354,6 @@ pub fn deactivate_license(mgr: State<'_, LicenseManager>, app: AppHandle) -> Res
         }
     }
     license::dpapi::clear();
-    let now = now_unix();
-    *mgr.state.lock() = LicenseState::default();
-    let v = view(&LicenseState::default(), now);
-    let _ = app.emit("license-changed", &v);
     Ok(())
 }
 
@@ -307,12 +365,23 @@ pub fn deactivate_license(mgr: State<'_, LicenseManager>, app: AppHandle) -> Res
 /// String error on a hard validation failure (revoked / expired /
 /// device mismatch); soft failures keep the grace path and return Ok.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
-pub fn validate_now(
+pub async fn validate_now(
     app: AppHandle,
     mgr: State<'_, LicenseManager>,
 ) -> Result<LicenseStatusView, String> {
-    let (v, err) = validate_and_apply(&app, &mgr);
+    // One validation NOW (the Pro status card's "Validate now") — the
+    // network + Keychain work runs off the main thread (see
+    // activate_license).
+    let current = mgr.state.lock().clone();
+    let app_blocking = app.clone();
+    let (next, err) =
+        tauri::async_runtime::spawn_blocking(move || validate_cycle(&current, &app_blocking))
+            .await
+            .map_err(|e| format!("validation task failed: {e}"))?;
+    let now = now_unix();
+    let v = view(&next, now);
+    *mgr.state.lock() = next;
+    let _ = app.emit("license-changed", &v);
     if let Some(e) = err {
         return Err(e);
     }
@@ -333,11 +402,33 @@ fn validate_and_apply(
     app: &AppHandle,
     mgr: &LicenseManager,
 ) -> (LicenseStatusView, Option<String>) {
-    let mut state = mgr.state.lock().clone();
+    // The scheduler's path (its own thread — the blocking work is
+    // already off the main thread there).
+    let current = mgr.state.lock().clone();
+    let (next, err) = validate_cycle(&current, app);
     let now = now_unix();
+    let v = view(&next, now);
+    *mgr.state.lock() = next;
+    let _ = app.emit("license-changed", &v);
+    (v, err)
+}
+
+/// The blocking core of one validation cycle (PURE function of the
+/// input state — network + verification + persistence, no locks):
+/// * fresh verified token → refresh timestamps/token
+/// * transport/parse failure → grace continues (frozen)
+/// * a response that FAILS local verification (spoofed server) →
+///   grace continues (a mimic cannot extend anything; the token's own
+///   `exp` is the hard stop — the honest choice during key rotation,
+///   where a stale app build would otherwise mass-deactivate)
+/// * explicit hard errors (revoked / expired / device mismatch) →
+///   local deactivate
+fn validate_cycle(state: &LicenseState, app: &AppHandle) -> (LicenseState, Option<String>) {
+    let mut state = state.clone();
     if state.license_key.is_empty() || state.simulated {
-        return (view(&state, now), None);
+        return (state, None);
     }
+    let now = now_unix();
     let mut error = None;
     let (facts, hw) = match license::collect_device_facts() {
         Ok(f) => (f.clone(), f.hardware_hash),
@@ -345,7 +436,7 @@ fn validate_and_apply(
             // Fingerprint unreadable (WMI-hobbled machine?): keep the
             // grace path; the token expiry is the backstop.
             let _ = e;
-            return (view(&state, now), None);
+            return (state, None);
         }
     };
     let result = match ReqwestLicense::new() {
@@ -393,10 +484,7 @@ fn validate_and_apply(
         Err(_) => {}
     }
     let _ = license::dpapi::save(&state);
-    let v = view(&state, now);
-    *mgr.state.lock() = state;
-    let _ = app.emit("license-changed", &v);
-    (v, error)
+    (state, error)
 }
 
 /// Start the license scheduler: an immediate launch validation + the

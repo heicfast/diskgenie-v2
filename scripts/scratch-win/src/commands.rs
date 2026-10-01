@@ -5,24 +5,16 @@
 pub mod dupes;
 #[path = "../../../src-tauri/src/commands/scan.rs"]
 pub mod scan;
+#[path = "../../../src-tauri/src/commands/license.rs"]
+pub mod license;
 #[path = "../../../src-tauri/src/commands/sidebar.rs"]
 pub mod sidebar;
 #[path = "../../../src-tauri/src/commands/snapshots_cmd.rs"]
 pub mod snapshots_cmd;
 
-/// The license gate stub (`crate::commands::license`): every mirrored
-/// command's `require_licensed` call must type-check; the REAL gate is
-/// unchanged this session and not under mirror coverage.
-pub mod license {
-    /// The real manager's stand-in.
-    pub struct LicenseManager;
-    /// The real gate's signature (`&license` derefs through State) —
-    /// always Ok in the stub (signature parity is the point).
-    #[allow(clippy::unnecessary_wraps)]
-    pub fn require_licensed(_mgr: &LicenseManager, _now: i64) -> Result<(), String> {
-        Ok(())
-    }
-}
+// The REAL commands/license.rs is #[path]-included above (session 17:
+// the async + spawn_blocking refactor). Its `require_licensed` gate is
+// exercised by the real module's own unit tests on the host.
 
 /// The layout cache stubs (`crate::commands::layout`): scan.rs's
 /// clear_all_caches calls these on every tree swap. Units — only the

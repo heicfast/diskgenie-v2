@@ -197,9 +197,7 @@ pub async fn start_scan(
         // proves the flip cache served the tree (no walk happened).
         eprintln!(
             "[bench] scan restored gen={generation} files={} dirs={} bytes={}",
-            root_stats.2,
-            root_stats.3,
-            root_stats.1
+            root_stats.2, root_stats.3, root_stats.1
         );
         // swap_tree files the tree being displaced under ITS key
         // (the symmetric flip-back) — the restore consumes the

@@ -26,6 +26,8 @@
 #![allow(dead_code)]
 
 mod commands;
+#[path = "../../../src-tauri/src/license.rs"]
+mod license;
 mod platform;
 #[path = "../../../src-tauri/src/state.rs"]
 mod state;
@@ -41,5 +43,9 @@ mod analytics {
         /// The real capture signature.
         #[allow(clippy::unused_self)] // signature parity with the real layer
         pub fn capture(&self, _event: &str, _props: &[(&str, serde_json::Value)]) {}
+
+        /// The real identify signature (post-activation identity merge).
+        #[allow(clippy::unused_self)] // signature parity with the real layer
+        pub fn identify(&self, _customer_ref: &str) {}
     }
 }

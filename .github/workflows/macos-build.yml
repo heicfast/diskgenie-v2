@@ -94,7 +94,7 @@ jobs:
           APP_BIN="$BIN" \
           OUT_DIR="$OUT" \
           FRAMES=6 \
-          BOOT_WAIT_S=9 \
+          BOOT_WAIT_S=5 \
           CADENCE_MS=3000 \
           FULL_CONTEXT=1 \
           LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_WINDOW=1440x860" \

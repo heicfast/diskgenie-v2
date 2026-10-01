@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window (spec M0.4: dialog plugin only; window controls via core)",
+  "description": "Capability for the main window (spec M0.4: dialog plugin only; window controls via core). Window-management surface: drag + the Windows caption verbs, plus set-size/set-fullscreen/center — the CI tour's responsive steps drive the same core verbs any future window-layout feature would (the session-17 mac audit proved setSize/setFullscreen silently no-op without them: every capture stayed 1440x860 through the window-min/window-full steps).",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -11,6 +11,9 @@
     "core:window:allow-minimize",
     "core:window:allow-close",
     "core:window:allow-is-maximized",
+    "core:window:allow-set-size",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-center",
     "core:event:default"
   ]
 }

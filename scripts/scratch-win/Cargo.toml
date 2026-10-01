@@ -5,6 +5,11 @@ edition = "2021"
 rust-version = "1.80"
 publish = false
 
+[features]
+# The real crate's CI simulation feature (check-cfg parity: the real
+# commands/license.rs gates on it; the mirror never enables it).
+ci-license-sim = []
+
 # The local compile gate for the app-crate files this session touched
 # (state.rs, commands/{sidebar,dupes,snapshots_cmd}.rs). The FULL app
 # crate cannot cross-compile on this host (aws-lc-sys builds C code),
@@ -22,6 +27,14 @@ parking_lot = "0.12"
 rayon = "1.10"
 sha2 = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+ed25519-dalek = "2.2"
+hmac = "0.12"
+# TLS is deliberately OFF in the mirror: the reqwest transport's TLS
+# backend (ring/aws-lc) builds C code that cannot cross-compile to
+# msvc on this host; the mirror compiles the CALLERS (commands) and
+# runs the module's unit tests with the scripted fake transport — the
+# real TLS stack is exercised by the Windows/macOS CI builds.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
 tauri = { path = "tauri-stub" }
 
 [lints.rust]

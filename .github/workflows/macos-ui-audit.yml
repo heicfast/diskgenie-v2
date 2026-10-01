@@ -85,7 +85,7 @@ jobs:
           APP_BIN="$APP" \
           OUT_DIR="$OUT" \
           FRAMES=66 \
-          BOOT_WAIT_S=9 \
+          BOOT_WAIT_S=5 \
           LAUNCH_ENV="DISKBYTES_SCAN=$HOME/diskbytes-test DISKBYTES_TOUR=1 DISKBYTES_MODE=Folders DISKBYTES_LICENSE_SIM=1 DISKBYTES_WINDOW=1440x860" \
           bash scripts/ci/mac-capture.sh
           # stdout/stderr live in the out dir — surface the tail for

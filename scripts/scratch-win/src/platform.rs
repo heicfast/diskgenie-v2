@@ -76,6 +76,102 @@ pub mod os {
     pub fn enable_backup_privilege() -> bool {
         false
     }
+
+    // ── The license-facts surface (license.rs's collect_device_facts) ──
+    // Signature-parity stubs: the REAL collectors are platform code
+    // (sysctl/IOKit/Registry) and not under mirror coverage; only the
+    // CALLERS are.
+
+    /// The machine GUID analogue (IOPlatformUUID / MachineGuid).
+    #[must_use]
+    pub fn machine_guid() -> Option<String> {
+        None
+    }
+
+    /// The system drive's volume serial.
+    #[must_use]
+    pub fn system_drive_serial() -> Option<u32> {
+        None
+    }
+
+    /// The CPU brand string.
+    #[must_use]
+    pub fn cpuid_brand() -> Option<String> {
+        None
+    }
+
+    /// The hostname.
+    #[must_use]
+    pub fn hostname() -> Option<String> {
+        None
+    }
+
+    /// The OS version string.
+    #[must_use]
+    pub fn os_version() -> String {
+        "stub".into()
+    }
+
+    /// Physical RAM in MB.
+    #[must_use]
+    pub fn ram_mb() -> Option<u64> {
+        None
+    }
+
+    /// The machine model identifier.
+    #[must_use]
+    pub fn machine_model() -> Option<String> {
+        None
+    }
+
+    /// The baseboard serial.
+    #[must_use]
+    pub fn baseboard_serial() -> Option<String> {
+        None
+    }
+
+    /// The firmware UUID.
+    #[must_use]
+    pub fn firmware_uuid() -> Option<String> {
+        None
+    }
+
+    /// The firmware version.
+    #[must_use]
+    pub fn firmware_version() -> Option<String> {
+        None
+    }
+
+    /// Logical CPU cores.
+    #[must_use]
+    pub fn cpu_cores() -> Option<u32> {
+        None
+    }
+
+    /// The CPU architecture.
+    #[must_use]
+    pub fn arch() -> &'static str {
+        "stub"
+    }
+
+    /// The app data dir (license.bin's parent).
+    #[must_use]
+    pub fn app_data_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(".")
+    }
+
+    /// DPAPI/Keychain protect (the stub is a passthrough — the CALLERS
+    /// are under coverage, not the Keychain itself).
+    #[allow(clippy::unnecessary_wraps)] // signature parity with the real Keychain seam
+    pub fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(data.to_vec())
+    }
+
+    /// DPAPI/Keychain unprotect (stub: not-found, exactly like a fresh
+    /// machine — the load path's cold branch).
+    pub fn dpapi_unprotect(_data: &[u8]) -> Result<Vec<u8>, String> {
+        Err("stub: not found".into())
+    }
 }
 
 /// The platform host (`Arc<HostPlatform>` in managed state) — a Copy
