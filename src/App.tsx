@@ -28,7 +28,7 @@ import { useLicenseStore, attachLicenseEvents } from "./state/license";
 import { bootstrapMonitor } from "./state/monitor";
 import { bootstrapDupes } from "./state/dupes";
 import { preloadApplications } from "./state/applications";
-import { getBreadcrumb, type CrumbData } from "./viz/exploreIpc";
+import { getBreadcrumb, openNode, type CrumbData } from "./viz/exploreIpc";
 import { invoke } from "./lib/ipc";
 import { pushRecent, recentTargetLabel } from "./sidebar/RecentSection";
 import { TourDriver } from "./shell/TourDriver";
@@ -366,7 +366,8 @@ function AppShell() {
           id={previewId}
           onClose={() => setPreviewId(null)}
           onOpenDefault={(id) => {
-            void invoke("open_node", { generation, id }).catch(() => undefined);
+            // openNode toasts on failure — never a silent no-op.
+            void openNode(generation, id);
             setPreviewId(null);
           }}
         />

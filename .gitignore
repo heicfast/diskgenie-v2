@@ -12,3 +12,4 @@ upload/
 
 # Local visual-audit captures (agent-browser sessions) — not CI artifacts
 ci-artifacts/local-audit/
+ci-artifacts/s14/

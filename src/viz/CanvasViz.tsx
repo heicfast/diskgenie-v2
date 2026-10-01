@@ -9,7 +9,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useArrowNav } from "../lib/useArrowNav";
 import { bytes } from "../lib/format";
 import { abbreviate } from "./abbrev";
-import { useExploreStore } from "../state/explore";
 import {
   CELL_KIND, DIR_BIT, cssRgbaTheme, getLayout, getNames, type Cell, type GroupDesc, type LayoutResult,
 } from "./layoutIpc";
@@ -474,67 +473,12 @@ export function CanvasViz(props: CanvasVizProps) {
     },
   });
 
-  // ── Focus pulse (session 13) ───────────────────────────────────────
-  // `focusItem` on a file lands here as a one-shot DOM ring over the
-  // cell (compositor-driven CSS; no canvas rAF loop). Geometry in
-  // LAYOUT coordinates inside a wrapper carrying the same rescale
-  // transform as the canvases, so the pulse stays glued to its cell at
-  // every shell size. Arcs pulse at their wedge centroid (a rect can't
-  // follow a ring sector). The lifecycle (clear) is owned by the
-  // useFocusPulseHost hook in ExploreView.
-  const pulse = useExploreStore((s) => s.focusPulse);
-  const pulseBox = useMemo(() => {
-    if (!pulse || !layout) return null;
-    const c = cellsById.get(pulse.id);
-    if (!c) return null;
-    const kind = c.flags & 0b111;
-    if (kind === CELL_KIND.RECT || kind === CELL_KIND.HEADER) {
-      return { left: c.g[0], top: c.g[1], width: c.g[2], height: c.g[3] };
-    }
-    if (kind === CELL_KIND.CIRCLE || kind === CELL_KIND.DOT) {
-      const [cx, cy, r] = [c.g[0], c.g[1], c.g[2]];
-      return { left: cx - r, top: cy - r, width: r * 2, height: r * 2 };
-    }
-    // ARC: the wedge's mid-angle, mid-radius point — a square pulse
-    // centered on it (sized to the sector's radial thickness).
-    const [cx, cy] = layout.meta.center ?? [0, 0];
-    const a0 = c.g[0];
-    const a1 = c.g[1];
-    const ri = c.g[2];
-    const ro = c.g[3];
-    const mid = (a0 + a1) / 2;
-    const rm = (ri + ro) / 2;
-    const span = Math.max(ro - ri, Math.min(24, ((a1 - a0) * rm) / 2));
-    return {
-      left: cx + Math.cos(mid) * rm - span / 2,
-      top: cy + Math.sin(mid) * rm - span / 2,
-      width: span,
-      height: span,
-    };
-  }, [pulse, layout, cellsById]);
-
   return (
     <div className="db-viz-wrap">
       <div ref={shellRef} className="db-viz-canvas-shell">
         {size.w >= 40 && size.h >= 40 && <canvas ref={staticRef} style={rescale} />}
         {size.w >= 40 && size.h >= 40 && (
           <canvas ref={overlayRef} className="db-overlay-canvas" style={rescale} />
-        )}
-        {pulseBox && layout && (
-          <div
-            style={{
-              position: "absolute",
-              left: 0,
-              top: 0,
-              width: layout.meta.width,
-              height: layout.meta.height,
-              pointerEvents: "none",
-              ...(rescale ?? {}),
-            }}
-            aria-hidden="true"
-          >
-            <div key={pulse?.at} className="db-focus-pulse" style={pulseBox} />
-          </div>
         )}
         {errorText && (
           <div className="db-viz-error" role="alert">

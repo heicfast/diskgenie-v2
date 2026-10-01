@@ -137,6 +137,7 @@ pub fn run() {
                     let license = handle.state::<commands::license::LicenseManager>();
                     let _ = tauri::async_runtime::block_on(commands::scan::start_scan(
                         target,
+                        None,
                         handle.clone(),
                         state,
                         platform,

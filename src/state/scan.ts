@@ -59,7 +59,7 @@ interface ScanStore {
   scanTarget: string;
   /** Measured client-side scan duration for the completed generation. */
   scanDurationMs: number | null;
-  startScan: (target: string) => Promise<void>;
+  startScan: (target: string, force?: boolean) => Promise<void>;
   /** Turbo (MFT) scan; ELEVATION_REQUIRED → shield state. */
   startScanTurbo: (target: string) => Promise<void>;
   /** Stop the running scan (cooperative server-side). Reverts to the
@@ -76,6 +76,17 @@ interface ScanStore {
   /** Attach event listeners (call once from the Explore view; idempotent
    *  under StrictMode — see the spec §9 React pitfalls). */
   ensureListeners: () => void;
+}
+
+/** The `start_scan` result (session 14): the generation + whether the
+ * backend INSTANTLY RESTORED a cached tree for the exact target (the
+ * drive-flip fix — no scan ran, the tree already swapped, the
+ * scan-done event already fired). `stats` rides along on restores so
+ * the store adopts without a poll. */
+interface ScanStartResult {
+  generation: number;
+  restored: boolean;
+  stats: [number, number, number, number] | null;
 }
 
 interface ProgressEvent {
@@ -121,6 +132,72 @@ function recordTree(stats: [number, number, number, number] | null): void {
     : null;
 }
 
+/** Adopt a FINISHED scan outcome — the ONE code path for every
+ * arrival route (the `scan-done` event, the get_status reconcile, the
+ * watchdog, and the instant-restore return). Before session 14 these
+ * four sites hand-duplicated the adoption and only the EVENT path ran
+ * the per-id cache invalidations — a tree that arrived through the
+ * reconcile (the tiny-tree timing: scan-done fired before the store
+ * held the new generation) left stale hover/layout caches keyed by
+ * arena ids the fresh tree REUSES: names, sizes and chips from the
+ * previous target. Restores hit exactly that window by construction,
+ * so the adoption was unified first. */
+function adoptDone(
+  generation: number,
+  stats: [number, number, number, number] | null,
+  error: string | null,
+  engine: "standard" | "cache",
+): void {
+  // A new tree (or a restored one) invalidates every consumer keyed
+  // by arena ids or generation — the event path's discipline, now
+  // every path's.
+  invalidateHoverCache();
+  invalidateLayouts();
+  useDupesStore.getState().invalidate(generation);
+  if (error) {
+    scanStartedAt = null;
+    useScanStore.setState({ status: "error", error });
+    return;
+  }
+  // A new tree's arena reuses node ids for different nodes: navigation
+  // (currentFolder / selectedNode / folderStack) holds ids from the
+  // PREVIOUS tree and must reset here — not only on the status
+  // transition App.tsx watches. A RESTORE never leaves the "done"
+  // status (no transition fires), so without this the view kept
+  // drilling into a stale id that now resolves to an unrelated node
+  // in the restored tree (session 14, the drive-flip follow-up).
+  useExploreStore.getState().resetNavigation();
+  const scanDurationMs = scanStartedAt == null ? null : Math.max(0, performance.now() - scanStartedAt);
+  scanStartedAt = null;
+  useScanStore.setState({
+    status: "done",
+    scanDurationMs,
+    stats: stats
+      ? { logical: stats[0], onDisk: stats[1], files: stats[2], folders: stats[3] }
+      : null,
+  });
+  recordTree(stats);
+  track(EVENTS.scanCompleted, {
+    engine,
+    files: stats ? stats[2] : 0,
+    bytes: stats ? stats[1] : 0,
+  });
+  // Denied-folder notice data for the sidebar (spec §7/6.4). Only the
+  // event path carries live progress; restores and reconciles skip
+  // when no progress is standing.
+  const prog = useScanStore.getState().progress;
+  if (prog) {
+    try {
+      window.localStorage.setItem(
+        "diskbytes.last-denied",
+        JSON.stringify({ count: prog.denied, samples: prog.deniedSamples }),
+      );
+    } catch {
+      /* storage unavailable: notice stays hidden */
+    }
+  }
+}
+
 /** The lost-event reconcile: a tiny tree can finish scanning before the
  *  `start_scan` invoke resolves, so the `scan-done` event lands while
  *  the store still holds the previous generation and is dropped as
@@ -135,21 +212,7 @@ async function reconcileDone(generation: number): Promise<void> {
     }>("get_status");
     const rec = st?.lastDone;
     if (!rec || st?.scanning || rec.generation !== generation) return;
-    if (rec.error) {
-      scanStartedAt = null;
-      useScanStore.setState({ status: "error", error: rec.error });
-    } else {
-      const scanDurationMs = scanStartedAt == null ? null : Math.max(0, performance.now() - scanStartedAt);
-      scanStartedAt = null;
-      useScanStore.setState({
-        status: "done",
-        scanDurationMs,
-        stats: rec.stats
-          ? { logical: rec.stats[0], onDisk: rec.stats[1], files: rec.stats[2], folders: rec.stats[3] }
-          : null,
-      });
-      recordTree(rec.stats);
-    }
+    adoptDone(rec.generation, rec.stats, rec.error, "standard");
   } catch {
     /* get_status unavailable: the event stream still works */
   }
@@ -202,21 +265,7 @@ function ensureWatchdog(): void {
         }
         const rec = st.lastDone;
         if (rec && rec.generation >= cur.generation) {
-          if (rec.error) {
-            scanStartedAt = null;
-            useScanStore.setState({ status: "error", error: rec.error });
-          } else {
-            const scanDurationMs = scanStartedAt == null ? null : Math.max(0, performance.now() - scanStartedAt);
-            scanStartedAt = null;
-            useScanStore.setState({
-              status: "done",
-              scanDurationMs,
-              stats: rec.stats
-                ? { logical: rec.stats[0], onDisk: rec.stats[1], files: rec.stats[2], folders: rec.stats[3] }
-                : null,
-            });
-            recordTree(rec.stats);
-          }
+          adoptDone(rec.generation, rec.stats, rec.error, "standard");
         }
       } catch {
         /* poll failure: the next tick retries */
@@ -236,13 +285,24 @@ export const useScanStore = create<ScanStore>((set, get) => ({
   turboFallback: null,
   turboReport: null,
 
-  startScan: async (target: string) => {
+  startScan: async (target: string, force = false) => {
     try {
       scanStartedAt = performance.now();
-      const generation = await invoke<number>("start_scan", { target });
-      set({ status: "scanning", generation, error: null, stats: null, progress: null, scanTarget: target, scanDurationMs: null });
+      const res = await invoke<ScanStartResult>("start_scan", { target, force });
+      if (res.restored) {
+        // Instant restore (the drive-flip fix): the backend swapped a
+        // cached tree in DURING the invoke — the scan-done event fired
+        // before this store held the new generation, so it was dropped
+        // as stale. Adopt inline: generation + done state + the same
+        // invalidations every adoption path runs. No scanning flash,
+        // no watchdog, no poll round-trip.
+        set({ status: "done", generation: res.generation, error: null, progress: null, scanTarget: target, scanDurationMs: 0 });
+        adoptDone(res.generation, res.stats, null, "cache");
+        return;
+      }
+      set({ status: "scanning", generation: res.generation, error: null, stats: null, progress: null, scanTarget: target, scanDurationMs: null });
       ensureWatchdog();
-      await reconcileDone(generation);
+      await reconcileDone(res.generation);
     } catch (e) {
       scanStartedAt = null;
       set({ status: "error", error: userFacingError(e) });
@@ -360,48 +420,16 @@ export const useScanStore = create<ScanStore>((set, get) => ({
       const un2 = await listen<ScanDoneEvent>("scan-done", (e) => {
         const { generation, stats, error } = e;
         if (generation !== get().generation) return;
-        // New tree: the per-id caches (names LRU, hover details, decoded
-        // layouts) are keyed by ARENA id — a fresh scan reuses ids for
-        // different nodes, so stale entries would surface names, sizes
-        // and chips from the PREVIOUS target. The invalidators existed
-        // but were never called; this is the wiring point.
-        invalidateHoverCache();
-        invalidateLayouts();
-        // A fresh tree also retires any standing duplicates result (the
-        // engine's groups reference the old arena).
-        useDupesStore.getState().invalidate(generation);
-        if (error) {
-          scanStartedAt = null;
-          set({ status: "error", error });
-        } else {
-          const scanDurationMs = scanStartedAt == null ? null : Math.max(0, performance.now() - scanStartedAt);
-          scanStartedAt = null;
-          set({
-            status: "done",
-            scanDurationMs,
-            stats: stats
-              ? { logical: stats[0], onDisk: stats[1], files: stats[2], folders: stats[3] }
-              : null,
-          });
-          recordTree(stats);
-          track(EVENTS.scanCompleted, {
-            engine: "standard",
-            files: stats ? stats[2] : 0,
-            bytes: stats ? stats[1] : 0,
-          });
-          // Denied-folder notice data for the sidebar (spec §7/§6.4).
-          const prog = get().progress;
-          if (prog) {
-            try {
-              window.localStorage.setItem(
-                "diskbytes.last-denied",
-                JSON.stringify({ count: prog.denied, samples: prog.deniedSamples }),
-              );
-            } catch {
-              /* storage unavailable: notice stays hidden */
-            }
-          }
-        }
+        // New tree (the normal arrival route — the reconcile/watchdog
+        // paths replay the same adoption when this event was dropped
+        // as stale; adoptDone is the ONE shared code path). It runs the
+        // per-id invalidations: the caches (names LRU, hover details,
+        // decoded layouts) are keyed by ARENA id — a fresh scan reuses
+        // ids for different nodes, so stale entries would surface
+        // names, sizes and chips from the PREVIOUS target — and
+        // retires any standing duplicates result (the engine's groups
+        // reference the old arena).
+        adoptDone(generation, stats, error, "standard");
       });
       unlisteners.push(un1, un2, un3, un4, un5);
     })();

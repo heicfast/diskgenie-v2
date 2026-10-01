@@ -2,6 +2,9 @@
  * Item context menu (spec §7): Open / Preview / Show in Explorer /
  * Copy Path / Add to Cleanup — protected items disable stage with a
  * tooltip ("Windows manages this item"), cloud items refuse preview.
+ * "Open" (session 14): folders drill in (the app's Open semantic);
+ * files launch their default app (`open_node`) — same behavior as the
+ * inspector's Open and the preview overlay, one consistent contract.
  */
 import { useEffect, useRef, useState } from "react";
 import { EyeIcon, FolderOpenIcon, CopyIcon, LockKeyholeIcon, PlusIcon, ExternalLinkIcon } from "./Icon";
@@ -23,7 +26,7 @@ export interface ItemMenuTarget {
 }
 
 export interface ItemMenuActions {
-  open: (id: number) => void;
+  open: (id: number, isDir: boolean) => void;
   preview: (id: number) => void;
   reveal: (id: number) => void;
   copyPath: (id: number) => void;
@@ -71,7 +74,7 @@ export function ItemContextMenu({
 
   return (
     <div ref={ref} className="db-context" style={{ left, top }} role="menu">
-      <button type="button" role="menuitem" className="db-ctx-item" disabled={!info?.isDir} title={info && !info.isDir ? "Files are selected, not opened" : undefined} onClick={() => { actions.open(target.id); onClose(); }}>
+      <button type="button" role="menuitem" className="db-ctx-item" disabled={info?.isCloud} title={info?.isCloud ? "Cloud placeholders are never opened (that would download them)" : undefined} onClick={() => { actions.open(target.id, info?.isDir ?? true); onClose(); }}>
         <FolderOpenIcon size={14} /> Open
       </button>
       <button type="button" role="menuitem" className="db-ctx-item" disabled={info?.isCloud} title={info?.isCloud ? "Cloud placeholders are never previewed (that would download them)" : undefined} onClick={() => { actions.preview(target.id); onClose(); }}>

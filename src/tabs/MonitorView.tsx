@@ -194,7 +194,7 @@ export function MonitorView() {
             <div className="db-vol-row" key={v.root}>
               <span className="db-vol-name">{v.label}</span>
               <i>
-                <b style={{ width: `${((v.total - v.free) / Math.max(1, v.total)) * 100}%` }} />
+                <b style={{ width: `${Math.max(0, ((v.total - v.free) / Math.max(1, v.total)) * 100)}%` }} />
               </i>
               <em className="tnum">{bytes(v.free)} free</em>
             </div>

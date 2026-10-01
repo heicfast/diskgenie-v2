@@ -3,13 +3,20 @@
  * name + kind, full path (selectable mono), big size + % of scan,
  * Details card with the conditional savings (green) / cluster overhead
  * (secondary) rows, Largest Inside ranked list, action buttons
- * (Reveal / Preview / Focus / Copy Path), and the Add-to-Cleanup
+ * (Reveal / Preview / Open / Copy Path), and the Add-to-Cleanup
  * toggle (disabled + tooltip for protected items).
+ *
+ * "Open" (session 14, replaces the dead Focus button): folders drill
+ * in — the app's universal Open semantic (canvas click, list row,
+ * context menu); files launch their default app (`open_node` —
+ * ShellExecuteW "open", the preview overlay's affordance promoted to
+ * the always-visible action row). The ONE behavior every file
+ * manager's inspector needs: check what a file IS before deleting it.
  */
 import { useEffect, useRef, useState } from "react";
-import { CopyIcon, EyeIcon, ExternalLinkIcon, FolderIcon, HardDriveIcon, LockKeyholeIcon, SparklesIcon, Trash2Icon, CheckIcon, CloudIcon, TONE_KEYS } from "../components/Icon";
+import { CopyIcon, EyeIcon, ExternalLinkIcon, FolderIcon, FolderOpenIcon, HardDriveIcon, LockKeyholeIcon, SparklesIcon, Trash2Icon, CheckIcon, CloudIcon, TONE_KEYS } from "../components/Icon";
 import { categoryIcon } from "../components/Icon";
-import { getNodeDetails, type NodeDetailsData } from "../viz/exploreIpc";
+import { getNodeDetails, openNode, type NodeDetailsData } from "../viz/exploreIpc";
 import { invoke } from "../lib/ipc";
 import { bytes, relativeAge } from "../lib/format";
 import { TailPath } from "../components/TailPath";
@@ -39,7 +46,7 @@ export function InspectorPanel({ onPreview }: { onPreview: (id: number) => void 
   const status = useScanStore((s) => s.status);
   const currentFolder = useExploreStore((s) => s.currentFolder);
   const selectedNode = useExploreStore((s) => s.selectedNode);
-  const focusItem = useExploreStore((s) => s.focusItem);
+  const openFolder = useExploreStore((s) => s.openFolder);
   // The queue ITEMS (not just the contains() helper — a stable
   // function selector never re-renders, so the Add-to-Cleanup button
   // kept its unstaged copy after a + click in a mode row while the
@@ -243,12 +250,19 @@ export function InspectorPanel({ onPreview }: { onPreview: (id: number) => void 
           className="db-outline"
           title={
             details.isDir
-              ? "Drill into this folder"
-              : "Show this file in the map — opens its folder and highlights it"
+              ? "Open this folder here (drill in)"
+              : "Open with the default app"
           }
-          onClick={() => void focusItem(details.id, { isDir: details.isDir, path: details.path })}
+          onClick={() => {
+            if (details.isDir) {
+              openFolder(details.id);
+              return;
+            }
+            // openNode toasts on failure — never a silent no-op.
+            void openNode(generation, details.id);
+          }}
         >
-          <SparklesIcon size={14} /> Focus
+          <FolderOpenIcon size={14} /> Open
         </button>
         <button
           type="button"

@@ -7,9 +7,10 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { animate, motion, useMotionValue, useTransform } from "framer-motion";
-import { ExternalLinkIcon, FolderIcon, HardDriveIcon, ScanLineIcon, SquareIcon, UacShieldIcon } from "../components/Icon";
+import { ExternalLinkIcon, FolderIcon, HardDriveIcon, RefreshCwIcon, ScanLineIcon, SquareIcon, UacShieldIcon } from "../components/Icon";
 import { EmptyState } from "../components/buttons";
 import { UnreadableNotice } from "../sidebar";
+import { recentTargetLabel } from "../sidebar/RecentSection";
 import { ExploreHeader } from "./ExploreHeader";
 import { FoldersMode } from "./modes/FoldersMode";
 import { CanvasMode } from "./modes/CanvasMode";
@@ -21,7 +22,6 @@ import { ItemContextMenu, type ItemMenuState } from "../components/ItemContextMe
 import { TailPath } from "../components/TailPath";
 import { invoke } from "../lib/ipc";
 import { bytes } from "../lib/format";
-import { useFocusPulseHost } from "../lib/useFocusPulse";
 import { useExploreStore } from "../state/explore";
 import { useScanStore } from "../state/scan";
 import { useViewStore } from "../state/view";
@@ -29,7 +29,7 @@ import { useVizUiStore, type Mode } from "../state/vizUi";
 import { useCleanupStore } from "../state/cleanup";
 import { CANVAS_MODES } from "../state/vizUi";
 import { getHoverDetails } from "../viz/layoutIpc";
-import { getNodeDetails, type NodeDetailsData } from "../viz/exploreIpc";
+import { getNodeDetails, openNode, type NodeDetailsData } from "../viz/exploreIpc";
 import { EVENTS, track } from "../lib/analytics";
 
 /** Smoothly-rolling "N files · X GB" live counter (motion values, no
@@ -92,9 +92,6 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
   const hoverSeq = useRef(0);
   const [menu, setMenu] = useState<ItemMenuState | null>(null);
   const [folderView, setFolderView] = useState<NodeDetailsData | null>(null);
-  // The focus-pulse lifecycle host (session 13 — see the hook docs).
-  useFocusPulseHost();
-
   // Shift+F10: the Windows keyboard context-menu key. Same contract as
   // right-click, but for the SELECTED item (the keyboard-nav surrogate
   // for "the item with focus"): the menu opens at the focused element
@@ -220,9 +217,18 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
   // ── Shared actions ──────────────────────────────────────────────────
   const actions = useMemo(
     () => ({
-      open: (id: number) => {
+      // Open (session 14): folders drill in (the app's universal Open
+      // semantic); files launch their default app via open_node — the
+      // context menu and the inspector share this one contract.
+      open: (id: number, isDir: boolean) => {
         track(EVENTS.searchUsed, { mode });
-        openFolder(id);
+        if (isDir) {
+          openFolder(id);
+          return;
+        }
+        // openNode toasts on failure — an Open that silently does
+        // nothing is the defect that killed the Focus button.
+        void openNode(generation, id);
       },
       preview: (id: number) => onPreview(id),
       reveal: (id: number) => void invoke("reveal_in_explorer", { generation, id }).catch(() => undefined),
@@ -382,6 +388,15 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
             <button
               type="button"
               className="db-icon-button"
+              onClick={() => void useScanStore.getState().startScan(scanTarget, true)}
+              aria-label="Rescan this target"
+              title={`Rescan ${recentTargetLabel(scanTarget)}`}
+            >
+              <RefreshCwIcon size={15} />
+            </button>
+            <button
+              type="button"
+              className="db-icon-button"
               onClick={revealCurrent}
               aria-label="Show in Explorer"
               title="Show in Explorer"
@@ -406,7 +421,7 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
               filter={nameFilter}
               selectedId={selectedNode}
               onSelect={select}
-              onOpen={actions.open}
+              onOpen={(id) => actions.open(id, true)}
               onPreview={onPreview}
               onContextMenu={(id, x, y) => setMenu({ id, x, y })}
               onHover={hoverFetch}
@@ -419,7 +434,7 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
               mode={mode}
               selectedId={selectedNode}
               onSelect={select}
-              onOpen={actions.open}
+              onOpen={(id) => actions.open(id, true)}
               onContextMenu={(id, x, y) => setMenu({ id, x, y })}
               onHover={hoverFetch}
             />
@@ -431,7 +446,7 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
               filter={nameFilter}
               selectedId={selectedNode}
               onSelect={select}
-              onOpen={actions.open}
+              onOpen={(id) => actions.open(id, true)}
               onContextMenu={(id, x, y) => setMenu({ id, x, y })}
               onHover={hoverFetch}
             />
@@ -452,7 +467,7 @@ export function ExploreView({ onPreview }: { onPreview: (id: number) => void }) 
               filter={nameFilter}
               selectedId={selectedNode}
               onSelect={select}
-              onOpen={actions.open}
+              onOpen={(id) => actions.open(id, true)}
               onContextMenu={(id, x, y) => setMenu({ id, x, y })}
               onHover={hoverFetch}
             />

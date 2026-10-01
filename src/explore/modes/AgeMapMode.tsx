@@ -14,7 +14,14 @@ import { getNodeDetails } from "../../viz/exploreIpc";
 import { Spinner } from "../../components/buttons";
 
 const AGE_CSS = ["var(--age-0)", "var(--age-1)", "var(--age-2)", "var(--age-3)", "var(--age-4)", "var(--age-5)"];
-const MONTHS = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
+const MONTH_LETTERS = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
+/** Full names for the prose surfaces (busiest label, cell tooltips) —
+ * the one-letter grid column labels must never leak into sentences
+ * ("busiest: O 2026", the session-14 report). */
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
 
 export interface AgeMapModeProps {
   generation: number;
@@ -113,13 +120,13 @@ export function AgeMapMode(props: AgeMapModeProps) {
           <strong>Bytes by last-modified month</strong>
           {busiest && (
             <b className="tnum">
-              busiest: {MONTHS[busiest[1]]} {busiest[0]}
+              busiest: {MONTH_NAMES[busiest[1]]} {busiest[0]}
             </b>
           )}
         </header>
         <div className="heat-labels">
           <span />
-          {MONTHS.map((m, i) => (
+          {MONTH_LETTERS.map((m, i) => (
             <span key={i}>{m}</span>
           ))}
         </div>
@@ -140,7 +147,7 @@ export function AgeMapMode(props: AgeMapModeProps) {
                   key={mi}
                   className={`${isBusiest ? "busiest" : ""} ${labeled ? "labeled" : ""}`}
                   style={{ ["--heat" as string]: Math.max(0.08, frac).toFixed(2) }}
-                  title={`${MONTHS[mi]} ${y} — ${bytes(v)}`}
+                  title={`${MONTH_NAMES[mi]} ${y} — ${bytes(v)}`}
                 >
                   {labeled && <b className="tnum">{bytes(v)}</b>}
                 </i>
@@ -162,12 +169,12 @@ export function AgeMapMode(props: AgeMapModeProps) {
 
       <section>
         <div className="db-big-head">
-          <header style={{ margin: 0 }}>
+          <div className="db-big-title">
             <strong>Big &amp; Untouched</strong>
             <b className="tnum">{data.big.length} items</b>
-          </header>
+          </div>
           <button type="button" className="db-outline compact" onClick={() => void stageTop()} disabled={data.big.length === 0}>
-            <PlusIcon size={13} /> Stage top {Math.min(25, data.big.length)} for cleanup
+            <PlusIcon size={13} /> Stage top {Math.min(25, data.big.length)}
           </button>
         </div>
         {data.big.length === 0 ? (
@@ -179,7 +186,6 @@ export function AgeMapMode(props: AgeMapModeProps) {
               <div
                 role="button"
                 tabIndex={0}
-                data-pulse-id={row.id}
                 className="db-big-row"
                 key={row.id}
                 onPointerEnter={(e) => props.onHover(row.id, e.clientX, e.clientY)}

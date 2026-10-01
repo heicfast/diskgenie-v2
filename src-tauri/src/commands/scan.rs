@@ -17,7 +17,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::platform::HostPlatform;
-use crate::state::{AppState, ScanHandle};
+use crate::state::{tree_cache_key, AppState, ScanHandle};
 
 /// How often the ticker emits `scan-progress` (spec §4: 150 ms).
 const TICK_MS: Duration = Duration::from_millis(150);
@@ -66,6 +66,21 @@ pub struct ScanDone {
     pub error: Option<String>,
 }
 
+/// The `start_scan` result.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanStart {
+    /// The generation this scan owns (request tagging).
+    pub generation: u64,
+    /// True when NO scan ran: a cached tree for the exact target was
+    /// restored instantly (the session-14 drive-flip fix). The UI
+    /// adopts the done state directly — no scanning flash.
+    pub restored: bool,
+    /// Root stats, present only when `restored` (fresh scans report
+    /// through the `scan-done` event once they finish).
+    pub stats: Option<(u64, u64, u64, u64)>,
+}
+
 /// Parse a scan target string: `"ThisPC"`, a drive root, or a folder.
 #[must_use]
 pub fn parse_target(s: &str) -> ScanTarget {
@@ -84,6 +99,17 @@ pub fn parse_target(s: &str) -> ScanTarget {
 
 /// Start a scan of `target` (`"ThisPC"` or a path). Cancels any running
 /// scan. Emits `scan-progress` every 150 ms and `scan-done` at the end.
+///
+/// Instant restore (session 14, the drive-flip fix): when the target
+/// was scanned before and its tree survives in the flip cache, the
+/// cached snapshot swaps back in with a fresh generation — no walk,
+/// no ticker, no scanning state. `force` (the UI's explicit Rescan
+/// affordance) skips the restore AND purges the target's stale entry
+/// so the fresh tree replaces it.
+///
+/// # Errors
+/// String error when the license gate refuses, or when a contended
+/// tree restore's background copy fails.
 #[tauri::command]
 /// The scan lifecycle in one place (cancellation, swap, events,
 /// telemetry) — splitting it across helpers would hide the ordering
@@ -91,11 +117,12 @@ pub fn parse_target(s: &str) -> ScanTarget {
 #[allow(clippy::too_many_lines)]
 pub async fn start_scan(
     target: String,
+    force: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
     platform: State<'_, Arc<HostPlatform>>,
     license: State<'_, crate::commands::license::LicenseManager>,
-) -> Result<u64, String> {
+) -> Result<ScanStart, String> {
     // The hard license gate (docs §2 L6): the operation itself refuses —
     // the UI lock and this gate protect each other.
     crate::commands::license::require_licensed(
@@ -128,6 +155,73 @@ pub async fn start_scan(
 
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     let scan_target = parse_target(&target);
+    let cache_key = tree_cache_key(&target);
+
+    // ── The instant restore (session 14) ──────────────────────────
+    // The owner's C:→D:→C: report: every flip re-scanned because the
+    // swap DISCARDED the displaced tree. When the exact target's tree
+    // survives in the flip cache, swap it back instead of walking the
+    // disk. `force` (explicit Rescan) purges the stale entry instead —
+    // the user asked for fresh data.
+    if force.unwrap_or(false) {
+        // Forced rescan: the target's cached snapshot is stale BY
+        // CHOICE — purge it so the fresh tree replaces it (swap_tree
+        // also drops the displaced same-key tree instead of filing it).
+        state.tree_cache.take(&cache_key);
+    } else if let Some(cached) = state.tree_cache.take(&cache_key) {
+        // The restored snapshot must carry THIS generation: every
+        // IPC guard compares against `Tree.generation`. Fast path:
+        // try_unwrap when the cache held the only reference (the
+        // common case — the displaced tree's readers are gone).
+        // Contended (a long-lived reader, e.g. a running duplicates
+        // pipeline, still latches the snapshot): deep-copy on the
+        // blocking pool — the copy runs off the async runtime
+        // thread (a million-node memcpy would stall every command;
+        // the surgery commit pays the same cost by the same rule).
+        let tree = match Arc::try_unwrap(cached) {
+            Ok(mut owned) => {
+                owned.generation = generation;
+                Arc::new(owned)
+            }
+            Err(shared) => {
+                let mut owned =
+                    tauri::async_runtime::spawn_blocking(move || Tree::deep_from(&shared))
+                        .await
+                        .map_err(|e| format!("tree restore failed: {e}"))?;
+                owned.generation = generation;
+                Arc::new(owned)
+            }
+        };
+        let root_stats = tree.root_stats();
+        // swap_tree files the tree being displaced under ITS key
+        // (the symmetric flip-back) — the restore consumes the
+        // cache entry, the swap refills it with what was on screen.
+        // A superseded restore (a newer start_scan raced us onto
+        // the slot) is the Cancelled-arm contract: no swap, no
+        // event; the consumed entry self-heals on the next
+        // completion.
+        swap_tree(&state, tree, generation, &cache_key);
+        clear_all_caches(&app);
+        *state.last_done.lock() = crate::state::DoneRecord {
+            generation,
+            stats: Some(root_stats),
+            error: None,
+        };
+        let _ = app.emit(
+            "scan-done",
+            ScanDone {
+                generation,
+                stats: Some(root_stats),
+                error: None,
+            },
+        );
+        return Ok(ScanStart {
+            generation,
+            restored: true,
+            stats: Some(root_stats),
+        });
+    }
+
     let cancel: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let progress = Arc::clone(&state.progress);
     // Reset the progress snapshot for the new generation.
@@ -141,6 +235,7 @@ pub async fn start_scan(
     // The scan + swap thread. State is borrowed from the handle INSIDE
     // the closure so everything the thread owns is 'static.
     let cancel_for_thread = Arc::clone(&cancel);
+    let key_for_thread = cache_key.clone();
     let engine_label = "standard";
     let join = std::thread::spawn(move || {
         let state_inner = app_handle.state::<AppState>();
@@ -186,7 +281,7 @@ pub async fn start_scan(
 
         match outcome {
             ScanOutcome::Done(tree) => {
-                swap_tree(&state_inner, Arc::new(tree), generation);
+                swap_tree(&state_inner, Arc::new(tree), generation, &key_for_thread);
                 // Layout caches are generation-keyed; drop stale entries on
                 // swap (doc 03 M4.1). Same for the regroup / Top Sizes /
                 // Age Map caches (spec §7.7/§7.8: cached per generation).
@@ -273,7 +368,11 @@ pub async fn start_scan(
         })
         .ok();
 
-    Ok(generation)
+    Ok(ScanStart {
+        generation,
+        restored: false,
+        stats: None,
+    })
 }
 
 /// `scan-progress` payload (generation-tagged so stale ticks drop).
@@ -291,6 +390,7 @@ pub struct ProgressEvent {
 /// complete before the `start_scan` round-trip lands, so the UI polls
 /// this right after resolving).
 #[tauri::command]
+#[must_use]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
 pub fn get_status(state: State<'_, AppState>) -> StatusResponse {
     let last_done = state.last_done.lock().clone();
@@ -318,6 +418,7 @@ pub fn get_status(state: State<'_, AppState>) -> StatusResponse {
 /// optimistically and reconciles through `get_status` (a scan that
 /// completed in the cancel window still emits its `scan-done`).
 #[tauri::command]
+#[must_use]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
 pub fn cancel_scan(state: State<'_, AppState>) -> bool {
     let running = {
@@ -336,20 +437,46 @@ pub fn cancel_scan(state: State<'_, AppState>) -> bool {
     running
 }
 
-/// Swap the finished tree in, dropping the old `Arc<Tree>` on a
-/// background thread (spec §4 — never stall the UI on a million-node
-/// drop).
-fn swap_tree(state: &AppState, new: Arc<Tree>, generation: u64) {
-    let old = {
+/// Swap the finished tree in, FILING the displaced tree into the flip
+/// cache under its own key (session 14: the C:→D:→C: flip re-scanned
+/// every time because the swap discarded the displaced tree). The
+/// displaced tree — and any cache eviction this filing causes — drops
+/// on a background thread (spec §4 — never stall the UI on a
+/// million-node dealloc; an Arc with surviving readers is a cheap
+/// decrement on that thread either way).
+///
+/// Filing rules (the staleness contract): the displaced tree is worth
+/// caching only when it belongs to a DIFFERENT target than the new
+/// tree — a same-target swap is an explicit re-scan, so the displaced
+/// snapshot is stale BY CHOICE and drops; an empty old key (unknown
+/// lineage) drops un-cached.
+fn swap_tree(state: &AppState, new: Arc<Tree>, generation: u64, new_key: &str) {
+    // Everything under ONE write-lock hold: the generation guard, the
+    // swap, the displaced tree's cache filing, and the key handover —
+    // a concurrent restore can never observe a half-filed state. (The
+    // lock order is tree → target_key → tree_cache; no other path
+    // takes these locks in any order, so no inversion exists.)
+    let mut to_drop: Option<Arc<Tree>> = None;
+    {
         let mut guard = state.tree.write();
         // Only swap when we are still the current generation.
         if generation != state.current_generation() {
             return;
         }
-        guard.replace(new)
-    };
-    if let Some(old) = old {
-        std::thread::spawn(move || drop(old));
+        let displaced = guard.replace(new);
+        let old_key = std::mem::replace(&mut *state.target_key.lock(), new_key.to_string());
+        if let Some(tree) = displaced {
+            if old_key.is_empty() || old_key == new_key {
+                // Unknown lineage, or an explicit same-target re-scan:
+                // the displaced snapshot is not worth restoring.
+                to_drop = Some(tree);
+            } else if let Some(evicted) = state.tree_cache.insert(old_key, tree) {
+                to_drop = Some(evicted);
+            }
+        }
+    }
+    if let Some(tree) = to_drop {
+        std::thread::spawn(move || drop(tree));
     }
 }
 
@@ -408,6 +535,7 @@ pub fn read_dev_hooks() -> DevHooks {
 
 /// `get_dev_hooks` command (spec §15).
 #[tauri::command]
+#[must_use]
 pub fn get_dev_hooks() -> DevHooks {
     read_dev_hooks()
 }
@@ -416,12 +544,15 @@ pub fn get_dev_hooks() -> DevHooks {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurboReport {
+    /// The generation that finished.
     pub generation: u64,
     /// Records parsed.
     pub records: u64,
     /// Warnings (torn/bad/orphans/unreferenced/cycles).
     pub torn: u64,
+    /// Malformed records skipped.
     pub bad: u64,
+    /// MFT records unreachable from any parent (orphaned).
     pub unreferenced: u64,
     /// Turbo wall time in ms.
     pub ms: u64,
@@ -437,7 +568,12 @@ pub struct TurboReport {
 /// - A reason string for every other failure (fallback trigger).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
-#[allow(clippy::too_many_lines)] // scan lifecycle: elevation gate + thread spawn
+#[allow(clippy::too_many_lines)]
+// scan lifecycle: elevation gate + thread spawn
+// The async is the tauri command contract (runs on the async runtime
+// thread, not the main thread); the body never awaits — the MFT read
+// and the fallback live on the spawned scan thread.
+#[allow(clippy::unused_async)]
 pub async fn start_scan_turbo(
     target: String,
     app: AppHandle,
@@ -460,6 +596,10 @@ pub async fn start_scan_turbo(
         format!("{}\\", target.trim_end_matches('\\'))
     };
     let label = drive_root.clone();
+    // The flip-cache key for this drive (turbo trees file/displace by
+    // the same key the standard engine uses, so a turbo C: scan
+    // displaces a standard C: snapshot — same target, same key).
+    let cache_key = tree_cache_key(&drive_root);
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
     // Cancel any standard scan in flight (same contract as start_scan,
@@ -485,6 +625,7 @@ pub async fn start_scan_turbo(
     let app_handle = app.clone();
     let platform = std::sync::Arc::clone(&*platform);
     let cancel_for_thread = Arc::clone(&cancel);
+    let key_for_thread = cache_key;
     let join = std::thread::Builder::new()
         .name("db-scan-turbo".into())
         .spawn(move || {
@@ -544,7 +685,12 @@ pub async fn start_scan_turbo(
                 (Some(tree), None) => {
                     state_inner.end_scanning(generation);
                     let root_stats = tree.root_stats();
-                    swap_tree(&state_inner, std::sync::Arc::new(tree), generation);
+                    swap_tree(
+                        &state_inner,
+                        std::sync::Arc::new(tree),
+                        generation,
+                        &key_for_thread,
+                    );
                     clear_all_caches(&app_handle);
                     *state_inner.last_done.lock() = crate::state::DoneRecord {
                         generation,
@@ -585,7 +731,12 @@ pub async fn start_scan_turbo(
                     match outcome {
                         ScanOutcome::Done(tree) => {
                             let root_stats = tree.root_stats();
-                            swap_tree(&state_inner, std::sync::Arc::new(tree), generation);
+                            swap_tree(
+                                &state_inner,
+                                std::sync::Arc::new(tree),
+                                generation,
+                                &key_for_thread,
+                            );
                             clear_all_caches(&app_handle);
                             *state_inner.last_done.lock() = crate::state::DoneRecord {
                                 generation,

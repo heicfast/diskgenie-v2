@@ -29,63 +29,6 @@
 .db-viz-canvas-shell canvas.db-overlay-canvas {
   pointer-events: none;
 }
-/* Focus pulse (session 13): a one-shot ring over the focused cell —
- * keyframed outline expansion + fade, compositor-only (the canvases
- * never repaint for it). Position/size come inline (layout coords);
- * the same rescale transform as the canvases keeps it glued. */
-.db-focus-pulse {
-  position: absolute;
-  pointer-events: none;
-  border: 2.5px solid var(--ink);
-  border-radius: 8px;
-  opacity: 0;
-  animation: db-focus-pulse 1.2s cubic-bezier(0.2, 0.7, 0.3, 1) 60ms both;
-}
-@keyframes db-focus-pulse {
-  0% {
-    opacity: 0;
-    transform: scale(0.82);
-  }
-  22% {
-    opacity: 0.95;
-    transform: scale(1.04);
-  }
-  60% {
-    opacity: 0.55;
-    transform: scale(1.02);
-  }
-  100% {
-    opacity: 0;
-    transform: scale(1.12);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .db-focus-pulse {
-    animation: db-focus-pulse-flat 0.4s ease both;
-  }
-  @keyframes db-focus-pulse-flat {
-    0% { opacity: 0.95; }
-    100% { opacity: 0; }
-  }
-}
-/* DOM-mode row pulse (focus in a list mode): a soft background swell
- * on the row carrying data-pulse-id (the class is added/removed by
- * useFocusPulseHost). */
-.db-row-pulse {
-  animation: db-row-pulse 1.3s ease both;
-}
-@keyframes db-row-pulse {
-  0% { background: transparent; }
-  18% { background: color-mix(in oklab, var(--ink) 13%, transparent); }
-  55% { background: color-mix(in oklab, var(--ink) 7%, transparent); }
-  100% { background: transparent; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .db-row-pulse {
-    animation: none;
-    background: color-mix(in oklab, var(--ink) 9%, transparent);
-  }
-}
 .db-viz-foot {
   flex: none;
   display: flex;
@@ -397,38 +340,48 @@
   height: 9px;
   border-radius: 3px;
 }
-/* big & untouched */
+/* big & untouched — the head is a three-part row (title + count pill +
+ * stage button) with real separation: the count is a quiet pill beside
+ * the title (one reading unit), the button pins right with its own
+ * breathing room, and neither can crowd the other at any width (the
+ * title truncates first; the pill and button never wrap or shrink). */
 .db-big-head {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 6px;
+  gap: 12px;
+  margin-bottom: 10px;
 }
-/* The section header nested inside .db-big-head does NOT match
- * `.db-age section > header` (direct child) — without this rule the
- * title and count rendered as concatenated inline text ("Big &
- * Untouched14 items", the session-13 report). Same visual language as
- * the sibling headers. */
-.db-big-head header {
+.db-big-title {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
   flex: 1;
+}
+.db-big-title strong {
   text-transform: uppercase;
   letter-spacing: 0.09em;
   color: var(--text-secondary);
   font-size: 9.5px;
   font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.db-big-head header b {
+.db-big-title b {
+  flex: none;
   text-transform: none;
   letter-spacing: 0;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--track) 72%, transparent);
+}
+.db-big-head .db-outline.compact {
+  flex: none;
 }
 .db-big-row {
   /* Fixed tracks for the toggle and the age column: per-row `auto`
@@ -622,6 +575,11 @@
 .db-list-row .db-row-flags {
   display: inline-flex;
   gap: 3px;
+  /* The name-to-glyph seam: without this margin the flag icons sit
+   * flush against the file name ("swapfile.sys🔒" — the session-14
+   * report). 5px reads as a word space at this size. */
+  margin-left: 5px;
+  vertical-align: -1px;
   color: var(--text-tertiary);
 }
 

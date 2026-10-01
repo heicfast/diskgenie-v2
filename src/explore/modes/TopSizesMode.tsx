@@ -109,7 +109,6 @@ export function TopSizesMode(props: TopSizesModeProps) {
                 key={r.id}
                 type="button"
                 data-rank={r.rank}
-                data-pulse-id={r.id}
                 className={props.selectedId === r.id ? "is-selected" : ""}
                 onClick={() => props.onSelect(r.id)}
                 onDoubleClick={() => props.onOpen(r.id)}

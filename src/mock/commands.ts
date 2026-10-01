@@ -58,6 +58,24 @@ function licenseGate(): void {
   throw GATE_MSG;
 }
 let lastScanRoot = 0;
+/** The flip-cache keys whose scans COMPLETED (session 14 — Rust
+ * `AppState.tree_cache` parity): a `start_scan` for a key already in
+ * the set restores instantly instead of running the fake ticker.
+ * The mock has ONE tree object, so the "cached tree" is the same
+ * tree — the RESTORE FLOW (instant done, no scanning state, stats
+ * from the standing tree) is the part under test. */
+const scannedKeys = new Set<string>();
+
+/** Rust `tree_cache_key` parity: This-PC spellings collapse; Windows
+ * family lowercases + one trailing separator (the mock speaks
+ * Windows paths). */
+function cacheKey(target: string): string {
+  const trimmed = target.trim().toLowerCase();
+  if (trimmed === "thispc" || trimmed === "this pc") {
+    return "thispc";
+  }
+  return `${target.replace(/[\\/]+$/, "").toLowerCase()}\\`;
+}
 void 0;
 
 const fmtPath = (id: number): string => tree.pathOf(id);
@@ -103,7 +121,35 @@ function nodeDetails(id: number): Record<string, unknown> {
   };
 }
 
-function startScan(_target: string, _turbo: boolean): number {
+function startScan(_target: string, _turbo: boolean, force = false): { generation: number; restored: boolean; stats: [number, number, number, number] | null } {
+  const key = cacheKey(_target);
+  // The instant restore (Rust parity — the drive-flip fix): a target
+  // whose scan completed before restores WITHOUT the ticker: bump the
+  // generation, emit scan-done synchronously (the store drops it as
+  // stale and adopts from the restored flag — the same timing as the
+  // real backend), return the stats. `force` (the Rescan button)
+  // purges the key so the fresh scan replaces it.
+  if (force) {
+    scannedKeys.delete(key);
+  } else if (scannedKeys.has(key)) {
+    if (scanTicker !== null) window.clearInterval(scanTicker);
+    scanning = false;
+    const generation = tree.generation + 1;
+    tree.generation = generation;
+    lastScanRoot = 0;
+    const st = tree.stats(0);
+    lastDone = {
+      generation,
+      stats: [st.logical, st.onDisk, st.files, st.folders],
+      error: null,
+    };
+    emitMockEvent("scan-done", {
+      generation,
+      stats: [st.logical, st.onDisk, st.files, st.folders],
+      error: null,
+    });
+    return { generation, restored: true, stats: [st.logical, st.onDisk, st.files, st.folders] };
+  }
   if (scanTicker !== null) window.clearInterval(scanTicker);
   scanning = true;
   const generation = tree.generation + 1;
@@ -141,6 +187,10 @@ function startScan(_target: string, _turbo: boolean): number {
         stats: [st.logical, st.onDisk, st.files, st.folders],
         error: null,
       };
+      // The completion FILES the key (Rust swap_tree parity: a tree
+      // enters the flip cache when a scan DONE swaps it in — a
+      // cancelled scan caches nothing).
+      scannedKeys.add(key);
       emitMockEvent("scan-done", {
         generation,
         stats: [st.logical, st.onDisk, st.files, st.folders],
@@ -150,7 +200,7 @@ function startScan(_target: string, _turbo: boolean): number {
   };
   tick();
   scanTicker = window.setInterval(tick, 170);
-  return generation;
+  return { generation, restored: false, stats: null };
 }
 
 let monitorBase: Record<string, number> = {};
@@ -573,11 +623,14 @@ const commands: Record<string, Cmd> = {
   }),
   start_scan: (a) => {
     licenseGate();
-    return startScan(String(a.target), false);
+    return startScan(String(a.target), false, a.force === true);
   },
   start_scan_turbo: (a) => {
     licenseGate();
-    return startScan(String(a.target), true);
+    // Rust parity: the turbo command still returns the bare generation
+    // (the ScanStart object is the STANDARD command's shape — turbo
+    // never restores; extract the number the store's turbo path types).
+    return startScan(String(a.target), true).generation;
   },
   cancel_scan: () => {
     // Mirrors the Rust cooperative cancel: stop the ticker, flip the
@@ -637,7 +690,15 @@ const commands: Record<string, Cmd> = {
     return null;
   },
   open_node: (a) => {
+    // Parity note: the real command launches the default app; the mock
+    // (a browser page with nothing to launch) says so on the toast
+    // surface instead, so the button's contract is verifiable live.
     console.info("[mock] open_node", a);
+    window.dispatchEvent(
+      new CustomEvent("db-toast", {
+        detail: { text: "Opened with the default app (mock).", icon: "check" },
+      }),
+    );
     return null;
   },
   reveal_in_explorer: (a) => {
@@ -1177,6 +1238,7 @@ export function installMock(): void {
     },
     reset: () => {
       tree = new MockTree();
+      scannedKeys.clear();
     },
   };
 }

@@ -98,19 +98,26 @@ pub struct CpuTicks {
 }
 
 impl CpuTicks {
-    /// The three CPU percentages from deltas. `system` excludes idle
-    /// (kernel − idle); total = user + system. Deltas of zero → 0 %.
+    /// The three CPU percentages from deltas. Both platform collectors
+    /// deliver the `GetSystemTimes` convention — **kernel INCLUDES
+    /// idle** — so the elapsed capacity across all cores is
+    /// `kernel + user` (idle is already inside kernel, NOT an addend).
+    /// `system` excludes idle (kernel − idle); total = user + system.
+    /// The old denominator `idle + kernel + user` double-counted idle,
+    /// so CPU read low by the idle share — ~2× under-read at rest,
+    /// converging to correct only at full load (Task-Manager parity
+    /// broken at exactly the values users eyeball). Deltas of zero → 0 %.
     #[must_use]
     pub fn pct(&self, prev: &Self) -> (f64, f64, f64) {
         let idle = self.idle.saturating_sub(prev.idle);
         let kernel = self.kernel.saturating_sub(prev.kernel);
         let user = self.user.saturating_sub(prev.user);
-        let total = idle + kernel + user;
-        if total == 0 {
+        let wall = kernel.saturating_add(user);
+        if wall == 0 {
             return (0.0, 0.0, 0.0);
         }
-        let user_pct = user as f64 / total as f64 * 100.0;
-        let system_pct = kernel.saturating_sub(idle) as f64 / total as f64 * 100.0;
+        let user_pct = user as f64 / wall as f64 * 100.0;
+        let system_pct = kernel.saturating_sub(idle) as f64 / wall as f64 * 100.0;
         let total_pct = user_pct + system_pct;
         (user_pct, system_pct, total_pct)
     }
@@ -188,6 +195,11 @@ mod tests {
     #[test]
     fn cpu_pct_math_kernel_includes_idle() {
         // 100 ticks wall: idle 50, kernel 80 (incl. idle), user 20.
+        // Kernel INCLUDES idle (the GetSystemTimes convention BOTH
+        // platform collectors deliver) → elapsed capacity = kernel+user
+        // = 100; busy = (kernel−idle)+user = 50. The old test pinned
+        // idle+kernel+user = 150 as the denominator — double-counted
+        // idle, under-reading CPU by the idle share.
         let prev = CpuTicks::default();
         let now = CpuTicks {
             idle: 50,
@@ -195,12 +207,42 @@ mod tests {
             user: 20,
         };
         let (u, s, t) = now.pct(&prev);
-        // total wall = idle + kernel + user = 150; but busy = kernel-
-        // idle + user = 50. The denominator must be the SUM (150):
-        assert!(pct_approx(u, 20.0 / 150.0 * 100.0));
-        assert!(pct_approx(s, 30.0 / 150.0 * 100.0)); // 80-50 = 30
-        assert!(pct_approx(t, 50.0 / 150.0 * 100.0));
+        assert!(pct_approx(u, 20.0 / 100.0 * 100.0));
+        assert!(pct_approx(s, 30.0 / 100.0 * 100.0)); // 80-50 = 30
+        assert!(pct_approx(t, 50.0 / 100.0 * 100.0));
         assert!(pct_approx(t, u + s));
+    }
+
+    #[test]
+    fn cpu_pct_idle_machine_reads_true_low() {
+        // 98 % idle, 2 % busy: the TRUE total is exactly 2 % (busy 2 of
+        // wall 100 — kernel 98 is ALL idle). The old double-counted
+        // denominator (idle+kernel+user = 198) reported ~1 % — half of
+        // reality, the under-read users eyeball at rest.
+        let prev = CpuTicks::default();
+        let now = CpuTicks {
+            idle: 98,
+            kernel: 98,
+            user: 2,
+        };
+        let (u, s, t) = now.pct(&prev);
+        assert!(pct_approx(t, 2.0));
+        assert!(pct_approx(u, 2.0));
+        assert!(pct_approx(s, 0.0));
+        assert!(pct_approx(t, u + s));
+    }
+
+    #[test]
+    fn cpu_pct_full_load_reads_100() {
+        // Zero idle at saturation: total must be exactly 100 %.
+        let prev = CpuTicks::default();
+        let now = CpuTicks {
+            idle: 0,
+            kernel: 50,
+            user: 50,
+        };
+        let (_, _, t) = now.pct(&prev);
+        assert!(pct_approx(t, 100.0));
     }
 
     #[test]

@@ -122,6 +122,23 @@ export function ScanSection() {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const picked = await open({ directory: true, multiple: false, title: "Scan" });
       if (typeof picked === "string" && picked.length > 0) {
+        // Navigate-first, the same contract as Home: a picked folder
+        // INSIDE the standing scan is already on disk-in-memory — jump
+        // there instead of wiping the view for a rescan. Only a folder
+        // outside the tree (or no tree) starts a scan.
+        setTab("explore");
+        if (status === "done") {
+          try {
+            const id = await invoke<number | null>("resolve_path", { generation, path: picked });
+            if (id != null) {
+              track(EVENTS.scanStarted, { target: "navigate:picked" });
+              openFolder(id);
+              return;
+            }
+          } catch {
+            /* resolve failed: fall through to a fresh scan */
+          }
+        }
         scan(picked);
       }
     } catch {

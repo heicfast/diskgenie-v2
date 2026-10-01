@@ -7,6 +7,7 @@
  * drop them (spec §9 IPC rule).
  */
 import { invoke } from "../lib/ipc";
+import { userFacingError } from "../lib/userFacingError";
 
 export interface CategoryDot {
   color: number;
@@ -216,7 +217,19 @@ export async function getBreadcrumb(generation: number, node: number): Promise<C
 }
 
 export async function openNode(generation: number, id: number): Promise<void> {
-  await invoke("open_node", { generation, id });
+  try {
+    await invoke("open_node", { generation, id });
+  } catch (e) {
+    // A failed launch must NEVER be silent: "clicked and nothing
+    // happened" is the exact defect that killed the Focus button
+    // (session 14). The Rust layer returns a readable reason (no file
+    // association, access denied); surface it on the toast bus.
+    window.dispatchEvent(
+      new CustomEvent("db-toast", {
+        detail: { text: `Couldn't open this item — ${userFacingError(e)}` },
+      }),
+    );
+  }
 }
 
 export async function revealInExplorer(generation: number, id: number): Promise<void> {
