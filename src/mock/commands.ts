@@ -1278,8 +1278,14 @@ function ageBucketOf(modified: number, now: number): number {
 export function installMock(): void {
   // Tour mode boots with the simulated PRO license (the CI tour needs
   // a working app; the tour's license steps flip it back for the
-  // Activation Gate captures).
-  if (new URLSearchParams(location.search).get("tour") === "1") {
+  // Activation Gate captures) — EXCEPT the license program: it
+  // scripts the genuine UNLICENSED boot (the real license-e2e build
+  // has no sim), so the dialog auto-shows and every entry state
+  // renders exactly like the runner.
+  const params = new URLSearchParams(location.search);
+  const tour = params.get("tour") === "1";
+  const licenseProgram = (params.get("tourMode") ?? "").toLowerCase() === "license";
+  if (tour && !licenseProgram) {
     license = { ...PRO_SIM };
   }
   setMockBackend(async (cmd, args) => {

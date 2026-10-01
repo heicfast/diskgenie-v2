@@ -425,7 +425,11 @@ async function runLicenseTour(hooks: TourHooks) {
       (window as unknown as Record<string, unknown>).__DB_TOUR_DONE = true;
       return;
     }
-    window.dispatchEvent(new CustomEvent("db-tour-step"));
+    // NOT db-tour-step: the App closes every overlay on that event
+    // (the UI tour's per-step cleanup) — the license tour's steps ARE
+    // dialog states, so closing would kill the very surface the
+    // captures exist for (caught in the browser mock: the dialog
+    // vanished at every step boundary).
     step.apply();
     (window as unknown as Record<string, unknown>).__DB_TOUR_STATE = { step: i, name: step.name, total: steps.length };
     i += 1;
