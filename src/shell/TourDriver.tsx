@@ -439,15 +439,20 @@ async function runLicenseTour(hooks: TourHooks) {
 }
 
 // ── The bench program (macOS benchmark) ─────────────────────────────
-// The first scan auto-starts at boot (DISKBYTES_SCAN, licensed via
-// the sim) — the real walk, timed by the [bench] scan-done line. This
-// program then probes the flip-cache RESTORE (re-scan of the SAME
-// target — instant, [bench] scan-restored) and the duplicates
-// pipeline, then ends so the harness knows the window is closed.
+// The boot scan (DISKBYTES_SCAN) leaves target A standing. This
+// program then scans B (a subtree of A — B's walk DISPLACES A's tree,
+// filing it into the flip cache) and re-scans A — the instant
+// RESTORE, [bench] scan restored (a re-scan of the STANDING target
+// walks by design: the cache only holds displaced trees; the original
+// same-target probe never exercised it — the benchmark report proved
+// that). Then the duplicates pipeline, then done.
 async function runBenchTour() {
   const target = useScanStore.getState().scanTarget;
-  void useScanStore.getState().startScan(target); // cache-restore probe
-  await new Promise((r) => window.setTimeout(r, 4000));
+  const flipTarget = `${target.replace(/[/\\]+$/, "")}/Users/dev`;
+  void useScanStore.getState().startScan(flipTarget); // B walks; A's tree files into the cache
+  await new Promise((r) => window.setTimeout(r, 5000));
+  void useScanStore.getState().startScan(target); // A restores instantly (no walk)
+  await new Promise((r) => window.setTimeout(r, 3000));
   useViewStore.getState().setTab("duplicates");
   window.setTimeout(() => {
     window.dispatchEvent(new CustomEvent("db-tour-dupes-run"));

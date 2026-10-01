@@ -132,7 +132,12 @@ APP_PID=$!
 WINID_BIN=$(make_winid_bin)
 LAUNCH_T0=$(python3 -c 'import time; print(int(time.time()*1000))')
 WINDOW_ID=""
-for _ in $(seq 1 80); do
+# TIME-bounded, not iteration-bounded: each osascript invocation costs
+# ~300 ms when the JXA path fails, so an iteration budget silently
+# became a 77 s poll (the first benchmark's time-to-window). 8 s of
+# WALL CLOCK, enforced here.
+WIN_DEADLINE=$(python3 -c 'import time; print(time.time() + 8)')
+while [ "$(python3 -c 'import time; print(time.time() < $WIN_DEADLINE)')" = "True" ]; do
   WINDOW_ID=$(win_id)
   if [ -n "$WINDOW_ID" ]; then break; fi
   sleep 0.1
