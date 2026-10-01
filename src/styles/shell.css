@@ -79,22 +79,24 @@
   cursor: default;
 }
 .db-brand-mark {
-  /* The product mark (PhotoIcon pack) is a photoreal hard-drive + brush
-   * badge on a full-bleed orange CIRCLE (tangent to the asset edges,
-   * transparent corners) — the container is a plain frame: no fill, no
-   * glow, radius only as clip insurance (never touches the circle's
-   * tangent points). The circle spans the full asset, so the frame
-   * height IS the circle's height, matching .db-tabcaps button /
-   * .db-tab-pill exactly (31px): the logo sits in SYMMETRY with the tab
-   * strip — same visual height as the orange pill that highlights the
-   * open page. The 62px asset is 2x for crisp 1x/2x rendering, with the
-   * pack's own light unsharp (its <=48px small-size policy) so the
-   * photoreal detail survives at 31px. */
+  /* The product mark, theme-reactive (session 18): the asset is the
+   * photoreal disk + brush CUTOUT (background removed at the pixel
+   * level — the orange circle is gone; the soft shadow survives as a
+   * black-alpha layer so the object keeps its depth over ANY base).
+   * The circle is painted HERE with var(--ink-grad) — the exact
+   * gradient every ink-filled control uses — so the mark follows the
+   * selected theme live (Ember → honey, Tide → lagoon, Blossom →
+   * rose) and rides the same View-Transition crossfade as the rest of
+   * the chrome. The glow matches the ink pill / ink-button language:
+   * the mark sits in SYMMETRY with the tab strip's active pill. The
+   * frame is a circle (border-radius 50% — the asset's silhouette);
+   * sizing comes from the inline width/height (31px in the topbar =
+   * the tab-pill height; 20px in the license dialog's heading). */
   display: grid;
   place-items: center;
-  width: 31px;
-  height: 31px;
-  border-radius: 7px;
+  border-radius: 50%;
+  background: var(--ink-grad);
+  box-shadow: var(--ink-glow);
   overflow: hidden;
   flex: none;
   -webkit-user-drag: none;
@@ -103,6 +105,9 @@
   width: 100%;
   height: 100%;
   display: block;
+  /* The cutout's soft shadow must multiply against the gradient, not
+   * blend boxily — plain alpha compositing is exactly that. */
+  pointer-events: none;
 }
 .db-brand strong {
   font-size: 14.5px;

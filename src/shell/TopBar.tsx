@@ -12,7 +12,7 @@ import {
   AppWindowIcon, ChevronLeftIcon, ChevronRightIcon, Clock3Icon, CopyIcon, GaugeIcon,
   LayoutGridIcon, MoonIcon, PanelRightIcon, SearchIcon, SunIcon, Trash2Icon, XIcon,
 } from "../components/Icon";
-import brandMark from "../assets/brand-mark.png";
+import { BrandMark } from "../components/BrandMark";
 import { MOD_KEY, IS_MAC } from "../lib/platform";
 import { useCleanupStore } from "../state/cleanup";
 import { useLicenseStore } from "../state/license";
@@ -104,13 +104,7 @@ export function TopBar(props: TopBarProps) {
       role="banner"
     >
       <div className="db-brand" data-tauri-drag-region>
-        <span className="db-brand-mark">
-          {/* The DiskGenie product mark (PhotoIcon pack — the photoreal
-           * hard-drive + brush badge on the orange circle; same design as
-           * the window/taskbar/installer icon everywhere the product
-           * appears. 31px frame = the tab-pill height for symmetry. */}
-          <img src={brandMark} alt="" draggable={false} />
-        </span>
+        <BrandMark size={31} />
         <strong data-tauri-drag-region>DiskGenie</strong>
       </div>
 

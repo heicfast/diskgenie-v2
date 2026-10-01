@@ -851,10 +851,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.db-license-dialog h3 svg {
-  color: var(--ink);
+  /* The heading leads with the live gradient BrandMark (20px) — the
+   * dialog is the product's premium surface and the mark re-colors
+   * with the theme picker one section below it. */
 }
 
 .db-license-body-swap {

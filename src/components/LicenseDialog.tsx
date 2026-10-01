@@ -33,7 +33,8 @@
  *    the input's lived experience.
  */
 import { useEffect, useRef, useState } from "react";
-import { CheckIcon, KeyIcon, LockKeyholeIcon, SparklesIcon } from "./Icon";
+import { CheckIcon, KeyIcon, SparklesIcon } from "./Icon";
+import { BrandMark } from "./BrandMark";
 import { ThemePicker } from "./ThemePicker";
 import { useLicenseStore } from "../state/license";
 import { useFocusTrap } from "../lib/useFocusTrap";
@@ -274,21 +275,25 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
     );
   }
 
+  // The heading's brand moment: the live gradient mark (the same
+  // var(--ink-grad) circle the topbar carries) — the dialog IS the
+  // product's premium surface, so it leads with the mark, and the
+  // theme picker one section down re-colors it live.
   const heading =
     activated ? null
     : isPro ? (
       <h3>
-        <SparklesIcon size={15} /> DiskGenie Pro
+        <BrandMark size={20} /> DiskGenie Pro
       </h3>
     )
     : posture === "degraded" ? (
       <h3>
-        <LockKeyholeIcon size={15} /> License check needed
+        <BrandMark size={20} /> License check needed
       </h3>
     )
     : (
       <h3>
-        <LockKeyholeIcon size={15} /> Activate DiskGenie
+        <BrandMark size={20} /> Activate DiskGenie
       </h3>
     );
 

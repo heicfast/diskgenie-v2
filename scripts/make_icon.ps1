@@ -1,18 +1,21 @@
-# DiskGenie icon fan-out (doc 03 M11.1, updated for the PhotoIcon pack —
-# the photorealistic "hard drive + brush" circular badge): the brand
-# source is a COMMITTED design asset (packaging/icon/icon-source.png —
-# the pack's 1254x1254 transparent master; a raster illustration with the
-# orange background baked in and transparent corners, full-bleed circle).
-# `npx tauri icon` fans it out to every platform size, THEN the pack's own
-# hand-tuned Windows ico and macOS icns are overlaid on top:
-#   packaging/icon/DiskGenie.ico  (16-256 multi-size; Lanczos + light
-#                                  unsharp at <=48px so the photoreal
-#                                  badge stays crisp at taskbar sizes)
-#   packaging/icon/DiskGenie.icns (the pack's full 10-image iconset,
-#                                  packed by the designer)
-# The overlay is what makes small sizes survive: tauri's plain area
-# resample softens a detailed raster into mush at 16px; the pack's
-# exports keep the silhouette readable (per the pack's own README).
+# DiskGenie icon fan-out (doc 03 M11.1, updated session 18 — the
+# theme-gradient master): the brand source is a COMMITTED design asset
+# (packaging/icon/icon-source.png — the pack's 1254x1254 photoreal
+# "hard drive + brush" badge, background-removed at the pixel level and
+# re-composited over the DEFAULT theme's --ink-grad coral gradient,
+# full-bleed circle; the disk+broom cutout keeps its soft shadow as a
+# black-alpha layer so the depth survives the gradient base). `npx tauri
+# icon` fans it out to every platform size, THEN the hand-packed Windows
+# ico and macOS icns are overlaid on top:
+#   packaging/icon/DiskGenie.ico  (16-256 multi-size; BMP entries <=48px +
+#                                  PNG >=64px, Lanczos + light unsharp at
+#                                  <=48px so the badge stays crisp at
+#                                  taskbar sizes)
+#   packaging/icon/DiskGenie.icns (ic07..ic14 PNG chunks, 32..1024)
+# The in-app mark is the SEPARATE transparent cutout
+# (src/assets/brand-mark.png) painted over var(--ink-grad) by CSS — it
+# follows the selected theme live; this static set carries the default
+# (light) gradient for the OS surfaces (taskbar, dock, installers).
 #
 # To update the brand: replace the three files in packaging/icon/
 # (icon-source.png + DiskGenie.ico + DiskGenie.icns), then run this

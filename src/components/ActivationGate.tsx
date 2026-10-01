@@ -13,7 +13,8 @@
  * widths — and the card itself carries the settle-in fade so a
  * license-state flip never hard-cuts the view.
  */
-import { CheckIcon, LockKeyholeIcon, SparklesIcon } from "./Icon";
+import { CheckIcon, LockKeyholeIcon } from "./Icon";
+import { BrandMark } from "./BrandMark";
 import { useLicenseStore } from "../state/license";
 import { invoke } from "../lib/ipc";
 import { track, EVENTS } from "../lib/analytics";
@@ -73,9 +74,16 @@ export function ActivationGate({ tab }: { tab: TabId }) {
   return (
     <div className="db-activation-gate" role="note" aria-label="Activation required">
       <div className="db-activation-gate-card">
-        <div className="db-activation-gate-icon" aria-hidden="true">
-          {posture === "degraded" ? <LockKeyholeIcon size={22} /> : <SparklesIcon size={22} />}
-        </div>
+        {posture === "degraded" ? (
+          <div className="db-activation-gate-icon" aria-hidden="true">
+            <LockKeyholeIcon size={22} />
+          </div>
+        ) : (
+          /* The product mark at gate scale — the photoreal disk+broom
+           * over the live theme gradient (the same var(--ink-grad)
+           * circle as the topbar). The product IS the pitch here. */
+          <BrandMark size={44} />
+        )}
         <h2>
           {posture === "degraded" ? "Pro features are paused" : pitch.title}
         </h2>

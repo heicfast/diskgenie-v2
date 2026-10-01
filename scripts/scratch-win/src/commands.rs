@@ -3,10 +3,10 @@
 
 #[path = "../../../src-tauri/src/commands/dupes.rs"]
 pub mod dupes;
-#[path = "../../../src-tauri/src/commands/scan.rs"]
-pub mod scan;
 #[path = "../../../src-tauri/src/commands/license.rs"]
 pub mod license;
+#[path = "../../../src-tauri/src/commands/scan.rs"]
+pub mod scan;
 #[path = "../../../src-tauri/src/commands/sidebar.rs"]
 pub mod sidebar;
 #[path = "../../../src-tauri/src/commands/snapshots_cmd.rs"]

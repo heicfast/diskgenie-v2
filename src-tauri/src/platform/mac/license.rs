@@ -251,11 +251,7 @@ pub fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
             let service = cf_key(KEYCHAIN_SERVICE);
             let account = cf_key(KEYCHAIN_ACCOUNT);
             // SAFETY: Create-rule CFData over the owned payload.
-            let cf_data = CFDataCreate(
-                std::ptr::null(),
-                payload.as_ptr(),
-                payload.len() as isize,
-            );
+            let cf_data = CFDataCreate(std::ptr::null(), payload.as_ptr(), payload.len() as isize);
             // Replace any existing item first (idempotent upsert).
             let del_query = keychain_dict(service, account, std::ptr::null());
             SecItemDelete(del_query);

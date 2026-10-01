@@ -67,7 +67,10 @@ pub mod os {
     }
 
     /// Always errors (see turbo_geometry).
-    pub fn turbo_read_mft(_volume: &mut std::fs::File, _geo: &TurboGeometry) -> Result<Vec<u8>, String> {
+    pub fn turbo_read_mft(
+        _volume: &mut std::fs::File,
+        _geo: &TurboGeometry,
+    ) -> Result<Vec<u8>, String> {
         Err("stub".into())
     }
 

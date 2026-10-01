@@ -115,7 +115,15 @@ impl LicenseHttp for ReqwestLicense {
             .client
             .post(url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header(reqwest::header::USER_AGENT, "DiskGenie-License-Client/1");
+            // WIRE CONTRACT (the license.worker's guard.ts pins this UA
+            // exactly — BAD_UA otherwise). The DEPLOYED worker still
+            // validates the pre-rename value, so the client keeps it
+            // until the owner's server cutover; the renamed server
+            // source accepts BOTH values through a compat window, so
+            // this flips to "DiskGenie-License-Client/1" in the SAME
+            // change as LICENSE_API_BASE (see the server repo's
+            // wrangler.jsonc cutover note).
+            .header(reqwest::header::USER_AGENT, "DiskBytes-License-Client/1");
         for (k, v) in headers {
             req = req.header(k.as_str(), v.as_str());
         }
