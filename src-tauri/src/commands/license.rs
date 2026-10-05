@@ -254,7 +254,6 @@ fn activate_blocking(key: &str, app: &AppHandle) -> Result<LicenseState, String>
     );
     license::dpapi::save(&state)?;
     eprintln!("[bench] license persisted ms={}", t0.elapsed().as_millis());
-    identify_after_activation(app, &normalized);
     Ok(state)
 }
 
@@ -298,14 +297,6 @@ fn state_from_entitlement(
         last_validated_at: now,
         last_known_good: 0,
         simulated: false,
-    }
-}
-
-/// Post-activation identity merge (doc 07 §3.2): the license key handle
-/// becomes the shared analytics distinct_id (both layers, one person).
-pub fn identify_after_activation(app: &AppHandle, key: &str) {
-    if let Some(an) = app.try_state::<crate::analytics::Analytics>() {
-        an.identify(key);
     }
 }
 

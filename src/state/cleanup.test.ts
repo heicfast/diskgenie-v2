@@ -5,7 +5,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useCleanupStore, type QueueItem } from "./cleanup";
+import { pathIdentityFor, useCleanupStore, type QueueItem } from "./cleanup";
 
 const item = (id: number, size = 100): QueueItem => ({ id, path: `C:\\x\\${id}`, size, reason: "Duplicate" });
 
@@ -110,11 +110,20 @@ describe("useCleanupStore (spec §9)", () => {
     expect(useCleanupStore.getState().items).toHaveLength(1);
   });
 
-  it("path identity is case-insensitive (Windows semantics)", () => {
+  it("path identity follows Windows and case-sensitive macOS semantics", () => {
+    expect(pathIdentityFor("C:\\A\\Big.ISO", "windows")).toBe(
+      pathIdentityFor("c:\\a\\big.iso", "windows"),
+    );
+    expect(pathIdentityFor("/Data/A.iso", "macos")).not.toBe(
+      pathIdentityFor("/Data/a.iso", "macos"),
+    );
+  });
+
+  it("keeps case-distinct paths on non-Windows hosts", () => {
     const s = useCleanupStore.getState();
-    s.stage({ id: 9, path: "C:\\A\\Big.ISO", size: 900, reason: "Manual" });
-    s.stage({ id: 0, path: "c:\\a\\big.iso", size: 900, reason: "Duplicate" });
-    expect(useCleanupStore.getState().items).toHaveLength(1);
+    s.stage({ id: 9, path: "/Data/A.iso", size: 900, reason: "Manual" });
+    s.stage({ id: 0, path: "/Data/a.iso", size: 900, reason: "Duplicate" });
+    expect(useCleanupStore.getState().items).toHaveLength(2);
   });
 
   it("different files with different ids still stack", () => {

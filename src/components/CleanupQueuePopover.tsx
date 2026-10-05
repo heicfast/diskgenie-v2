@@ -20,7 +20,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckIcon, Trash2Icon, TriangleAlertIcon, XIcon } from "./Icon";
 import { TailPath } from "./TailPath";
-import { useCleanupStore } from "../state/cleanup";
+import { pathIdentity, useCleanupStore } from "../state/cleanup";
 import { useScanStore } from "../state/scan";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { bytes } from "../lib/format";
@@ -219,7 +219,7 @@ export function CleanupQueuePopover({
         // moved and what happens to the space now.
         const moved = result.trashed.filter((t) => !t.alreadyGone).length;
         const freed = committingItems
-          .filter((i) => result.trashed.some((t) => t.path.toLowerCase() === i.path.toLowerCase()))
+          .filter((i) => result.trashed.some((t) => pathIdentity(t.path) === pathIdentity(i.path)))
           .reduce((a, i) => a + i.size, 0);
         window.dispatchEvent(
           new CustomEvent("db-toast", {

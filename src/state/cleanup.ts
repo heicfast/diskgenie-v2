@@ -11,6 +11,7 @@
 import { create } from "zustand";
 import { invoke } from "../lib/ipc";
 import { EVENTS, track } from "../lib/analytics";
+import { PLATFORM, type Platform } from "../lib/platform";
 
 /** One staged item (spec §9: id, path, size, reason). */
 export interface QueueItem {
@@ -58,8 +59,13 @@ interface CleanupState {
  * (id 0, e.g. a leftover or duplicate) must land in the queue ONCE;
  * id-only keying let it appear twice and unstage(0) nuked every
  * path-only row). Path-less items fall back to the node id. */
+export const pathIdentityFor = (path: string, platform: Platform): string =>
+  platform === "windows" ? path.toLocaleLowerCase("en-US") : path;
+
+export const pathIdentity = (path: string): string => pathIdentityFor(path, PLATFORM);
+
 const keyOf = (i: Pick<QueueItem, "id" | "path">): string =>
-  i.path && i.path.length > 0 ? `p:${i.path.toLowerCase()}` : `i:${i.id}`;
+  i.path && i.path.length > 0 ? `p:${pathIdentity(i.path)}` : `i:${i.id}`;
 
 /** The staged queue. Popover + badge subscribe via selectors (spec §9). */
 export const useCleanupStore = create<CleanupState>((set, get) => ({
@@ -144,11 +150,12 @@ async function commitItems(cmd: "commit_cleanup" | "delete_permanently"): Promis
     selectedNode: nav.selectedNode,
   });
   // Recycled (incl. already-gone + nested-with-parent + duplicate
-  // identities) leave the queue — path matching is case-insensitive
-  // (Windows semantics; the Rust plan folds duplicates the same way).
-  const recycled = new Set(result.trashed.map((t) => t.path.toLowerCase()));
+  // identities) leave the queue. Windows path identity is
+  // case-insensitive; macOS preserves case because APFS may be
+  // case-sensitive and `/Data/A` need not be `/Data/a`.
+  const recycled = new Set(result.trashed.map((t) => pathIdentity(t.path)));
   useCleanupStore.setState((s) => ({
-    items: s.items.filter((i) => !recycled.has(i.path.toLowerCase())),
+    items: s.items.filter((i) => !recycled.has(pathIdentity(i.path))),
   }));
   return result;
 }

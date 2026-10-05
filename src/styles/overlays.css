@@ -1052,6 +1052,20 @@
   border-top: 1px solid var(--divider);
 }
 
+.db-license-version {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 11px;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+}
+
+.db-license-version span {
+  color: var(--text-secondary);
+  font-weight: 650;
+}
+
 .db-theme-picker {
   display: flex;
   flex-direction: column;

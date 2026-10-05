@@ -12,6 +12,12 @@ declare global {
 }
 
 function detect(): Platform {
+  if (typeof window !== "undefined") {
+    const injected = window.__DB_PLATFORM__;
+    if (injected === "windows" || injected === "macos" || injected === "other") {
+      return injected;
+    }
+  }
   // Host-safe: unit tests import this module transitively (the Recent
   // row → ROOT_VIEW_LABEL) under a plain Node environment, where the
   // navigator global does not exist before Node 21 (CI's vitest node is

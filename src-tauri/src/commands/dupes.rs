@@ -527,15 +527,14 @@ fn hash_full(path: &std::path::Path, ctl: &DupesCtl) -> Option<[u8; 32]> {
     Some(digest)
 }
 
-/// Hardlink identity via the platform seam `win::hardlink_identity`
-/// (spec §10: hardlinks are NOT duplicates). None = unavailable
-/// (treated unique). Non-Windows builds have no hardlinks to detect.
-#[cfg(windows)]
+/// Hardlink identity via the platform seam (spec §10: hardlinks are
+/// NOT duplicates). None = unavailable (treated unique).
+#[cfg(any(windows, target_os = "macos"))]
 fn hardlink_identity(path: &std::path::Path) -> Option<(u64, u64)> {
     crate::platform::os::hardlink_identity(path)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn hardlink_identity(_path: &std::path::Path) -> Option<(u64, u64)> {
     None
 }

@@ -10,7 +10,7 @@ import { create } from "zustand";
 import { invoke } from "../lib/ipc";
 import { listen } from "../lib/ipc";
 
-import { EVENTS, track, identifyUser } from "../lib/analytics";
+import { EVENTS, track } from "../lib/analytics";
 
 export interface LicenseStatus {
   posture: "unlicensed" | "pro" | "grace" | "degraded";
@@ -67,9 +67,6 @@ export const useLicenseStore = create<LicenseState>((set) => ({
       const status = await invoke<LicenseStatus>("activate_license", { key });
       set({ status, busy: false, activated: true });
       track(EVENTS.licenseActivated, { tier: status.tier });
-      // Merge the person timeline (doc 07 §3.2) — the license key is
-      // the shared distinct_id across both layers.
-      identifyUser(status.customerEmail || key);
       return true;
     } catch (e) {
       set({ busy: false, error: String(e) });

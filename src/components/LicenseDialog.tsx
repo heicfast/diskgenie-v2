@@ -41,6 +41,7 @@ import { useFocusTrap } from "../lib/useFocusTrap";
 import { formatKey, isCompleteKey, normalizeKey } from "../lib/licenseKey";
 import { invoke } from "../lib/ipc";
 import { track, EVENTS } from "../lib/analytics";
+import { bundledAppVersion, getInstalledVersion } from "../lib/appVersion";
 
 /** Exit fade duration — must match the CSS `data-closing` transition. */
 const CLOSE_MS = 130;
@@ -62,6 +63,17 @@ function reformat(raw: string): string {
   return formatKey(normalized.slice(0, 22));
 }
 
+function Appearance({ version }: { version: string }) {
+  return (
+    <div className="db-license-appearance">
+      <ThemePicker />
+      <div className="db-license-version" aria-label={`Installed version ${version}`}>
+        Installed version <span className="tnum">{version}</span>
+      </div>
+    </div>
+  );
+}
+
 export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const status = useLicenseStore((s) => s.status);
   const activate = useLicenseStore((s) => s.activate);
@@ -71,10 +83,16 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
   const activated = useLicenseStore((s) => s.activated);
   const consumeActivated = useLicenseStore((s) => s.consumeActivated);
   const [key, setKey] = useState("");
+  const [version, setVersion] = useState(bundledAppVersion);
   const [closing, setClosing] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeTimer = useRef<number | null>(null);
   useFocusTrap(dialogRef, open && !closing);
+
+  useEffect(() => {
+    if (!open) return;
+    void getInstalledVersion().then(setVersion);
+  }, [open]);
 
   // One graceful close path: fade out (data-closing) → THEN unmount.
   // A reopened dialog remounts fresh (enter animations replay once —
@@ -198,9 +216,7 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
           </p>
         )}
         <p className="db-license-thanks">Thank you for purchasing DiskGenie.</p>
-        <div className="db-license-appearance">
-          <ThemePicker />
-        </div>
+        <Appearance version={version} />
       </div>
     );
   } else if (posture === "degraded") {
@@ -223,6 +239,7 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
             {error}
           </div>
         )}
+        <Appearance version={version} />
       </div>
     );
   } else {
@@ -268,9 +285,7 @@ export function LicenseDialog({ open, onClose }: { open: boolean; onClose: () =>
             <CheckIcon size={13} /> 14-day offline grace
           </div>
         </div>
-        <div className="db-license-appearance">
-          <ThemePicker />
-        </div>
+        <Appearance version={version} />
       </div>
     );
   }

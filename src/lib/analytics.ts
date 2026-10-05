@@ -76,13 +76,3 @@ export function track(
     /* analytics must never error into the UI (doc 07 §5) */
   }
 }
-
-/** Post-activation identity merge (doc 07 §3.2). */
-export function identifyUser(customerRef: string, email?: string): void {
-  if (!initialized) return;
-  try {
-    posthog.identify(customerRef, email ? { email } : undefined);
-  } catch {
-    /* never surface */
-  }
-}

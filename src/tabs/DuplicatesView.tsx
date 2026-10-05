@@ -14,7 +14,7 @@
  * `overall` fraction — one smooth ramp, never a phase-boundary reset.
  */
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { CopyIcon, FileIcon, SearchIcon, CheckIcon, Trash2Icon, XIcon } from "../components/Icon";
+import { CopyIcon, FileIcon, SearchIcon, CheckIcon, XIcon } from "../components/Icon";
 import { TailPath } from "../components/TailPath";
 import { SCAN_THIS_PC } from "../lib/platform";
 import { EmptyState } from "../components/buttons";
@@ -170,10 +170,6 @@ export function DuplicatesView() {
     );
   };
 
-  const stageOne = (path: string, size: number) => {
-    stageMany([{ id: 0, path, size, reason: "Duplicate" }]);
-  };
-
   const scan = () => start(generation);
 
   const stale = result != null && result.generation !== generation;
@@ -307,38 +303,29 @@ export function DuplicatesView() {
                       <span className="db-keep-tag keep">
                         <CheckIcon size={11} /> Keep
                       </span>
-                    ) : (
-                      <span
-                        className={`db-keep-tag stage${kept ? " is-disabled" : ""}`}
-                        role="button"
-                        tabIndex={kept ? -1 : 0}
-                        aria-disabled={kept ? true : undefined}
-                        onClick={() => (kept ? undefined : stageOne(p, g.size))}
-                        onKeyDown={(e) => {
-                          // WAI button pattern: Enter AND Space activate.
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            if (!kept) stageOne(p, g.size);
-                          }
-                        }}
-                      >
-                        <Trash2Icon size={11} /> Stage
+                    ) : kept ? (
+                      <span className="db-keep-tag stage is-disabled">
+                        Staged
                       </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="db-keep-tag stage"
+                        onClick={() => keepAndStageRest(g, p)}
+                        aria-label={`Keep ${p} and stage the other copies`}
+                      >
+                        <CheckIcon size={11} /> Keep this
+                      </button>
                     )}
                     <b className="tnum">{bytes(g.size)}</b>
                   </div>
                 );
               })}
             {isOpen && (
-              <div style={{ padding: "10px 15px", borderTop: "1px solid var(--divider)" }}>
-                <button
-                  type="button"
-                  className="db-outline"
-                  onClick={() => keepAndStageRest(g, kept ?? g.paths[0])}
-                >
-                  <CheckIcon size={13} /> {kept ? "Stage the rest again" : "Keep this, stage the rest"}
-                  {!kept && <span style={{ color: "var(--text-tertiary)" }}> ({bytes(g.wasted)})</span>}
-                </button>
+              <div className="db-dup-guidance">
+                {kept
+                  ? `${g.count - 1} ${g.count - 1 === 1 ? "copy is" : "copies are"} staged; the kept file will remain untouched.`
+                  : `Choose the copy to keep. DiskGenie will stage the other ${g.count - 1} for review (${bytes(g.wasted)}).`}
               </div>
             )}
           </div>

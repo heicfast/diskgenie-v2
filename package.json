@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "version:check": "node scripts/check-version-sync.mjs"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3",

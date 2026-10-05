@@ -1,8 +1,8 @@
 //! Analytics bridge (doc 07): posthog-rs (blocking client, default
 //! features off) for ENGINE telemetry — scan performance, turbo
 //! verification, recycle preflight, license validation. One shared
-//! anonymous distinct_id (random UUID, never the hardware id — privacy
-//! §6); swapped to the license identity after activation.
+//! anonymous distinct_id (random UUID, never the hardware id, license
+//! key, or customer identity — privacy §6).
 //!
 //! Rules enforced here (doc 07 §5/§6):
 //! - captures NEVER error into the UI (non-falling helper);
@@ -95,12 +95,6 @@ impl Analytics {
         client.capture(ev);
     }
 
-    /// Post-activation identity (doc 07 §3.2): the Dodo customer id
-    /// becomes the shared distinct_id (both layers, one person).
-    pub fn identify(&self, customer_ref: &str) {
-        *self.distinct_id.lock() = customer_ref.to_string();
-    }
-
     /// The opt-out toggle (persisted; honored by both layers).
     pub fn set_opt_out(&self, value: bool) {
         self.opt_out.store(value, Ordering::Relaxed);
@@ -147,17 +141,6 @@ mod tests {
             opt_out: AtomicBool::new(true),
         };
         an.capture("x", &[]);
-    }
-
-    #[test]
-    fn identify_swaps_distinct_id() {
-        let an = Analytics {
-            client: None,
-            distinct_id: Mutex::new("anon-1".into()),
-            opt_out: AtomicBool::new(false),
-        };
-        an.identify("cust_123");
-        assert_eq!(*an.distinct_id.lock(), "cust_123");
     }
 
     #[test]
