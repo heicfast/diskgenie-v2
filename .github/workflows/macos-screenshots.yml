@@ -1,17 +1,15 @@
-name: macOS UI Audit
+name: macOS Screenshots
 
-# The macOS deep UI verification battery (session 17 — the owner's
-# mac-quality ask): the REAL app (license-sim feature, exactly like
-# the Windows UI Screenshots flow) over a BALANCED synthetic tree,
-# with the tour covering every mode, every tab, all five themes, the
-# license dialog states, AND the responsive window extremes
-# (window-min 1280x760 / window-full). Captures are WINDOW-EXACT
-# (`screencapture -l`) on a display bumped to 1920x1080 — the old
-# full-screen 1024x768 captures cropped the inspector away and read
-# as "zoomed" (the session-17 root cause).
-#
-# Artifacts: the frames + the app logs + this run's environment
-# report — pulled and VLM-audited per session.
+# THE macOS screenshot workflow (the mac half of the owner's two-
+# screenshot-set ask). The REAL app (license-sim feature, exactly
+# like the Windows flow) over a BALANCED synthetic tree; the tour
+# covers every mode, every tab, all five themes, the license dialog
+# states, and the responsive window extremes. Capture is
+# TITLE-SYNCED — exactly ONE NAMED FRAME PER TOUR STEP (the
+# TourDriver stamps `tNN-name` into the window title; mac-capture.sh
+# polls it via the CGWindowList probe, lets the step settle, and
+# shoots window-exact frames on a 1920x1080 display). The cadence
+# loop remains only as the zero-marker fallback.
 
 on:
   workflow_dispatch:
@@ -19,7 +17,7 @@ on:
     branches: [main]
 
 concurrency:
-  group: macos-ui-audit-${{ github.ref }}
+  group: macos-screenshots-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -84,7 +82,8 @@ jobs:
           mkdir -p "$OUT"
           APP_BIN="$APP" \
           OUT_DIR="$OUT" \
-          FRAMES=66 \
+          SYNC_TITLE=1 \
+          FRAMES=44 \
           BOOT_WAIT_S=5 \
           LAUNCH_ENV="DISKGENIE_SCAN=$HOME/diskgenie-test DISKGENIE_TOUR=1 DISKGENIE_MODE=Folders DISKGENIE_LICENSE_SIM=1 DISKGENIE_WINDOW=1440x860" \
           bash scripts/ci/mac-capture.sh
@@ -96,7 +95,7 @@ jobs:
       - name: Upload screenshots
         uses: actions/upload-artifact@v4
         with:
-          name: diskgenie-macos-ui-audit
+          name: diskgenie-macos-screenshots
           path: ${{ runner.temp }}/shots
           retention-days: 14
           if-no-files-found: error

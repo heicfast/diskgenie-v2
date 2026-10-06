@@ -1,11 +1,12 @@
 name: UI Screenshots
 
-# The interactive verification battery (owner instruction, session 005):
-# builds the REAL app (Windows, release, embedded frontend), stages a
-# synthetic file tree, launches with DISKGENIE_SCAN + DISKGENIE_TOUR=1,
-# and captures a screenshot at every tour step (all 9 modes, all tabs,
-# color modes, dark theme, license + cleanup overlays) via GDI
-# CopyFromScreen. Artifacts are pulled and VLM-verified per session.
+# The Windows screenshot workflow (owner instruction: "one for one
+# page/mode/action"). Builds the REAL app (release, embedded frontend,
+# ci-license-sim), stages a synthetic tree, launches with
+# DISKGENIE_TOUR=1, and captures EXACTLY ONE NAMED FRAME PER TOUR STEP
+# via the title-sync channel (the TourDriver stamps `tNN-name` into the
+# window title; the harness polls it, lets the step settle, and shoots).
+# The fixed-cadence capture remains only as a zero-artifact fallback.
 
 on:
   workflow_dispatch:
@@ -128,7 +129,7 @@ jobs:
           }
           Get-ChildItem -Recurse $root | Measure-Object | ForEach-Object { "staged $($_.Count) entries" }
 
-      - name: Run the app + capture the tour
+      - name: Run the app + capture the tour (title-synced, one frame per step)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -158,23 +159,67 @@ jobs:
           # bring to front
           $ws = New-Object -ComObject WScript.Shell
           $null = $ws.AppActivate($app.Id)
-          # 5.5 s = WebView2 first paint + scan start. With the ~15 GB
-          # synthetic tree the scan runs ~3-4 s, so frame 00 (at ~8.1 s)
-          # lands on the Folders mode (tour step 0) instead of the
-          # pre-paint blank window (round-4 step-00 FAIL).
+          # Boot settle: WebView2 first paint + scan start (the ~15 GB
+          # staged tree scans in ~3-4 s; the first title marker appears
+          # with tour step 0 right after).
           Start-Sleep -Milliseconds 5500
           $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-          $step = 0
-          $max = 48   # 27 tour slots incl. 7 license steps (duplicates-run dwells 10x) + generous drift margin
-          while ($step -lt $max) {
-            Start-Sleep -Milliseconds 2600
-            if ($app.HasExited) { break }
+
+          function Shoot([string]$name) {
             $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
             $g = [System.Drawing.Graphics]::FromImage($bmp)
             $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-            $bmp.Save((Join-Path $out ("step-{0:d2}.png" -f $step)), [System.Drawing.Imaging.ImageFormat]::Png)
+            $bmp.Save((Join-Path $out $name), [System.Drawing.Imaging.ImageFormat]::Png)
             $g.Dispose(); $bmp.Dispose()
-            $step++
+          }
+          function WindowTitle() {
+            # MainWindowTitle caches; Refresh() re-reads from Win32.
+            $app.Refresh()
+            return $app.MainWindowTitle
+          }
+
+          # ── TITLE-SYNCED capture: the TourDriver stamps each step into
+          # the window title (`DiskGenie · tNN-name`); poll it and shoot
+          # exactly ONE named frame per step — no duplicates, no misses,
+          # "one for one page/mode/action".
+          $deadline = (Get-Date).AddMinutes(12)
+          $lastTitle = ''
+          $frames = 0
+          $sawMarker = $false
+          while ((Get-Date) -lt $deadline -and -not $app.HasExited) {
+            $t = WindowTitle
+            if ($t -and $t -ne $lastTitle) {
+              if ($t -match '· tour-done') { "tour finished after $frames frames"; break }
+              if ($t -match '· (t\d{2}-.+)$') {
+                # Settle: let the view-transition crossfade + the debounced
+                # canvas repaint land before the frame.
+                Start-Sleep -Milliseconds 1300
+                if ($app.HasExited) { break }
+                Shoot(($Matches[1] + '.png'))
+                $frames++
+                $sawMarker = $true
+                "captured $($Matches[1])"
+              } elseif (-not $sawMarker) {
+                # Pre-tour boot frame (the window before step 0).
+                Shoot('t00-boot.png'); $frames++
+                "captured t00-boot (pre-tour)"
+              }
+              $lastTitle = $t
+            }
+            Start-Sleep -Milliseconds 250
+          }
+
+          # ── FALLBACK: no title markers (tour env missing / title sync
+          # broken) — the old cadence capture so the run never yields
+          # zero artifacts.
+          if (-not $sawMarker) {
+            "no tour title markers — falling back to cadence capture"
+            $step = 0
+            while ($step -lt 48 -and -not $app.HasExited) {
+              Start-Sleep -Milliseconds 2600
+              Shoot(('step-{0:d2}.png' -f $step))
+              $step++
+            }
           }
           if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
           Start-Sleep -Milliseconds 500

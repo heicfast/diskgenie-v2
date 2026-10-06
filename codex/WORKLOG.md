@@ -73,3 +73,31 @@ comparison repositories, then baseline DiskGenie before any optimization claim.
 - Gates: core 179+21+16 tests green; clippy pedantic + fmt clean;
   scratch-win mirror: 45/45 host tests + msvc cross-lint clean;
   frontend tsc 0 errors, 113/113 vitest; version-sync green.
+
+## 2026-10-06 — workflow consolidation + title-synced screenshots (session 19, part 3)
+
+- Consolidated 10 workflows → 6 (the owner's target set + the weekly
+  benchmark): ci.yml absorbs test-matrix (mac core/platform jobs),
+  license-e2e (the live-worker lifecycle job, secrets-presence guard
+  kept), and gains a version-sync gate + the v3 engine benchmark in
+  its Benchmarks job. DELETED: nsis-bundle.yml (byte-duplicate of
+  ci.yml's bundle), test-matrix.yml, license-e2e.yml (merged),
+  macos-license-e2e.yml (the Windows headless live test covers the
+  lifecycle; the mac UI-drive variant cost 10x minutes for overlapping
+  coverage — its keychain-setup knowledge stays in git history).
+- macos-ui-audit.yml → macos-screenshots.yml; macos-build.yml drops
+  its duplicated test steps (ci.yml's core-mac covers both mac
+  images); macos-benchmark.yml gains the engine benchmark
+  (DB_BENCH_GB=2) beside the app-level timings.
+- TITLE-SYNCED screenshots ("one for one page/mode/action"): the
+  TourDriver stamps `DiskGenie · tNN-name` into document.title per
+  step (+ `tour-done` marker); the Windows harness polls
+  MainWindowTitle, settles 1.3 s, shoots ONE NAMED frame per step
+  (48 anonymous cadence frames → ~35 named ones); mac-capture.sh
+  gained SYNC_TITLE mode (the CGWindowList Swift probe now reads the
+  title too; sed marker extraction verified live). The fixed-cadence
+  loop remains as the zero-marker fallback on both platforms.
+- Verified all push triggers are `branches: [main]` at the BYTE level
+  (the `ain]` display was a display-layer artifact — `[m` eaten as
+  an ANSI reset; od hex proves `5b 6d 61 69 6e 5d`).
+- YAML validated (python yaml.safe_load) for all six files.

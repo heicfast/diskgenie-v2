@@ -12,9 +12,11 @@ name: macOS Build
 # screen 1024x768 capture cropped the 1280x760-min window (every frame
 # read "zoomed", the inspector column was never captured), `open
 # --env` hid stdout/stderr, and the production build ran the tour
-# UNLICENSED (every frame was the gate). The deep tour moved to
-# macos-ui-audit.yml (license-sim build); this workflow keeps the
-# bundle + dmg verification + the launch smoke.
+# UNLICENSED (every frame was the gate). The deep tour lives in
+# macos-screenshots.yml (license-sim build, title-synced capture);
+# this workflow keeps the bundle + dmg verification + the launch
+# smoke. (Core/app TESTS run in CI's core-mac job on BOTH mac images
+# — duplicated here once, they are gone.)
 
 on:
   workflow_dispatch:
@@ -48,19 +50,6 @@ jobs:
 
       - name: npm ci
         run: npm ci
-
-      - name: Core tests (mac host)
-        run: cargo test --manifest-path src-tauri/core/Cargo.toml
-
-      - name: App crate tests (mac platform module — the getattrlistbulk parser tests)
-        run: cargo test --manifest-path src-tauri/Cargo.toml
-        env:
-          CARGO_INCREMENTAL: 0
-
-      - name: App crate compiles on macOS
-        run: cargo check --manifest-path src-tauri/Cargo.toml
-        env:
-          CARGO_INCREMENTAL: 0
 
       - name: Build the app + dmg
         run: npx tauri build

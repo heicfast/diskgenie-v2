@@ -32,6 +32,11 @@
 #   DISPLAY_BUMP=1920x1080                      # 0 = skip the bump
 #   KEEP_RUNNING=1                              # do not quit at the end
 #   FULL_CONTEXT=1                              # also capture whole-screen frames
+#   SYNC_TITLE=1                                # TITLE-SYNCED capture: one named
+#                                               # frame per tour step (the TourDriver
+#                                               # stamps `tNN-name` into the window
+#                                               # title; poll it, settle, shoot).
+#                                               # 0 = the legacy cadence loop.
 #
 # Emits (stdout, for the workflow log + benchmark parsing):
 #   [bench] display before=1024x768 after=1920x1080
@@ -47,6 +52,8 @@ BOOT_WAIT_S=${BOOT_WAIT_S:-5}
 DISPLAY_BUMP=${DISPLAY_BUMP:-1920x1080}
 KEEP_RUNNING=${KEEP_RUNNING:-0}
 FULL_CONTEXT=${FULL_CONTEXT:-1}
+SYNC_TITLE=${SYNC_TITLE:-0}
+SETTLE_MS=${SETTLE_MS:-1300}
 
 mkdir -p "$OUT_DIR"
 LOG_DIR="$OUT_DIR"
@@ -92,7 +99,11 @@ for w in list {
     let owner = (w["kCGWindowOwnerName"] as? String ?? "").lowercased()
     let layer = (w["kCGWindowLayer"] as? Int) ?? 0
     if layer == 0 && owner.contains("diskgenie") {
-        if let num = w["kCGWindowNumber"] as? Int { print(num); exit(0) }
+        if let num = w["kCGWindowNumber"] as? Int {
+            print(num)
+            if let title = w["kCGWindowName"] as? String { print(title) }
+            exit(0)
+        }
     }
 }
 exit(1)
@@ -121,6 +132,14 @@ win_id() {
       }
     }
   ' 2>/dev/null | head -1
+}
+
+# win_title — the DiskGenie window's CURRENT title (empty when the
+# window is not up yet). Uses the same Swift probe (line 2 = title).
+win_title() {
+  if [ -n "$WINID_BIN" ]; then
+    "$WINID_BIN" 2>/dev/null | sed -n '2p'
+  fi
 }
 
 # ── 3. Launch the release binary (env + redirected logs) ──────────
@@ -172,8 +191,62 @@ else
   ' 2>/dev/null || true
 fi
 
-# ── 5. Boot settle, then the cadence loop ─────────────────────────
+# ── 5. Boot settle, then the capture loop (sync or cadence) ───────
 sleep "$BOOT_WAIT_S"
+
+sync_capture() {
+  # TITLE-SYNCED: poll the window title; on a NEW step marker, settle,
+  # re-resolve the window id, and shoot ONE named frame. Ends on the
+  # tour-done marker, the frame cap, or app exit. The frame cap is the
+  # safety net (the marker regex only accepts tNN-<slug> names).
+  local last="" title marker frames=0 done=0
+  local deadline=$(( $(date +%s) + 12 * 60 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if ! kill -0 "$APP_PID" 2>/dev/null; then
+      echo "[bench] app exited during sync (frames=$frames)"
+      break
+    fi
+    title=$(win_title)
+    if [ -n "$title" ] && [ "$title" != "$last" ]; then
+      case "$title" in
+        *"tour-done"*)
+          echo "[bench] tour finished frames=$frames"
+          done=1
+          ;;
+        *" · "*)
+          marker=$(printf '%s' "$title" | sed -n 's/.* · \(t[0-9][0-9]-[^ ]*\)$/\1/p')
+          if [ -n "$marker" ]; then
+            sleep "$(python3 -c "print($SETTLE_MS/1000)")"
+            WINDOW_ID=$(win_id || echo "$WINDOW_ID")
+            if [ -n "$WINDOW_ID" ]; then
+              screencapture -x -l"$WINDOW_ID" "$OUT_DIR/$marker.png" 2>/dev/null || screencapture -x "$OUT_DIR/$marker.png"
+            else
+              screencapture -x "$OUT_DIR/$marker.png"
+            fi
+            frames=$((frames + 1))
+            echo "[bench] captured $marker.png"
+          fi
+          ;;
+      esac
+      last="$title"
+      [ "$done" = "1" ] && break
+    fi
+    sleep 0.25
+  done
+  [ "$frames" -gt 0 ]
+}
+
+if [ "$SYNC_TITLE" = "1" ]; then
+  if sync_capture; then
+    echo "[bench] sync capture OK"
+    if [ "$KEEP_RUNNING" != "1" ] && kill -0 "$APP_PID" 2>/dev/null; then
+      kill "$APP_PID" 2>/dev/null || true
+    fi
+    exit 0
+  fi
+  echo "[bench] sync capture saw no markers — falling back to cadence"
+fi
+
 i=0
 while [ "$i" -lt "$FRAMES" ]; do
   if ! kill -0 "$APP_PID" 2>/dev/null; then

@@ -37,14 +37,26 @@ interface TourHooks {
 interface Step {
   name: string;
   apply: () => void;
-  /** Dwell multiplier (× DWELL_MS). Theme flips need ≥2 capture passes:
-   * the CI harness samples every 2.6 s, so a 1× dwell can fall entirely
-   * between captures — round 16's tour never captured dark mode at all
-   * (all 26 frames light). 3× guarantees ≥2 samples per theme. */
+  /** Dwell multiplier (× DWELL_MS). The CI harness is TITLE-SYNCED (it
+   * captures once per step, when `document.title` moves — see
+   * `tourTitle`), so dwell now only needs to cover the step's own
+   * settle time (view-transition crossfades, the dupes scan). Theme
+   * steps keep 2× for the crossfade + canvas repaint; the duplicates
+   * run keeps 10× for Defender first-opens on the staged tree. */
   dwell?: number;
 }
 
 const DWELL_MS = 2600;
+
+/** The harness sync signal: `DiskGenie · tNN-name` per step. Native
+ * capture scripts (Win32 GetWindowText / mac CGWindowList) poll the
+ * WINDOW TITLE — the one channel both platforms expose without a
+ * debugger protocol — and shoot exactly one named frame per step
+ * ("one for one page/mode/action"). Slugs stay filesystem-safe. */
+function tourTitle(i: number, name: string) {
+  const slug = name.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase();
+  document.title = `DiskGenie · t${String(i).padStart(2, "0")}-${slug}`;
+}
 
 /** The license-tour key fill: the dialog's input listens for this event
  * (its formatting + completeness logic stays the single source). */
@@ -301,10 +313,14 @@ export function TourDriver() {
         window.dispatchEvent(new CustomEvent("db-tour-step"));
         const step = steps[i];
         step.apply();
+        tourTitle(i, step.name);
         (window as unknown as Record<string, unknown>).__DB_TOUR_STATE = { step: i, name: step.name, total: steps.length };
         i += 1;
         if (i < steps.length) timer = window.setTimeout(advance, DWELL_MS * (step.dwell ?? 1));
-        else (window as unknown as Record<string, unknown>).__DB_TOUR_DONE = true;
+        else {
+          (window as unknown as Record<string, unknown>).__DB_TOUR_DONE = true;
+          document.title = "DiskGenie · tour-done";
+        }
       };
       advance();
     })();

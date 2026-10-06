@@ -1,21 +1,45 @@
 name: CI
 
-# DiskGenie CI (doc 09 §2 static gate battery + Windows-only verification).
-# The dev sandbox is Linux; this workflow runs the REAL Windows gates on
-# windows-latest: MSVC toolchain, WebView2, and the NSIS bundle build.
+# DiskGenie CI — THE general validation workflow (the owner's
+# consolidation ask: "one in general workflow to confirm is
+# everything good in rust or ui/compilation"). It absorbs the old
+# Test Matrix (cross-platform core + platform suites) and the old
+# License E2E:
+#
+#   gates        — the full Windows gate battery (fmt, clippy
+#                  workspace, core tests, the 1M-node bench, npm
+#                  typecheck + vitest, R7.1/R2.2 hygiene, frontend
+#                  build) + the NSIS bundle artifact.
+#   core-mac     — the platform-independent core suite + app-crate
+#                  clippy + tests on BOTH macOS images (x64 +
+#                  arm64) — every invariant on every OS.
+#   platform-mac — OS-specific behavior tests on both macOS images
+#                  (the Windows twin runs inside `gates`' workspace
+#                  test).
+#   benchmarks   — the criterion suite + the v3 duplicates-engine
+#                  benchmark (Windows; the macOS app-level benchmark
+#                  runs weekly in macOS Benchmark).
+#   license-e2e  — the license lifecycle against the live worker
+#                  (activate → verify → revalidate → slots →
+#                  deactivate → revoke), feature-gated.
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
 jobs:
   gates:
-    name: Static gates + core tests
+    name: Static gates + core tests (Windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +70,7 @@ jobs:
         working-directory: src-tauri
         shell: bash
 
-      - name: "Gate: core tests"
+      - name: "Gate: core tests (workspace)"
         run: cargo test --workspace
         working-directory: src-tauri
         shell: bash
@@ -63,7 +87,10 @@ jobs:
         run: npm run typecheck
 
       - name: "Gate: vitest"
-        run: npx vitest run --passWithNoTests
+        run: npx vitest run --passWithNoNotes 2>/dev/null || npx vitest run --passWithNoTests
+
+      - name: "Gate: version sync (web ↔ Tauri ↔ Cargo)"
+        run: node scripts/check-version-sync.mjs
 
       - name: "Gate: R7.1 — zero direct-delete APIs in src-tauri/src (R7.1-allow: test-scratch exemptions)"
         shell: bash
@@ -91,6 +118,160 @@ jobs:
 
       - name: "Gate: frontend build"
         run: npm run build
+
+  core-mac:
+    name: Core suite (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-14]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable + clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: "Gate: fmt"
+        run: cargo fmt --all -- --check
+        working-directory: src-tauri
+        shell: bash
+
+      - name: "Gate: clippy -D warnings (core)"
+        run: cargo clippy -p diskgenie-core --all-targets -- -D warnings
+        working-directory: src-tauri
+        shell: bash
+
+      - name: "Gate: clippy -D warnings (app crate, platform modules)"
+        # The Windows `gates` job compiles the windows platform
+        # modules; this is where the app crate's macOS modules get
+        # linted with -D warnings (the mac ladder lint pass found 4
+        # latent issues + 2 NUL-termination UBs the first time it ran).
+        run: cargo clippy -p diskgenie --all-targets -- -D warnings
+        working-directory: src-tauri
+        shell: bash
+
+      - name: "Core tests (debug — overflow checks ON)"
+        run: cargo test -p diskgenie-core
+        working-directory: src-tauri
+        shell: bash
+
+      - name: "Core tests (release — the shipped arithmetic)"
+        run: cargo test -p diskgenie-core --release
+        working-directory: src-tauri
+        shell: bash
+
+      - name: "App crate tests (platform modules included)"
+        run: cargo test -p diskgenie --lib
+        working-directory: src-tauri
+        shell: bash
+
+      - name: "Platform behavior tests (real filesystem, unicode, permissions)"
+        run: cargo test -p diskgenie-core --test platform
+        working-directory: src-tauri
+        shell: bash
+
+      - name: "App platform tests (mac bulk parser)"
+        run: cargo test -p diskgenie --lib platform
+        working-directory: src-tauri
+        shell: bash
+
+      - name: "Gate: 1M-node insert < 2s (M2)"
+        run: cargo test --release -p diskgenie-core -- --ignored bench_1m --nocapture
+        working-directory: src-tauri
+        shell: bash
+
+  benchmarks:
+    name: Benchmarks (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: "Criterion suite (1M-node pipeline, layouts, surgery, quickwins, dupes)"
+        run: cargo bench -p diskgenie-core --bench suite
+        working-directory: src-tauri
+        shell: bash
+
+      - name: "v3 duplicates engine benchmark (real I/O, 2 GiB staged corpus)"
+        # The engine's I/O-bound contract, on real Windows storage:
+        # stages 2 GiB of magic-headed multi-format content with a
+        # realistic duplicate structure, then times screens + lockstep
+        # verify end-to-end (throughput, read amplification, group
+        # correctness). DB_BENCH_GB tunes the corpus size.
+        run: cargo test --release -p diskgenie-core -- --ignored engine_bench --nocapture
+        working-directory: src-tauri
+        shell: bash
+        env:
+          DB_BENCH_GB: "2"
+
+      - name: Upload criterion reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: criterion-windows
+          path: src-tauri/target/criterion
+          if-no-files-found: warn
+
+  license-e2e:
+    name: License E2E (live worker)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: "License lifecycle against the live worker"
+        # admin-generate a throwaway key → activate (full v2 device
+        # claim) → Ed25519-verify the token against the compiled-in
+        # PRODUCTION public key → revalidate with changed facts →
+        # admin-lookup the device row (the v1 wipe regression, LIVE) →
+        # slot rule → deactivate → revoke. The secrets-presence guard
+        # keeps a fresh clone green when LIVE_ADMIN_KEY is unset.
+        # Key material is never printed (only the last-4).
+        shell: pwsh
+        env:
+          DISKGENIE_LIVE_ADMIN_KEY: ${{ secrets.LIVE_ADMIN_KEY }}
+          DISKGENIE_LIVE_LICENSE_E2E: "1"
+        run: |
+          if (-not $env:DISKGENIE_LIVE_ADMIN_KEY) {
+            Write-Host "::notice::LIVE_ADMIN_KEY secret not set — skipping the live E2E (set it in repo Settings → Secrets → Actions)."
+            exit 0
+          }
+          cargo test --manifest-path src-tauri/Cargo.toml -p diskgenie --features live-license-e2e --test live_license -- --nocapture
+
+      - name: "Worker health check"
+        shell: pwsh
+        run: |
+          try {
+            $h = Invoke-RestMethod -Uri "https://diskbytes-license.heictojpg-pics.workers.dev/v1/health" -TimeoutSec 20
+            Write-Host "worker healthy: version=$($h.version)"
+          } catch {
+            Write-Host "::warning::health check failed: $_"
+          }
 
   bundle:
     name: Windows NSIS bundle (real build)
