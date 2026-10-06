@@ -276,7 +276,7 @@ mod tests {
             path: path.into(),
             size: 10,
             volume_serial: 1,
-            file_index: node_id as u64 + 7,
+            file_index: u64::from(node_id) + 7,
             class,
             node_id,
             modified,

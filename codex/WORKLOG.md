@@ -101,3 +101,17 @@ comparison repositories, then baseline DiskGenie before any optimization claim.
   (the `ain]` display was a display-layer artifact — `[m` eaten as
   an ANSI reset; od hex proves `5b 6d 61 69 6e 5d`).
 - YAML validated (python yaml.safe_load) for all six files.
+
+## 2026-10-06 — engine property tests (session 19, part 4)
+
+- Added core/tests/dupes_engine.rs: 96-case proptest over random
+  populations staged as REAL files (2–6 unique contents at random
+  KiB-scale sizes, 0–3 planted copy-groups, 0–2 near-dup pairs that
+  share screens but differ in the gap). Asserts the engine finds
+  exactly the planted structure: every group ≥ 2 members, sizes map
+  to staged files, near-dups never group. Plus a geometry-invariant
+  property (mid_threshold algebra + end-to-end at odd prefix/sample
+  lengths). Fixed a test-authoring bug the shrink found (duplicate
+  group indices double-counting the planted expectation).
+- Gates: core 180 lib + 21 platform + 16 properties + 2 engine
+  properties green; clippy + fmt clean.
