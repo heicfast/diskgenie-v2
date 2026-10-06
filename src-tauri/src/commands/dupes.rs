@@ -246,14 +246,28 @@ fn resolve_scope(tree: &Tree, node: Option<u32>) -> Result<(u32, Option<String>)
     }
 }
 
+/// One member of a duplicate-group row (rich facts for the keep
+/// rules + reveal).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DupeFileView {
+    /// Display path.
+    pub path: String,
+    /// Tree node id (reveal-in-explore wiring).
+    pub node_id: u32,
+    /// Last-write time (unix seconds; 0 = unknown) — the UI's
+    /// keep-newest/keep-oldest smart rules.
+    pub modified: i64,
+}
+
 /// One duplicate-group row for the UI.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DupeGroupView {
     /// Group id (index).
     pub id: usize,
-    /// Paths of the group's members.
-    pub paths: Vec<String>,
+    /// The group's members.
+    pub files: Vec<DupeFileView>,
     /// Per-file size.
     pub size: u64,
     /// Member count.
@@ -559,20 +573,25 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl, start: u32) -> Result<DupesResult,
         ctl.started.elapsed()
     );
 
-    // Hardlink identity per verified member (the platform seam needs
-    // an open handle; verified members are the true-duplicate
-    // subset, so this opens a small fraction of the tree).
+    // Hardlink identity per verified member + the tree facts the UI's
+    // keep rules and reveal wiring need (node id + modified). The
+    // platform seam needs an open handle; verified members are the
+    // true-duplicate subset, so this opens a small fraction of the
+    // tree.
     let mut hashed: Vec<HashedFile> = Vec::new();
     for (class, group) in verified.iter().enumerate() {
         for f in &group.files {
-            let (vs, fi) =
-                hardlink_identity(std::path::Path::new(&f.path)).unwrap_or((u64::MAX, u64::from(f.node_id)));
+            let (vs, fi) = hardlink_identity(std::path::Path::new(&f.path))
+                .unwrap_or((u64::MAX, u64::from(f.node_id)));
+            let modified = tree.node(f.node_id).map_or(0, |n| n.modified);
             hashed.push(HashedFile {
                 path: f.path.clone(),
                 size: f.size,
                 volume_serial: vs,
                 file_index: fi,
                 class: class as u64,
+                node_id: f.node_id,
+                modified,
             });
         }
     }
@@ -580,15 +599,27 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl, start: u32) -> Result<DupesResult,
     // Core ranking (hardlink exclusion + wasted-space sort).
     let groups: Vec<DupeGroup> = dupes::rank(&hashed);
     let (wasted_total, _) = dupes::totals(&groups);
+    // The list cap: the UI filters/sorts client-side, so it gets a
+    // generous window of the biggest groups (the header's totals
+    // still reflect EVERY group — `wasted_total` is computed before
+    // the cap).
     let views: Vec<DupeGroupView> = groups
         .into_iter()
-        .take(200)
+        .take(500)
         .enumerate()
         .map(|(id, g)| {
             let count = g.files.len() as u64;
             DupeGroupView {
                 id,
-                paths: g.files,
+                files: g
+                    .files
+                    .into_iter()
+                    .map(|f| DupeFileView {
+                        path: f.path,
+                        node_id: f.node_id,
+                        modified: f.modified,
+                    })
+                    .collect(),
                 size: g.size,
                 count,
                 wasted: g.wasted,
@@ -863,7 +894,8 @@ mod tests {
             // Neither the screened pair, the locked file, nor the
             // zero-size files may appear anywhere.
             for g in &result.groups {
-                for p in &g.paths {
+                for f in &g.files {
+                    let p = &f.path;
                     assert!(!p.contains("fp-a"), "false positive leaked: {p}");
                     assert!(!p.contains("fp-b"), "false positive leaked: {p}");
                     assert!(!p.contains("locked"), "locked file leaked: {p}");
@@ -1160,16 +1192,17 @@ mod tests {
                 assert!(hit.is_some(), "missing group size={size} count={count}");
                 for n in names {
                     assert!(
-                        hit.unwrap().paths.iter().any(|p| p.contains(n.as_str())),
+                        hit.unwrap().files.iter().any(|f| f.path.contains(n.as_str())),
                         "group member {n} missing: {:?}",
-                        hit.unwrap().paths
+                        hit.unwrap().files
                     );
                 }
             }
             // The near-dups, the gap-diff pair, the hardlink twin,
             // and the locked file must never appear.
             for g in &result.groups {
-                for p in &g.paths {
+                for f in &g.files {
+                    let p = &f.path;
                     assert!(!p.contains("nd-"), "near-dup leaked: {p}");
                     assert!(!p.contains("gp-"), "gap-diff leaked: {p}");
                     if hl_ok {

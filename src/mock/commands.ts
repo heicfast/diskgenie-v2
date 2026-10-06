@@ -258,10 +258,10 @@ function monitorSample(): Record<string, unknown> {
 const DUPES = [
   {
     id: 1,
-    paths: [
-      "C:\\Users\\dev\\Pictures\\Camera Roll\\photo-402.jpg",
-      "C:\\Users\\dev\\Pictures\\photo-402.jpg",
-      "C:\\Users\\dev\\Downloads\\photo-402 (1).jpg",
+    files: [
+      { path: "C:\\Users\\dev\\Pictures\\Camera Roll\\photo-402.jpg", nodeId: 4021, modified: NOW - 2 * DAY },
+      { path: "C:\\Users\\dev\\Pictures\\photo-402.jpg", nodeId: 4022, modified: NOW - 31 * DAY },
+      { path: "C:\\Users\\dev\\Downloads\\photo-402 (1).jpg", nodeId: 4023, modified: NOW - 9 * DAY },
     ],
     size: 24 * MB,
     count: 3,
@@ -269,9 +269,9 @@ const DUPES = [
   },
   {
     id: 2,
-    paths: [
-      "C:\\Users\\dev\\Documents\\report-233.pdf",
-      "C:\\Users\\dev\\Documents\\Work\\report-233.pdf",
+    files: [
+      { path: "C:\\Users\\dev\\Documents\\report-233.pdf", nodeId: 2331, modified: NOW - 120 * DAY },
+      { path: "C:\\Users\\dev\\Documents\\Work\\report-233.pdf", nodeId: 2332, modified: NOW - 3 * DAY },
     ],
     size: 8.4 * MB,
     count: 2,
@@ -279,18 +279,17 @@ const DUPES = [
   },
   {
     id: 3,
-    paths: [
-      "C:\\Users\\dev\\Videos\\render-102.mp4",
-      "C:\\Users\\dev\\Videos\\render-102 copy.mp4",
-      "C:\\Users\\dev\\Downloads\\render-102.mp4",
-      "D:\\Backups\\render-102.mp4",
+    files: [
+      { path: "C:\\Users\\dev\\Videos\\render-102.mp4", nodeId: 1021, modified: NOW - 45 * DAY },
+      { path: "C:\\Users\\dev\\Videos\\render-102 copy.mp4", nodeId: 1022, modified: NOW - 45 * DAY },
+      { path: "C:\\Users\\dev\\Downloads\\render-102.mp4", nodeId: 1023, modified: NOW - 12 * DAY },
+      { path: "D:\\Backups\\render-102.mp4", nodeId: 1024, modified: NOW - 1 * DAY },
     ],
     size: 1.1 * GB,
     count: 4,
     wasted: 3.3 * GB,
   },
 ];
-
 const APPS = [
   {
     id: "JetBrains RustRover 2026.1", name: "RustRover", publisher: "JetBrains s.r.o.", version: "2026.1.2",
@@ -1031,7 +1030,7 @@ export const commands: Record<string, Cmd> = {
         ? `${scopePath.toLowerCase().replace(/[\\/]+$/, "")}\\`
         : null;
       const groups = scopePrefix
-        ? DUPES.filter((g) => g.paths.every((p) => p.toLowerCase().startsWith(scopePrefix)))
+        ? DUPES.filter((g) => g.files.every((f) => f.path.toLowerCase().startsWith(scopePrefix)))
         : DUPES;
       dupesRunning = true;
       dupesResult = null;

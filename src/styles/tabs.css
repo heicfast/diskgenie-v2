@@ -200,10 +200,7 @@
 }
 .db-dup-group header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 11px 15px;
+  flex-direction: column;
   background: var(--chip);
 }
 .db-dup-group header strong {
@@ -218,7 +215,7 @@
 }
 .db-dup-file {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: 18px minmax(0, 1fr) 26px 96px 72px;
   align-items: center;
   gap: 12px;
   padding: 9px 15px;
@@ -230,6 +227,15 @@
   border-right: 0;
   border-bottom: 0;
   color: var(--text);
+}
+/* Fixed tag + size columns: Keep / Staged / Keep-this and the sizes
+ * align across every row of every group (the v2 page's column
+ * discipline — auto columns let the pills wobble row to row). */
+.db-dup-file .db-keep-tag {
+  justify-self: center;
+}
+.db-dup-file > b {
+  justify-self: end;
 }
 .db-dup-file:hover {
   background: var(--chip);
@@ -267,6 +273,7 @@
 .db-keep-tag.keep {
   background: var(--free-soft);
   color: var(--free);
+  border: 1px solid transparent;
 }
 .db-keep-tag.stage {
   border: 1px solid var(--border);
@@ -289,7 +296,7 @@
 }
 
 .db-dup-guidance {
-  padding: 9px 15px 10px;
+  padding: 10px 15px 12px;
   border-top: 1px solid var(--divider);
   color: var(--text-tertiary);
   font-size: 10.5px;
@@ -984,4 +991,214 @@
 
 .db-activation-gate-monitor strong {
   color: var(--text);
+}
+
+/* ── Duplicates v2 page furniture (session 19) ──────────────────────── */
+/* Stat strip: the filtered set's headline numbers. Card language
+ * (border + --card + radius-l) at a glance scale — the numbers carry
+ * the hierarchy (tabular figures, big but not Monitor-big: this is a
+ * decision summary, not a dashboard). */
+.db-dup-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin: 0 0 12px;
+}
+.db-dup-stat {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--card);
+  padding: 12px 14px 10px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.db-dup-stat-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.db-dup-stat-num {
+  font-size: 21px;
+  font-weight: 720;
+  color: var(--text);
+  line-height: 1.15;
+}
+.db-dup-stat:first-child .db-dup-stat-num {
+  color: var(--used);
+}
+.db-dup-stat-sub {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Toolbar: keep rules (left) + filters/sorts (right), wrapping under
+ * one line on narrow windows. Nothing animates on state change except
+ * the segmented pills' own fade (the house pattern). */
+.db-dup-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin: 0 0 12px;
+}
+.db-dup-toolbar-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+.db-dup-toolbar .db-outline.compact {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.db-dup-toolbar-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-right: -2px;
+}
+/* The rule-applied acknowledgement: one quiet chip, settles in (the
+ * same fade the toasts use — never a mount pop). */
+.db-dup-applied {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--free);
+  background: var(--free-soft);
+  border-radius: 999px;
+  padding: 4px 10px;
+  animation: db-settle-in var(--fade) var(--ease-out);
+}
+
+/* Group header: the line of facts + the relative-wasted bar under it
+ * (share of the biggest visible group — the visual ranking cue; the
+ * fill uses the used-token family so it reads as "space you can get
+ * back", consistent with every other wasted-space surface). */
+.db-dup-group-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+  padding: 11px 15px 9px;
+}
+.db-dup-group-line strong {
+  font-size: 12.5px;
+  font-weight: 680;
+  white-space: nowrap;
+}
+.db-dup-group-line .db-dup-wasted {
+  color: var(--used);
+  font-size: 11px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-left: auto;
+}
+.db-dup-group-line .db-outline {
+  flex: none;
+}
+.db-dup-share {
+  height: 3px;
+  margin: 0 15px 11px;
+  display: block;
+  box-sizing: content-box;
+}
+.db-dup-share i {
+  display: block;
+  height: 100%;
+  border-radius: 2px 0 0 2px;
+  background: linear-gradient(90deg, color-mix(in oklab, var(--used) 72%, transparent), var(--used));
+  min-width: 2px;
+  transition: width var(--fade) var(--ease-out);
+}
+
+/* File row v2: icon · (name + folder/age meta) · locate · keep tag ·
+ * size. The meta line carries the EVIDENCE for the keep rules (folder
+ * + last-write age) — the user sees exactly what "newest" means. */
+.db-dup-file-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.db-dup-file-main .db-tail-path {
+  font: 10.5px/1.5 var(--font-mono);
+  font-weight: 570;
+}
+.db-dup-file-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+.db-dup-folder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.db-dup-age {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+/* Reveal-in-file-manager: a ghost icon button until hovered (the
+ * inspector's affordance language). */
+.db-dup-locate {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-m);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color var(--fade) ease, background var(--fade) ease, border-color var(--fade) ease;
+}
+.db-dup-locate:hover {
+  color: var(--ink);
+  background: var(--ink-soft);
+}
+.db-dup-locate:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* Narrow windows: the stat strip collapses to a single column and the
+ * toolbar stacks; the file row drops the locate column below 760px
+ * (touch users have the inspector path anyway). */
+@media (max-width: 900px) {
+  .db-dup-stats {
+    grid-template-columns: 1fr;
+  }
+  .db-dup-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .db-dup-toolbar-group {
+    justify-content: space-between;
+  }
+}
+@media (max-width: 760px) {
+  .db-dup-file {
+    grid-template-columns: 18px minmax(0, 1fr) 96px 72px;
+  }
+  .db-dup-locate {
+    display: none;
+  }
 }

@@ -24,7 +24,7 @@
 const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 
-const ROOT = "/home/z/my-project/diskgenie";
+const ROOT = "/home/z/my-project/workspace/diskgenie-v2";
 const SHOTS = `${ROOT}/ci-artifacts/s15`;
 const PORT = 5199;
 const AB = "/usr/local/bin/agent-browser";

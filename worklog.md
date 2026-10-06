@@ -1390,3 +1390,24 @@ Work Log:
 
 Stage Summary:
 - Session 19 shipped the v3 duplicates engine: lockstep chain-partition verification in core, one-open screens, no authority re-reads, early exits for non-duplicates, and class-splitting for mixed buckets. The "hours for 16 GB" cost model (SHA-256 CPU-bound + double reads) is gone; the pipeline now reads each byte at most once and hashes at memory speed. Wire format unchanged except phase names (screen/verify); UI labels + mock updated in lockstep.
+
+---
+Task ID: uiux-25 (session 19, part 2)
+Agent: main (Super Z)
+Task: Owner ask: "redesign the complete duplicates page properly as a helpful for users… the best user experience" — with the richer backend facts the v3 engine makes available.
+
+Work Log:
+- BACKEND FACTS: core DupeGroup members now carry (path, node_id, modified) — rank() round-trips them (pinned by a test); the app DTO replaced `paths: Vec<String>` with `files: Vec<DupeFileView>` (camelCase: path/nodeId/modified); the result cap rose 200 → 500 groups (the header totals were already cap-free). Wire change consumed in lockstep: state types, mock data (realistic dates/folders), session15 test.
+- THE PAGE (DuplicatesView v2): a decision tool, not a list.
+  * STAT STRIP: Reclaimable / Groups / Duplicate files over the FILTERED set, with "N smaller groups hidden" context.
+  * KEEP RULES: Newest / Oldest / Top-folder (pathDepth) segmented control + "Apply to all groups" — one click stages every visible group's non-survivors (the rule suggestion also pre-visualizes per group). Manual "Keep this" overrides; changing keep unstages the new survivor.
+  * EVIDENCE COLUMNS: every file row shows its folder (tail-kept) + last-write age (relativeAge) + reveal-in-Explorer (node id → reveal_in_explorer).
+  * FILTER + SORT: All/1 MB+/100 MB+ size filter; Most-wasted / Biggest / Most-copies / Newest sorts — pure rules in state/dupesRules.ts (18 unit tests).
+  * STAGED TRUTH: row tags derive from the cleanup queue (pathIdentity), so unstaging from the popover reverts rows honestly.
+  * Relative-wasted share bars under each group header (the ranking visualization, --used family).
+- ANTI-FLICKER: BusyRow untouched (isolated memo on the progress slice, monotonic bar); no new mount animations (rows ride .db-tab fade-up); segmented controls use the house db-segmented pattern (data-active); the applied-acknowledgement chip settles in with the toast fade.
+- VERIFICATION (the mock + agent-browser path): drove the real flow (activate → scan → duplicates → scan) — 3 groups, stats 3.36 GB/3/9; keep-click → tags [Keep, Staged], guidance + queue badge "Cleanup 1"; apply-to-all → 7 queued, every group exactly one Keep; 100 MB+ filter → 1 group/4 files, reset restores. VLM audits: zoomed stat-strip + cards crops CLEAN; dark theme CLEAN; license dialog version ("Installed version 0.1.0" below the theme picker) verified. Narrow-window claims investigated with DOM measurement: body/tab/toolbar scrollWidth == clientWidth at 900px (the VLM's "critical overflow" was a hallucination); 1280×760 minimum window CLEAN. Fixed the real findings: keep/stage tag height parity (transparent border), fixed tag+size grid columns (96px/72px), one 12px vertical rhythm, share-bar anchoring, 30px toolbar button line.
+- GATES: tsc 0 errors; vitest 131/131 (18 new rules tests); core 180+21+16 green + clippy + fmt; scratch-win mirror 45/45 host + msvc cross-lint clean.
+
+Stage Summary:
+- Session 19 part 2 shipped the Duplicates page redesign: keep rules with one-click apply, evidence columns with reveal, size filters + four sorts, contextual stat strip, and queue-truth staging — every interaction verified live through the mock browser and VLM-audited in light + dark at multiple widths.

@@ -29,7 +29,7 @@ use std::collections::HashMap;
 pub const MIN_CANDIDATE_SIZE: u64 = 1;
 
 /// One verified file as fed back into the ranking (the engine's
-/// verified groups + the app's hardlink identities).
+/// verified groups + the app's hardlink identities + tree facts).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HashedFile {
     /// Display path (the staged reason text uses it verbatim).
@@ -47,6 +47,11 @@ pub struct HashedFile {
     /// v2 SHA-256 digest — the engine's chain-equality IS the
     /// content equality claim; the class id just names it.
     pub class: u64,
+    /// Tree node id (reveal/jump support in the UI).
+    pub node_id: u32,
+    /// Last-write time (unix seconds; 0 = unknown) — the UI's
+    /// keep-newest/oldest smart rules read it.
+    pub modified: i64,
 }
 
 impl HashedFile {
@@ -58,6 +63,18 @@ impl HashedFile {
     }
 }
 
+/// One member of a finished duplicate group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DupeFile {
+    /// Display path.
+    pub path: String,
+    /// Tree node id (reveal/jump support in the UI).
+    pub node_id: u32,
+    /// Last-write time (unix seconds; 0 = unknown) — the UI's
+    /// keep-newest/oldest smart rules read it.
+    pub modified: i64,
+}
+
 /// A finished duplicate group (spec §10 UI contract).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DupeGroup {
@@ -65,8 +82,8 @@ pub struct DupeGroup {
     pub size: u64,
     /// `size × (count − 1)` — what staging "the rest" would reclaim.
     pub wasted: u64,
-    /// Member paths; the FIRST entry is the "keep" anchor the UI preselects.
-    pub files: Vec<String>,
+    /// Members; the FIRST entry is the "keep" anchor the UI preselects.
+    pub files: Vec<DupeFile>,
 }
 
 /// Pass 1 (spec §10): bucket candidate files by logical size.
@@ -128,7 +145,14 @@ pub fn rank(files: &[HashedFile]) -> Vec<DupeGroup> {
             groups.push(DupeGroup {
                 size,
                 wasted: size * (count - 1),
-                files: class_members.iter().map(|f| f.path.clone()).collect(),
+                files: class_members
+                    .iter()
+                    .map(|f| DupeFile {
+                        path: f.path.clone(),
+                        node_id: f.node_id,
+                        modified: f.modified,
+                    })
+                    .collect(),
             });
         }
     }
@@ -136,7 +160,7 @@ pub fn rank(files: &[HashedFile]) -> Vec<DupeGroup> {
         b.wasted
             .cmp(&a.wasted)
             .then(b.size.cmp(&a.size))
-            .then_with(|| a.files[0].cmp(&b.files[0]))
+            .then_with(|| a.files[0].path.cmp(&b.files[0].path))
     });
     groups
 }
@@ -159,7 +183,14 @@ mod tests {
             volume_serial: serial,
             file_index: index,
             class,
+            node_id: 0,
+            modified: 0,
         }
+    }
+
+    /// The paths of a group's members (test shorthand).
+    fn paths_of(g: &DupeGroup) -> Vec<&str> {
+        g.files.iter().map(|f| f.path.as_str()).collect()
     }
 
     #[test]
@@ -224,7 +255,7 @@ mod tests {
         ];
         let groups = rank(&files);
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].files, vec!["real1.doc", "real2.doc"]);
+        assert_eq!(paths_of(&groups[0]), vec!["real1.doc", "real2.doc"]);
         assert_eq!(groups[0].wasted, 50);
     }
 
@@ -233,7 +264,34 @@ mod tests {
         let files = vec![f("z-last", 10, 1, 1, 0x40), f("a-first", 10, 1, 2, 0x40)];
         let groups = rank(&files);
         // Input order preserved inside the group (a-first was fed second).
-        assert_eq!(groups[0].files, vec!["z-last", "a-first"]);
+        assert_eq!(paths_of(&groups[0]), vec!["z-last", "a-first"]);
+    }
+
+    #[test]
+    fn member_facts_round_trip_through_rank() {
+        // The UI's keep-newest/oldest rules + reveal-in-explore need
+        // modified dates and node ids per member — rank must carry
+        // them through from HashedFile to DupeFile.
+        let mk = |path: &str, class: u64, node_id: u32, modified: i64| HashedFile {
+            path: path.into(),
+            size: 10,
+            volume_serial: 1,
+            file_index: node_id as u64 + 7,
+            class,
+            node_id,
+            modified,
+        };
+        let files = vec![
+            mk("a.bin", 1, 11, 1_700_000_000),
+            mk("b.bin", 1, 12, 1_600_000_000),
+        ];
+        let groups = rank(&files);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].files.len(), 2);
+        assert_eq!(groups[0].files[0].path, "a.bin");
+        assert_eq!(groups[0].files[0].node_id, 11);
+        assert_eq!(groups[0].files[0].modified, 1_700_000_000);
+        assert_eq!(groups[0].files[1].modified, 1_600_000_000);
     }
 
     #[test]

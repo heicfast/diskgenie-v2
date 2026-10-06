@@ -219,6 +219,8 @@ fn bench_dupes(c: &mut Criterion) {
             volume_serial: 1,
             file_index: u64::from(i),
             class: u64::from(i % 256),
+            node_id: i,
+            modified: 0,
         })
         .collect();
     let mut group = c.benchmark_group("dupes");

@@ -11,7 +11,7 @@ import sys
 import urllib.request
 
 TOKEN = os.environ.get("GH_TOKEN", "")
-REPO = "heicfast/DiskGenie"
+REPO = "heictojpgpics/diskgenie-v2"
 
 def api(url):
     req = urllib.request.Request(url, headers={"Authorization": f"token {TOKEN}"})

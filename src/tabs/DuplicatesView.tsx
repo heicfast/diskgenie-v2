@@ -1,27 +1,51 @@
 /**
- * Duplicates tab (spec §10): "Scan for Duplicates" (requires a finished
- * scan), "X could be reclaimed across N groups", group cards with
- * per-file "Keep this, stage the rest" (stages the others with reason
- * "Duplicate").
+ * Duplicates tab (spec §10) — the v2 page (session 19 redesign):
+ * a decision tool, not a list.
  *
- * Session-5 redesign: the scan lifecycle lives in the module-level
- * `state/dupes` store (persistent listener + app-lifetime backend
- * status) — switching tabs mid-scan no longer orphans the pipeline or
- * resets the busy row; a remount re-attaches via `refresh()`. The
+ * - STAT STRIP: wasted / groups / duplicate files over the FILTERED
+ *   set (what the filters hide doesn't count toward the wins).
+ * - KEEP RULES: newest / oldest / shallowest — one click applies a
+ *   survivor to every visible group ("Apply to all"), because a user
+ *   with 200 groups cannot click each one. Per-group "Keep this"
+ *   still wins over the rule.
+ * - LOCATION + AGE COLUMNS: every member row shows its folder and
+ *   its last-write age (the evidence the keep rules use), plus
+ *   reveal-in-Explorer.
+ * - FILTERS + SORTS: focus on 1 MB+ / 100 MB+ wins; order by wasted,
+ *   size, copies, or newest.
+ * - The queue is the TRUTH for staged state: the row tags derive
+ *   from the cleanup store, so unstaging from the popover reverts
+ *   the row honestly.
+ *
+ * Session-5 contracts preserved untouched: the scan lifecycle lives
+ * in `state/dupes` (tab switches never orphan the pipeline); the
  * busy row is an ISOLATED component subscribing to the progress slice
- * alone, so 9 Hz ticks repaint one row, not 200 group cards (the
- * "progress bar lagging" fix). The bar follows the engine's monotonic
- * `overall` fraction — one smooth ramp, never a phase-boundary reset.
+ * alone (9 Hz ticks repaint one row, not 500 cards); the bar follows
+ * the engine's monotonic `overall` fraction. Anti-flicker: no new
+ * mount animations (rows ride the `.db-tab` fade-up), keep-tag
+ * transitions stay CSS-only.
  */
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { CopyIcon, FileIcon, SearchIcon, CheckIcon, XIcon } from "../components/Icon";
+import { CopyIcon, FileIcon, SearchIcon, CheckIcon, XIcon, LocateIcon } from "../components/Icon";
 import { TailPath } from "../components/TailPath";
 import { SCAN_THIS_PC } from "../lib/platform";
 import { EmptyState } from "../components/buttons";
-import { bytes } from "../lib/format";
+import { bytes, relativeAge } from "../lib/format";
+import { invoke } from "../lib/ipc";
 import { useScanStore } from "../state/scan";
-import { useCleanupStore } from "../state/cleanup";
+import { pathIdentity, useCleanupStore, type QueueItem } from "../state/cleanup";
 import { useDupesStore, type DupesProgress, type DupesResult } from "../state/dupes";
+import {
+  applyRule,
+  filterGroups,
+  groupKey,
+  MIN_SIZE_FILTERS,
+  pickKeep,
+  sortGroups,
+  totalsOf,
+  type DupeSort,
+  type KeepRule,
+} from "../state/dupesRules";
 
 const PHASE_LABEL: Record<DupesProgress["phase"], string> = {
   collect: "Collecting candidates",
@@ -105,11 +129,28 @@ const BusyRow = memo(function BusyRow({ onCancel }: { onCancel: () => void }) {
   );
 });
 
+const KEEP_RULES: readonly { id: KeepRule; label: string; hint: string }[] = [
+  { id: "newest", label: "Newest", hint: "Keep the most recently written copy" },
+  { id: "oldest", label: "Oldest", hint: "Keep the original (earliest) copy" },
+  { id: "shallowest", label: "Top folder", hint: "Keep the copy closest to the drive root" },
+];
+
+const SORTS: readonly { id: DupeSort; label: string }[] = [
+  { id: "wasted", label: "Most wasted" },
+  { id: "size", label: "Biggest files" },
+  { id: "count", label: "Most copies" },
+  { id: "newest", label: "Newest first" },
+];
+
 export function DuplicatesView() {
   const status = useScanStore((s) => s.status);
   const generation = useScanStore((s) => s.generation);
   const startScan = useScanStore((s) => s.startScan);
   const stageMany = useCleanupStore((s) => s.stageMany);
+  const unstage = useCleanupStore((s) => s.unstage);
+  // The staged TRUTH: tags derive from the queue, so unstaging from
+  // the popover reverts rows without this view knowing.
+  const queueItems = useCleanupStore((s) => s.items);
   // The app-lifetime scan lifecycle (survives tab switches):
   const running = useDupesStore((s) => s.running);
   const result = useDupesStore((s) => s.result);
@@ -119,12 +160,20 @@ export function DuplicatesView() {
   const cancel = useDupesStore((s) => s.cancel);
   const refresh = useDupesStore((s) => s.refresh);
   const invalidate = useDupesStore((s) => s.invalidate);
+
   const [keeps, setKeeps] = useState<Map<string, string>>(new Map());
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [minSize, setMinSize] = useState(0);
+  const [sort, setSort] = useState<DupeSort>("wasted");
+  const [rule, setRule] = useState<KeepRule>("newest");
+  const [applied, setApplied] = useState(0);
 
-  // Path-join identity: group ids are re-indexed on every scan, so keep
-  // marks key by content, not index — a re-scan keeps the UI honest.
-  const keyOf = (g: DupesResult["groups"][number]) => g.paths.join("\u0000");
+  const stagedSet = useMemo(
+    () => new Set(queueItems.map((i) => (i.path ? pathIdentity(i.path) : `i:${i.id}`))),
+    [queueItems],
+  );
+
+  const now = useMemo(() => Date.now() / 1000, []);
 
   // Re-attach on mount: adopt a running pipeline (or the sticky last
   // result) from the backend's app-lifetime status. THE page-switch fix
@@ -159,14 +208,52 @@ export function DuplicatesView() {
     return () => window.removeEventListener("db-tour-dupes-run", run);
   }, [start]);
 
-  const keepAndStageRest = (g: DupesResult["groups"][number], keepPath: string) => {
-    setKeeps((m) => new Map(m).set(keyOf(g), keepPath));
-    const rest = g.paths.filter((p) => p !== keepPath);
-    // Node ids come from the path → we stage by path with a synthetic id
-    // (the Rust commit path handles id 0 = path-only items).
+  // The visible slice: filters + sorts are PURE (dupesRules.ts).
+  const visible = useMemo(
+    () => sortGroups(filterGroups(result?.groups ?? [], minSize), sort),
+    [result, minSize, sort],
+  );
+  const stats = useMemo(() => totalsOf(visible), [visible]);
+  const maxWasted = useMemo(
+    () => visible.reduce((m, g) => (g.wasted > m ? g.wasted : m), 0),
+    [visible],
+  );
+
+  const stageRest = (g: DupesResult["groups"][number], keepPath: string) => {
+    const rest = g.files.filter((f) => f.path !== keepPath);
     stageMany(
-      rest.map((p) => ({ id: 0, path: p, size: g.size, reason: "Duplicate" })),
+      rest.map((f) => ({ id: 0, path: f.path, size: g.size, reason: "Duplicate" }) satisfies QueueItem),
     );
+  };
+
+  const keepOne = (g: DupesResult["groups"][number], keepPath: string) => {
+    setKeeps((m) => new Map(m).set(groupKey(g), keepPath));
+    // If the new keep was staged (rule applied, then user overrides):
+    // remove it from the queue — the survivor must never be staged.
+    unstage(0, keepPath);
+    stageRest(g, keepPath);
+  };
+
+  /** Apply the keep rule to every VISIBLE group: keeps are recorded,
+   * the rest are staged (the queue dedupes by path identity). */
+  const applyRuleToAll = () => {
+    const next = applyRule(visible, rule);
+    const toStage: QueueItem[] = [];
+    for (const g of visible) {
+      const keep = next.get(groupKey(g));
+      if (!keep) continue;
+      for (const f of g.files) {
+        if (f.path === keep) continue;
+        toStage.push({ id: 0, path: f.path, size: g.size, reason: "Duplicate" });
+      }
+    }
+    setKeeps((m) => {
+      const merged = new Map(m);
+      for (const [k, v] of next) merged.set(k, v);
+      return merged;
+    });
+    stageMany(toStage);
+    setApplied(Date.now());
   };
 
   const scan = () => start(generation);
@@ -213,6 +300,9 @@ export function DuplicatesView() {
     );
   }
 
+  const hasVisible = visible.length > 0;
+  const filteredOut = (result?.groups.length ?? 0) - visible.length;
+
   return (
     <div className="db-tab db-scroll">
       <div className="db-tab-head">
@@ -246,7 +336,7 @@ export function DuplicatesView() {
           body={
             scopePath
               ? `Byte-identical files inside ${scopePath} — keep one copy, stage the rest. The button scans your whole tree; select a folder in Explore and press “Duplicates here” to scope it.`
-              : "Screens every candidate in one pass, then verifies survivors byte-for-byte — grouping only true duplicates so you can keep one copy and stage the rest. Select a folder in Explore and press “Duplicates here” to scan just that folder."
+              : "Screens every candidate in one pass, then verifies survivors byte-for-byte — grouping only true duplicates. Smart keep rules, filters, and one-click staging turn the findings into reclaimed space. Select a folder in Explore and press “Duplicates here” to scan just that folder."
           }
           action={
             <button type="button" className="db-ink-button auto" onClick={scan}>
@@ -268,68 +358,188 @@ export function DuplicatesView() {
         />
       )}
 
-      {result && !stale && result.groups.map((g) => {
-        const isOpen = expanded.has(g.id);
-        const kept = keeps.get(keyOf(g));
-
-        return (
-          <div className="db-dup-group" key={keyOf(g)}>
-            <header>
-              <strong>
-                {g.count.toLocaleString()} copies · {bytes(g.size)} each
-              </strong>
-              <span className="tnum">{bytes(g.wasted)} wasted</span>
-              <button
-                type="button"
-                className="db-outline compact auto"
-                onClick={() => setExpanded((s) => (s.has(g.id) ? new Set([...s].filter((x) => x !== g.id)) : new Set([...s, g.id])))}
-              >
-                {isOpen ? "Collapse" : "Show files"}
-              </button>
-            </header>
-            {isOpen &&
-              g.paths.map((p) => {
-                const isKept = kept === p;
-                return (
-                  <div key={p} className="db-dup-file">
-                    <FileIcon size={15} />
-                    {/* Path only — the size lives once, in the right
-                     * column (it used to repeat under the path too). */}
-                    <div>
-                      <TailPath path={p} />
-                    </div>
-                    {isKept ? (
-                      <span className="db-keep-tag keep">
-                        <CheckIcon size={11} /> Keep
-                      </span>
-                    ) : kept ? (
-                      <span className="db-keep-tag stage is-disabled">
-                        Staged
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        className="db-keep-tag stage"
-                        onClick={() => keepAndStageRest(g, p)}
-                        aria-label={`Keep ${p} and stage the other copies`}
-                      >
-                        <CheckIcon size={11} /> Keep this
-                      </button>
-                    )}
-                    <b className="tnum">{bytes(g.size)}</b>
-                  </div>
-                );
-              })}
-            {isOpen && (
-              <div className="db-dup-guidance">
-                {kept
-                  ? `${g.count - 1} ${g.count - 1 === 1 ? "copy is" : "copies are"} staged; the kept file will remain untouched.`
-                  : `Choose the copy to keep. DiskGenie will stage the other ${g.count - 1} for review (${bytes(g.wasted)}).`}
-              </div>
-            )}
+      {result && result.groups.length > 0 && !stale && (
+        <>
+          {/* ── Stat strip: the filtered set's headline numbers ── */}
+          <div className="db-dup-stats">
+            <div className="db-dup-stat">
+              <span className="db-dup-stat-label">Reclaimable</span>
+              <span className="db-dup-stat-num tnum">{bytes(stats.wasted)}</span>
+              <span className="db-dup-stat-sub">{filteredOut > 0 ? `${filteredOut} smaller group${filteredOut === 1 ? "" : "s"} hidden` : `across the whole scan`}</span>
+            </div>
+            <div className="db-dup-stat">
+              <span className="db-dup-stat-label">Groups</span>
+              <span className="db-dup-stat-num tnum">{stats.groups.toLocaleString()}</span>
+              <span className="db-dup-stat-sub">byte-identical sets</span>
+            </div>
+            <div className="db-dup-stat">
+              <span className="db-dup-stat-label">Duplicate files</span>
+              <span className="db-dup-stat-num tnum">{stats.files.toLocaleString()}</span>
+              <span className="db-dup-stat-sub">copies you can stage</span>
+            </div>
           </div>
-        );
-      })}
+
+          {/* ── Toolbar: keep rules + filters ── */}
+          <div className="db-dup-toolbar" role="toolbar" aria-label="Duplicates controls">
+            <div className="db-dup-toolbar-group" role="group" aria-label="Keep rule">
+              <span className="db-dup-toolbar-label">Keep</span>
+              <div className="db-segmented">
+                {KEEP_RULES.map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    title={r.hint}
+                    data-active={rule === r.id}
+                    onClick={() => setRule(r.id)}
+                  >
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+              <button type="button" className="db-outline compact auto" onClick={applyRuleToAll} disabled={running}>
+                <CheckIcon size={12} /> Apply to all groups
+              </button>
+              {applied > 0 && (
+                <span className="db-dup-applied" key={applied}>
+                  Rule applied — review the queue before deleting
+                </span>
+              )}
+            </div>
+            <div className="db-dup-toolbar-group" role="group" aria-label="Filter and sort">
+              <div className="db-segmented" role="group" aria-label="Minimum size">
+                {MIN_SIZE_FILTERS.map((f) => (
+                  <button key={f.value} type="button" data-active={minSize === f.value} onClick={() => setMinSize(f.value)}>
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+              <div className="db-segmented" role="group" aria-label="Sort order">
+                {SORTS.map((s) => (
+                  <button key={s.id} type="button" data-active={sort === s.id} onClick={() => setSort(s.id)}>
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {!hasVisible && (
+            <EmptyState
+              icon={<SearchIcon size={28} />}
+              title="No groups at this size"
+              body={`Every group is smaller than ${bytes(minSize)}. Relax the size filter to see them.`}
+            />
+          )}
+
+          {/* ── Group cards ── */}
+          {visible.map((g) => {
+            const isOpen = expanded.has(g.id) || visible.length <= 3;
+            const kept = keeps.get(groupKey(g));
+            const ruleKeep = kept ?? pickKeep(g.files, rule);
+            const share = maxWasted > 0 ? Math.max(2, Math.round((g.wasted / maxWasted) * 100)) : 0;
+
+            return (
+              <div className="db-dup-group" key={groupKey(g)}>
+                <header>
+                  <div className="db-dup-group-line">
+                    <strong>
+                      {g.count.toLocaleString()} {g.count === 1 ? "copy" : "copies"} · {bytes(g.size)} each
+                    </strong>
+                    <span className="tnum db-dup-wasted">{bytes(g.wasted)} wasted</span>
+                    <button
+                      type="button"
+                      className="db-outline compact auto"
+                      onClick={() => setExpanded((s) => (s.has(g.id) ? new Set([...s].filter((x) => x !== g.id)) : new Set([...s, g.id])))}
+                    >
+                      {isOpen ? "Collapse" : "Show files"}
+                    </button>
+                  </div>
+                  {/* Relative-wasted bar: the group's share of the
+                   * biggest group's waste — the visual ranking cue
+                   * (colors follow the theme's --used token). */}
+                  <div className="db-dup-share" aria-hidden="true">
+                    <i style={{ width: `${share}%` }} />
+                  </div>
+                </header>
+                {isOpen &&
+                  g.files.map((f) => {
+                    const isKept = kept === f.path;
+                    const isRuleKeep = !kept && f.path === ruleKeep;
+                    const isStaged = stagedSet.has(pathIdentity(f.path));
+                    return (
+                      <div key={f.path} className="db-dup-file">
+                        <FileIcon size={15} />
+                        <div className="db-dup-file-main">
+                          <TailPath path={f.path} />
+                          <span className="db-dup-file-meta">
+                            <span className="db-dup-folder" title={f.path}>{folderShort(f.path)}</span>
+                            <span className="db-dup-age" aria-label={`Modified ${relativeAge(f.modified, now)}`}>
+                              {relativeAge(f.modified, now)}
+                            </span>
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className="db-dup-locate"
+                          title="Show in file manager"
+                          aria-label={`Show ${f.path} in the file manager`}
+                          onClick={() =>
+                            void invoke("reveal_in_explorer", { generation, id: f.nodeId }).catch(() => undefined)
+                          }
+                        >
+                          <LocateIcon size={13} />
+                        </button>
+                        {isKept || isRuleKeep ? (
+                          <span className="db-keep-tag keep" title={isKept ? undefined : "Suggested by the keep rule — click another copy to override"}>
+                            <CheckIcon size={11} /> Keep
+                          </span>
+                        ) : isStaged ? (
+                          <span className="db-keep-tag stage is-disabled">
+                            Staged
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="db-keep-tag stage"
+                            onClick={() => keepOne(g, f.path)}
+                            aria-label={`Keep ${f.path} and stage the other copies`}
+                          >
+                            <CheckIcon size={11} /> Keep this
+                          </button>
+                        )}
+                        <b className="tnum">{bytes(g.size)}</b>
+                      </div>
+                    );
+                  })}
+                {isOpen && (
+                  <div className="db-dup-guidance">
+                    {kept
+                      ? `${g.count - 1} ${g.count - 1 === 1 ? "copy is" : "copies are"} staged; the kept file will remain untouched.`
+                      : kept === undefined && applied > 0
+                        ? `Rule suggests keeping ${shortName(ruleKeep)} — “Keep this” on any copy overrides it.`
+                        : `Choose the copy to keep. DiskGenie will stage the other ${g.count - 1} for review (${bytes(g.wasted)}).`}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
     </div>
   );
+}
+
+/** The folder column: the member's parent, shortened from the LEFT
+ * (tail-kept — the last folders matter more than the drive prefix). */
+function folderShort(path: string): string {
+  const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  if (i <= 0) return path;
+  const parent = path.slice(0, i);
+  const j = Math.max(parent.lastIndexOf("/"), parent.lastIndexOf("\\"));
+  return j <= 0 ? parent : `…${parent.slice(j)}`;
+}
+
+function shortName(path: string): string {
+  const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return i < 0 ? path : path.slice(i + 1);
 }

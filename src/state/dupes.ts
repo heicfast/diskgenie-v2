@@ -26,9 +26,19 @@ import { userFacingError } from "../lib/userFacingError";
 // state/license; both sides access each other inside functions).
 import { useScanStore } from "./scan";
 
+/** One member of a duplicate group (rich facts: the keep rules and
+ * reveal wiring read them). */
+export interface DupeFile {
+  path: string;
+  /** Tree node id — reveal-in-explore wiring. */
+  nodeId: number;
+  /** Last-write time (unix seconds; 0 = unknown). */
+  modified: number;
+}
+
 export interface DupeGroup {
   id: number;
-  paths: string[];
+  files: DupeFile[];
   size: number;
   count: number;
   wasted: number;

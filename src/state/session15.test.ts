@@ -234,7 +234,7 @@ describe("mock find_duplicates scope parity (session 15)", () => {
 
   it("a whole-tree run returns the full dataset with scopePath null", async () => {
     const res = (await commands.find_duplicates({})) as {
-      groups: { paths: string[] }[];
+      groups: { files: { path: string }[] }[];
       scopePath: string | null;
     };
     expect(res.scopePath).toBeNull();
@@ -248,13 +248,13 @@ describe("mock find_duplicates scope parity (session 15)", () => {
     const docs = commands.resolve_path({ generation: 1, path: "C:\\Users\\dev\\Documents" });
     expect(typeof docs).toBe("number");
     const res = (await commands.find_duplicates({ node: docs })) as {
-      groups: { paths: string[] }[];
+      groups: { files: { path: string }[] }[];
       scopePath: string | null;
     };
     expect(res.scopePath).toBe("C:\\Users\\dev\\Documents");
     expect(res.groups.length).toBe(1);
-    for (const p of res.groups[0]?.paths ?? []) {
-      expect(p.toLowerCase().startsWith("c:\\users\\dev\\documents")).toBe(true);
+    for (const f of res.groups[0]?.files ?? []) {
+      expect(f.path.toLowerCase().startsWith("c:\\users\\dev\\documents")).toBe(true);
     }
   });
 
