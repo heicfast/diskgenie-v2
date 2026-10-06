@@ -389,7 +389,7 @@ proptest! {
                     size: *size,
                     volume_serial: u64::try_from(g).unwrap_or(0),
                     file_index: u64::try_from(g * 100 + i).unwrap_or(0),
-                    sha256: [0; 32],
+                    class: u64::try_from(g).unwrap_or(0),
                 });
             }
         }

@@ -166,6 +166,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "xxhash-rust",
 ]
 
 [[package]]

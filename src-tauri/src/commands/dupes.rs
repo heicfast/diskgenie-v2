@@ -1,8 +1,8 @@
-//! Duplicates commands (spec §10; doc 03 M8): the 3-pass flow
-//! (size-grouping, 64 KiB prefix screen, tier-2 mid-file screen, full
-//! SHA-256 for survivors). Hardlink exclusion via (volume-serial,
-//! file-index); cloud placeholders never open (R7.3); wasted-space
-//! ranking per the spec.
+//! Duplicates commands (spec §10): the v3 engine flow — collect from
+//! the scan tree, then `diskgenie-core`'s screens + lockstep verify
+//! (see `core/src/dupes/engine.rs` for the throughput story). Hardlink
+//! exclusion via (volume-serial, file-index); cloud placeholders
+//! never open (R7.3); wasted-space ranking per the spec.
 //!
 //! Liveness contract (the "Scanning… forever" fix): a real disk can
 //! hold hundreds of GB in same-size buckets, so the command reports
@@ -13,148 +13,237 @@
 //! compares against the latch, so a late cancel can never poison a
 //! newer run).
 //!
-//! Speed contract v2 (the "9 MB/s" rewrite): the passes read only
-//! 64 KiB per size-bucket candidate, a tier-2 mid-file fingerprint
-//! (1 MiB at +64 KiB + the last 1 MiB) screens same-prefix false
-//! positives (identical headers, zero-padded formats) BEFORE the
-//! full read, and pass 3 full-SHA-256s only survivors. Windows opens
-//! every hash read with `FILE_FLAG_SEQUENTIAL_SCAN`. The throughput
-//! levers (each addressed; see the session-12 design):
-//!  * TWO dedicated pools with different sizing laws — a LATENCY
-//!    pool (screens: one open per file, Defender's per-open scan and
-//!    NVMe queue depth reward MANY concurrent streams — sized
-//!    `available_parallelism` clamped 8..24, the old 4-worker cap was
-//!    the measured bottleneck) and a BANDWIDTH pool (full pass:
-//!    sequential 1 MiB streams saturate the disk with far fewer
-//!    workers — 2..8).
-//!  * The screens hash XXH3-128 (~20 GB/s per core vs portable
-//!    SHA-256's ~0.4): the SHA-256 full pass stays the authority, so
-//!    no reported group can be wrong — a screen can only mis-bucket
-//!    a pair INTO the (verified) full pass, never out.
-//!  * Per-thread REUSED buffers (thread_local grow-on-demand) — the
-//!    old per-file 64 KiB..1 MiB allocations churned the allocator
-//!    half a million times per real-disk scan.
-//!  * PATH-SORTED work order on every pass (disk locality: short
-//!    seeks, warm cache lines, Defender scanning neighbours).
-//!
 //! State contract (the "page switch killed my scan" fix): the run's
 //! live status and sticky result live in `AppState.dupes_status`
 //! (`dupes_status` command) so the DuplicatesView can re-attach after
 //! any tab switch; a UI-unmount can no longer orphan a running
-//! multi-GB hash.
+//! multi-GB verify.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use diskgenie_core::dupes::engine::{self, EngineCandidate, ProgressSink};
 use diskgenie_core::dupes::{self, DupeGroup, HashedFile};
 use diskgenie_core::scan::node::Tree;
 
-use rayon::prelude::*;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::state::AppState;
 
-/// Prefix-hash chunk (64 KiB, spec §10).
-const PREFIX: u64 = 64 * 1024;
-/// Full-hash read chunk (1 MiB, spec §10).
-const CHUNK: usize = 1024 * 1024;
-/// Tier-2 sample length: 1 MiB past the prefix + the last 1 MiB.
-/// Files larger than `PREFIX + 2 * SAMPLE` get the mid-file screen
-/// between prefix and full hash; smaller files are cheap enough to
-/// full-hash directly (the screen would read most of the file anyway).
-const SAMPLE: u64 = 1024 * 1024;
 /// Progress ticker cadence (ms).
 const TICK_MS: u64 = 200;
 /// Progress `elapsed_ms` cap (10 minutes) — `as_millis` is u128; real
 /// scans stay far below this and the UI re-computes from its own clock.
 const ELAPSED_CAP_MS: u128 = 600_000_000;
-/// Latency-pool floor (see [`screen_pool`]).
-const SCREEN_POOL_MIN: usize = 8;
-/// Latency-pool ceiling (see [`screen_pool`]).
-const SCREEN_POOL_MAX: usize = 24;
-/// Bandwidth-pool ceiling (see [`full_pool`]).
-const FULL_POOL_MAX: usize = 8;
 
-/// The dedicated, bounded SCREEN pool — the small-file engine.
+/// Phase ids for the atomic phase slot.
+const PHASE_COLLECT: u8 = 0;
+const PHASE_SCREEN: u8 = 1;
+const PHASE_VERIFY: u8 = 2;
+const PHASE_DONE: u8 = 3;
+const PHASE_CANCELLED: u8 = 4;
+
+/// Global-progress weights: [start, span] per phase on a 0..1 axis.
+/// The screen phase reads a bounded window per file (64 KiB + 2 MiB)
+/// while verify streams the remaining bytes of every survivor — the
+/// span split reflects that asymmetry on real disks (the verify pass
+/// owns the bulk of a duplicate-heavy scan; the screen pass owns a
+/// candidate-heavy one). Sums to exactly 1.0 so `done` lands on 100%.
+const PHASE_WEIGHTS: [(f32, f32); 5] = [
+    (0.0, 0.02),  // collect
+    (0.02, 0.33), // screen
+    (0.35, 0.65), // verify
+    (1.0, 0.0),   // done
+    (0.0, 0.0),   // cancelled (bar resets with the view)
+];
+
+/// Shared run control: atomics the engine workers bump (cheap — no
+/// mutex on the hot path), the cancel latch, and the optional event
+/// sink. `app: None` in tests (no Tauri runtime needed).
+struct DupesCtl {
+    app: Option<AppHandle>,
+    files_done: AtomicU64,
+    files_total: AtomicU64,
+    bytes_done: AtomicU64,
+    bytes_total: AtomicU64,
+    /// Cumulative across ALL phases (never reset — the rate + overall
+    /// sources; see [`DupesProgress`]).
+    files_all: AtomicU64,
+    bytes_all: AtomicU64,
+    phase: AtomicU8,
+    /// Cancel generation shared with `AppState` — `cancel_duplicates`
+    /// bumps it; this run latched the value it saw at start.
+    cancel_gen: Arc<AtomicU64>,
+    /// The latched generation: cancelled iff the shared counter moved.
+    latch: u64,
+    started: Instant,
+}
+
+impl DupesCtl {
+    /// A quiet control (no events) — the pure snapshot tests (no
+    /// Tauri runtime needed).
+    #[cfg(test)]
+    fn quiet(gen: Arc<AtomicU64>) -> Self {
+        Self::with_app(None, gen)
+    }
+
+    /// A live control emitting `dupes-progress` on `app`.
+    fn live(app: AppHandle, gen: Arc<AtomicU64>) -> Self {
+        Self::with_app(Some(app), gen)
+    }
+
+    fn with_app(app: Option<AppHandle>, gen: Arc<AtomicU64>) -> Self {
+        let latch = gen.load(Ordering::SeqCst);
+        Self {
+            app,
+            files_done: AtomicU64::new(0),
+            files_total: AtomicU64::new(0),
+            bytes_done: AtomicU64::new(0),
+            bytes_total: AtomicU64::new(0),
+            files_all: AtomicU64::new(0),
+            bytes_all: AtomicU64::new(0),
+            phase: AtomicU8::new(PHASE_COLLECT),
+            cancel_gen: gen,
+            latch,
+            started: Instant::now(),
+        }
+    }
+
+    /// True when `cancel_duplicates` fired after this run latched.
+    fn cancelled(&self) -> bool {
+        self.cancel_gen.load(Ordering::Relaxed) != self.latch
+    }
+
+    /// Enter a phase: per-phase counters RESET (they describe the
+    /// upcoming phase), cumulative counters never do. Totals are
+    /// written BEFORE the phase id (the ticker reads phase first, so
+    /// a boundary-straddling tick can only show the NEW phase with
+    /// fresh-zero counters for one 200 ms beat — never the old phase
+    /// with the new totals).
+    fn set_phase(&self, phase: u8, files_total: u64, bytes_total: u64) {
+        self.files_total.store(files_total, Ordering::Relaxed);
+        self.bytes_total.store(bytes_total, Ordering::Relaxed);
+        self.files_done.store(0, Ordering::Relaxed);
+        self.bytes_done.store(0, Ordering::Relaxed);
+        self.phase.store(phase, Ordering::Relaxed);
+    }
+
+    /// One finished engine unit: bump files, and the bytes it cost —
+    /// both the per-phase and the cumulative counters.
+    fn file_done(&self, bytes: u64) {
+        self.files_done.fetch_add(1, Ordering::Relaxed);
+        self.bytes_done.fetch_add(bytes, Ordering::Relaxed);
+        self.files_all.fetch_add(1, Ordering::Relaxed);
+        self.bytes_all.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> DupesProgress {
+        let phase = self.phase.load(Ordering::Relaxed);
+        let phase_str = match phase {
+            PHASE_SCREEN => "screen",
+            PHASE_VERIFY => "verify",
+            PHASE_DONE => "done",
+            PHASE_CANCELLED => "cancelled",
+            _ => "collect",
+        };
+        let files_done = self.files_done.load(Ordering::Relaxed);
+        let files_total = self.files_total.load(Ordering::Relaxed);
+        let bytes_done = self.bytes_done.load(Ordering::Relaxed);
+        let bytes_total = self.bytes_total.load(Ordering::Relaxed);
+        let (start, span) = PHASE_WEIGHTS[phase.min(4) as usize];
+        let frac = if phase == PHASE_DONE {
+            1.0
+        } else if phase == PHASE_VERIFY {
+            // The verify phase's early exits read less than the
+            // estimate — the FILE counter is the honest progress
+            // source (every member retires or groups exactly once).
+            if files_total > 0 {
+                (files_done as f64 / files_total as f64).min(1.0) as f32
+            } else {
+                0.0
+            }
+        } else if bytes_total > 0 {
+            (bytes_done as f64 / bytes_total as f64).min(1.0) as f32
+        } else if files_total > 0 {
+            (files_done as f64 / files_total as f64).min(1.0) as f32
+        } else {
+            0.0
+        };
+        DupesProgress {
+            phase: phase_str.to_string(),
+            files_done,
+            files_total,
+            bytes_done,
+            bytes_total,
+            elapsed_ms: self.started.elapsed().as_millis().min(ELAPSED_CAP_MS) as u64,
+            files_done_all: self.files_all.load(Ordering::Relaxed),
+            bytes_done_all: self.bytes_all.load(Ordering::Relaxed),
+            overall: (start + span * frac).clamp(0.0, 1.0),
+        }
+    }
+
+    /// Emit one progress event (best-effort; the UI ignores events
+    /// outside a busy window).
+    fn tick(&self) {
+        if let Some(app) = &self.app {
+            let _ = app.emit("dupes-progress", self.snapshot());
+        }
+    }
+}
+
+/// The engine's progress seam, backed by the command's control block.
+impl ProgressSink for DupesCtl {
+    fn phase(&self, phase: &str, files_total: u64, bytes_total: u64) {
+        let id = match phase {
+            engine::PHASE_SCREEN => PHASE_SCREEN,
+            engine::PHASE_VERIFY => PHASE_VERIFY,
+            _ => return,
+        };
+        self.set_phase(id, files_total, bytes_total);
+    }
+    fn file_done(&self, bytes: u64) {
+        DupesCtl::file_done(self, bytes);
+    }
+    fn cancelled(&self) -> bool {
+        DupesCtl::cancelled(self)
+    }
+}
+
+/// Hardlink identity via the platform seam (spec §10: hardlinks are
+/// NOT duplicates). None = unavailable (treated unique).
+#[cfg(any(windows, target_os = "macos"))]
+fn hardlink_identity(path: &std::path::Path) -> Option<(u64, u64)> {
+    crate::platform::os::hardlink_identity(path)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn hardlink_identity(_path: &std::path::Path) -> Option<(u64, u64)> {
+    None
+}
+
+/// Resolve the scan scope (session 15 "Duplicates here"): the walk
+/// start node + the folder path the status/result report. Unknown
+/// nodes and FILES reject (the UI's disabled-file contract has a
+/// server-side twin); a scope at the tree ROOT is the whole-tree run
+/// (normalized to `None` so the status record, the result and the tab
+/// all frame it identically).
 ///
-/// One open per file, each paying Windows Defender's per-open scan +
-/// open/CreateFile latency. That is a LATENCY problem, and the only
-/// cure is concurrency: the measured "9–10 MB/s" on a real disk was
-/// exactly 4 workers × (file-open + 64 KiB read + hash) with no
-/// overlap headroom. `available_parallelism` (clamped 8..24) keeps
-/// enough streams in flight to hide per-open latency on NVMe while
-/// still leaving the OS the CPU it needs for Defender itself; HDD
-/// systems still benefit because the work order is path-sorted
-/// (near-adjacent extents), and the ceiling keeps SSD-eraser-level
-/// queue thrash off. The parallel iterators are scoped with
-/// `ThreadPool::install` (never nested inside another pool).
-fn screen_pool() -> &'static rayon::ThreadPool {
-    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
-    POOL.get_or_init(|| {
-        let n = std::thread::available_parallelism()
-            .map_or(SCREEN_POOL_MIN, std::num::NonZero::get)
-            .clamp(SCREEN_POOL_MIN, SCREEN_POOL_MAX);
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(n)
-            .thread_name(|i| format!("db-dupes-screen-{i}"))
-            .build()
-            .expect("dupes screen pool")
-    })
-}
-
-/// The dedicated, bounded FULL-hash pool — the streaming engine.
-///
-/// The full pass reads sequential 1 MiB chunks of large survivors:
-/// disk-BANDWIDTH + hash-CPU bound, where extra concurrency mostly
-/// buys seek conflicts. 2..8 workers saturate NVMe queue depth and
-/// feed SHA-256 (SHA-NI accelerated where the CPU has it) without
-/// fighting the screen pool for open()s.
-fn full_pool() -> &'static rayon::ThreadPool {
-    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
-    POOL.get_or_init(|| {
-        let n = std::thread::available_parallelism()
-            .map_or(2, std::num::NonZero::get)
-            .clamp(2, FULL_POOL_MAX);
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(n)
-            .thread_name(|i| format!("db-dupes-full-{i}"))
-            .build()
-            .expect("dupes full pool")
-    })
-}
-
-thread_local! {
-    /// Screen-scratch (grow-on-demand to `PREFIX`, reused for every
-    /// file this thread screens). The old per-call `vec![0u8; …]`
-    /// churned a 64 KiB..1 MiB allocation per file — half a million
-    /// frees per real-disk scan, pure allocator noise on the latency
-    /// path.
-    static SCREEN_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-    /// Mid-screen scratch (grows to `SAMPLE`).
-    static MID_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-    /// Full-hash scratch (grows to `CHUNK`).
-    static FULL_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// A pass-3 bucket: `((size, prefix digest), candidate indices)` —
-/// prefix survivors with ≥ 2 members heading into the full hash. (A
-/// type alias because the spelled-out tuple trips
-/// `clippy::type_complexity`.) The prefix digest is XXH3-128 (16
-/// bytes — the screen); the full hash below it is SHA-256.
-type Bucket = ((u64, [u8; 16]), Vec<usize>);
-
-/// One collected file heading into the pipeline.
-struct Candidate {
-    /// Display path (hashed + reported verbatim).
-    path: String,
-    /// Logical size.
-    size: u64,
-    /// Tree node id (hardlink-identity fallback).
-    id: u32,
+/// # Errors
+/// String error for an unknown node or a file node.
+fn resolve_scope(tree: &Tree, node: Option<u32>) -> Result<(u32, Option<String>), String> {
+    match node {
+        None => Ok((tree.root, None)),
+        Some(id) if id == tree.root => Ok((tree.root, None)),
+        Some(id) => {
+            let n = tree.node(id).ok_or_else(|| format!("unknown node {id}"))?;
+            if !n.is_dir() {
+                return Err("Duplicates scans a folder — select a folder.".into());
+            }
+            Ok((id, Some(tree.node_path(id))))
+        }
+    }
 }
 
 /// One duplicate-group row for the UI.
@@ -204,16 +293,16 @@ pub struct DupesResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DupesProgress {
-    /// "collect" | "prefix" | "screen" | "full" | "done" | "cancelled".
+    /// "collect" | "screen" | "verify" | "done" | "cancelled".
     pub phase: String,
-    /// Files hashed so far in the current phase.
+    /// Files finished so far in the current phase.
     pub files_done: u64,
-    /// Files the current phase will hash.
+    /// Files the current phase will finish.
     pub files_total: u64,
-    /// Bytes read so far in the current phase (prefix reads count as
-    /// `min(size, PREFIX)` — the honest approximation).
+    /// Bytes read so far in the current phase.
     pub bytes_done: u64,
-    /// Bytes the current phase will read (same rule).
+    /// Bytes the current phase will read (estimate — verify early
+    /// exits read less).
     pub bytes_total: u64,
     /// Milliseconds since the scan started (capped, see
     /// [`ELAPSED_CAP_MS`]).
@@ -227,345 +316,10 @@ pub struct DupesProgress {
     pub overall: f32,
 }
 
-/// Phase ids for the atomic phase slot.
-const PHASE_COLLECT: u8 = 0;
-const PHASE_PREFIX: u8 = 1;
-const PHASE_SCREEN: u8 = 2;
-const PHASE_FULL: u8 = 3;
-const PHASE_DONE: u8 = 4;
-const PHASE_CANCELLED: u8 = 5;
-
-/// Global-progress weights: [start, span] per phase on a 0..1 axis.
-/// Prefix-heavy by design — it touches every same-size candidate and
-/// dominates real-disk wall time; the full pass is bounded by actual
-/// duplicate bytes. Sums to exactly 1.0 so `done` lands on 100%.
-const PHASE_WEIGHTS: [(f32, f32); 6] = [
-    (0.0, 0.02),  // collect
-    (0.02, 0.45), // prefix
-    (0.47, 0.13), // screen
-    (0.60, 0.40), // full
-    (1.0, 0.0),   // done
-    (0.0, 0.0),   // cancelled (bar resets with the view)
-];
-
-/// Shared run control: atomics the pool workers bump (cheap — no
-/// mutex on the hot path), the cancel latch, and the optional event
-/// sink. `app: None` in tests (no Tauri runtime needed).
-struct DupesCtl {
-    app: Option<AppHandle>,
-    files_done: AtomicU64,
-    files_total: AtomicU64,
-    bytes_done: AtomicU64,
-    bytes_total: AtomicU64,
-    /// Cumulative across ALL phases (never reset — the rate + overall
-    /// sources; see [`DupesProgress`]).
-    files_all: AtomicU64,
-    bytes_all: AtomicU64,
-    phase: AtomicU8,
-    /// Cancel generation shared with `AppState` — `cancel_duplicates`
-    /// bumps it; this run latched the value it saw at start.
-    cancel_gen: Arc<AtomicU64>,
-    /// The latched generation: cancelled iff the shared counter moved.
-    latch: u64,
-    started: Instant,
-}
-
-impl DupesCtl {
-    /// A quiet control (no events) — the Windows E2E test harness AND
-    /// the pure snapshot tests (no Tauri runtime needed).
-    #[cfg(test)]
-    fn quiet(gen: Arc<AtomicU64>) -> Self {
-        Self::with_app(None, gen)
-    }
-
-    /// A live control emitting `dupes-progress` on `app`.
-    fn live(app: AppHandle, gen: Arc<AtomicU64>) -> Self {
-        Self::with_app(Some(app), gen)
-    }
-
-    fn with_app(app: Option<AppHandle>, gen: Arc<AtomicU64>) -> Self {
-        let latch = gen.load(Ordering::SeqCst);
-        Self {
-            app,
-            files_done: AtomicU64::new(0),
-            files_total: AtomicU64::new(0),
-            bytes_done: AtomicU64::new(0),
-            bytes_total: AtomicU64::new(0),
-            files_all: AtomicU64::new(0),
-            bytes_all: AtomicU64::new(0),
-            phase: AtomicU8::new(PHASE_COLLECT),
-            cancel_gen: gen,
-            latch,
-            started: Instant::now(),
-        }
-    }
-
-    /// True when `cancel_duplicates` fired after this run latched.
-    fn cancelled(&self) -> bool {
-        self.cancel_gen.load(Ordering::Relaxed) != self.latch
-    }
-
-    /// Enter a phase: per-phase counters RESET (they describe the
-    /// upcoming phase), cumulative counters never do. Totals are
-    /// written BEFORE the phase id (the ticker reads phase first, so
-    /// a boundary-straddling tick can only show the NEW phase with
-    /// fresh-zero counters for one 200 ms beat — never the old phase
-    /// with the new totals).
-    fn set_phase(&self, phase: u8, files_total: u64, bytes_total: u64) {
-        self.files_total.store(files_total, Ordering::Relaxed);
-        self.bytes_total.store(bytes_total, Ordering::Relaxed);
-        self.files_done.store(0, Ordering::Relaxed);
-        self.bytes_done.store(0, Ordering::Relaxed);
-        self.phase.store(phase, Ordering::Relaxed);
-    }
-
-    /// One finished hash target: bump files, and the bytes it cost —
-    /// both the per-phase and the cumulative counters.
-    fn file_done(&self, bytes: u64) {
-        self.files_done.fetch_add(1, Ordering::Relaxed);
-        self.bytes_done.fetch_add(bytes, Ordering::Relaxed);
-        self.files_all.fetch_add(1, Ordering::Relaxed);
-        self.bytes_all.fetch_add(bytes, Ordering::Relaxed);
-    }
-
-    fn snapshot(&self) -> DupesProgress {
-        let phase = self.phase.load(Ordering::Relaxed);
-        let phase_str = match phase {
-            PHASE_PREFIX => "prefix",
-            PHASE_SCREEN => "screen",
-            PHASE_FULL => "full",
-            PHASE_DONE => "done",
-            PHASE_CANCELLED => "cancelled",
-            _ => "collect",
-        };
-        let files_done = self.files_done.load(Ordering::Relaxed);
-        let files_total = self.files_total.load(Ordering::Relaxed);
-        let bytes_done = self.bytes_done.load(Ordering::Relaxed);
-        let bytes_total = self.bytes_total.load(Ordering::Relaxed);
-        let (start, span) = PHASE_WEIGHTS[phase.min(5) as usize];
-        let frac = if phase == PHASE_DONE {
-            1.0
-        } else if bytes_total > 0 {
-            (bytes_done as f64 / bytes_total as f64).min(1.0) as f32
-        } else if files_total > 0 {
-            (files_done as f64 / files_total as f64).min(1.0) as f32
-        } else {
-            0.0
-        };
-        DupesProgress {
-            phase: phase_str.to_string(),
-            files_done,
-            files_total,
-            bytes_done,
-            bytes_total,
-            elapsed_ms: self.started.elapsed().as_millis().min(ELAPSED_CAP_MS) as u64,
-            files_done_all: self.files_all.load(Ordering::Relaxed),
-            bytes_done_all: self.bytes_all.load(Ordering::Relaxed),
-            overall: (start + span * frac).clamp(0.0, 1.0),
-        }
-    }
-
-    /// Emit one progress event (best-effort; the UI ignores events
-    /// outside a busy window).
-    fn tick(&self) {
-        if let Some(app) = &self.app {
-            let _ = app.emit("dupes-progress", self.snapshot());
-        }
-    }
-}
-
-/// Open a file for sequential hashing with the platform's sequential
-/// hint (`FILE_FLAG_SEQUENTIAL_SCAN` on Windows — Cache Manager
-/// read-ahead + Defender's scan pattern). `None` = unreadable.
-fn open_seq(path: &std::path::Path) -> Option<std::fs::File> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const SEQ_FLAG: u32 = 0x0800_0000; // FILE_FLAG_SEQUENTIAL_SCAN
-        std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(SEQ_FLAG)
-            .open(path)
-            .ok()
-    }
-    #[cfg(not(windows))]
-    {
-        std::fs::File::open(path).ok()
-    }
-}
-
-/// Hash ONLY the first `PREFIX` bytes with XXH3-128 (pass 2 screen).
-/// `None` = unreadable (skipped honestly). For files ≤ PREFIX this IS
-/// the full-content screen (tiny files are decided here).
-///
-/// Why XXH3 for the screen: the screen only BUCKETS candidates — a
-/// false positive costs one extra full-hash read, a false negative is
-/// impossible for identical contents, and 128-bit XXH3 makes random
-/// collisions unreachable at disk scale (~10^-20 at a billion files).
-/// The FULL pass remains SHA-256 — the authority behind every reported
-/// group. XXH3's ~20 GB/s core also makes the hash itself free next to
-/// the open()+read() latency it hides.
-fn hash_prefix(path: &std::path::Path) -> Option<[u8; 16]> {
-    use std::io::Read;
-    use xxhash_rust::xxh3::Xxh3;
-    let mut f = open_seq(path)?;
-    let mut hasher = Xxh3::new();
-    let mut read = 0u64;
-    while read < PREFIX {
-        let cap = (PREFIX - read) as usize;
-        let n = SCREEN_BUF.with(|b| {
-            let mut b = b.borrow_mut();
-            if b.len() < cap {
-                b.resize(cap, 0);
-            }
-            f.read(&mut b[..cap]).ok().inspect(|&n| {
-                hasher.update(&b[..n]);
-            })
-        })?;
-        if n == 0 {
-            break;
-        }
-        read += n as u64;
-    }
-    let digest: [u8; 16] = hasher.digest128().to_le_bytes();
-    Some(digest)
-}
-
-/// Tier-2 mid-file fingerprint: XXH3-128 over the byte range
-/// `[PREFIX, PREFIX + SAMPLE)` concatenated with the LAST `SAMPLE`
-/// bytes of the file. Same-size files that share a 64 KiB prefix but
-/// differ anywhere in these two windows are screened out before the
-/// full read; files identical through all three windows are almost
-/// certainly identical (the full hash confirms). `None` = unreadable.
-fn hash_middle(path: &std::path::Path, size: u64) -> Option<[u8; 16]> {
-    use std::io::{Read, Seek, SeekFrom};
-    use xxhash_rust::xxh3::Xxh3;
-    let mut f = open_seq(path)?;
-    let mut hasher = Xxh3::new();
-    // Window A: [PREFIX, PREFIX + SAMPLE) — clamped to the file end.
-    let a_len = (size - PREFIX).min(SAMPLE) as usize;
-    f.seek(SeekFrom::Start(PREFIX)).ok()?;
-    let mut got = 0usize;
-    while got < a_len {
-        let want = a_len - got;
-        let n = MID_BUF.with(|b| {
-            let mut b = b.borrow_mut();
-            if b.len() < want {
-                b.resize(want, 0);
-            }
-            f.read(&mut b[..want]).ok().inspect(|&n| {
-                hasher.update(&b[..n]);
-            })
-        })?;
-        if n == 0 {
-            break;
-        }
-        got += n;
-    }
-    if got < a_len {
-        return None; // truncated mid-read — treat as unreadable
-    }
-    // Window B: the last SAMPLE bytes (never overlaps A: the tier only
-    // runs when size > PREFIX + 2*SAMPLE).
-    let b_start = size - SAMPLE;
-    f.seek(SeekFrom::Start(b_start)).ok()?;
-    let mut got = 0usize;
-    while got < SAMPLE as usize {
-        let want = SAMPLE as usize - got;
-        let n = MID_BUF.with(|b| {
-            let mut b = b.borrow_mut();
-            if b.len() < want {
-                b.resize(want, 0);
-            }
-            f.read(&mut b[..want]).ok().inspect(|&n| {
-                hasher.update(&b[..n]);
-            })
-        })?;
-        if n == 0 {
-            break;
-        }
-        got += n;
-    }
-    if got < SAMPLE as usize {
-        return None;
-    }
-    let digest: [u8; 16] = hasher.digest128().to_le_bytes();
-    Some(digest)
-}
-
-/// Full hash (pass 3, read in 1 MiB chunks). `None` = unreadable
-/// OR aborted by cancellation (the caller checks `ctl.cancelled()`
-/// right after and discards the pass — the two meanings never mix
-/// into a result).
-///
-/// The chunk loop probes the cancel latch every 1 MiB: a multi-GB
-/// true-duplicate bucket would otherwise keep its 4 workers busy
-/// hashing for MINUTES after the user pressed Stop (the per-file
-/// check in `finish_pipeline` only fires between files).
-fn hash_full(path: &std::path::Path, ctl: &DupesCtl) -> Option<[u8; 32]> {
-    use std::io::Read;
-    let mut f = open_seq(path)?;
-    let mut hasher = Sha256::new();
-    loop {
-        if ctl.cancelled() {
-            return None;
-        }
-        let n = FULL_BUF.with(|b| {
-            let mut b = b.borrow_mut();
-            if b.len() < CHUNK {
-                b.resize(CHUNK, 0);
-            }
-            f.read(&mut b[..CHUNK]).ok().inspect(|&n| {
-                hasher.update(&b[..n]);
-            })
-        })?;
-        if n == 0 {
-            break;
-        }
-    }
-    let digest: [u8; 32] = hasher.finalize().into();
-    Some(digest)
-}
-
-/// Hardlink identity via the platform seam (spec §10: hardlinks are
-/// NOT duplicates). None = unavailable (treated unique).
-#[cfg(any(windows, target_os = "macos"))]
-fn hardlink_identity(path: &std::path::Path) -> Option<(u64, u64)> {
-    crate::platform::os::hardlink_identity(path)
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
-fn hardlink_identity(_path: &std::path::Path) -> Option<(u64, u64)> {
-    None
-}
-
-/// Resolve the scan scope (session 15 "Duplicates here"): the walk
-/// start node + the folder path the status/result report. Unknown
-/// nodes and FILES reject (the UI's disabled-file contract has a
-/// server-side twin); a scope at the tree ROOT is the whole-tree run
-/// (normalized to `None` so the status record, the result and the tab
-/// all frame it identically).
-///
-/// # Errors
-/// String error for an unknown node or a file node.
-fn resolve_scope(tree: &Tree, node: Option<u32>) -> Result<(u32, Option<String>), String> {
-    match node {
-        None => Ok((tree.root, None)),
-        Some(id) if id == tree.root => Ok((tree.root, None)),
-        Some(id) => {
-            let n = tree.node(id).ok_or_else(|| format!("unknown node {id}"))?;
-            if !n.is_dir() {
-                return Err("Duplicates scans a folder — select a folder.".into());
-            }
-            Ok((id, Some(tree.node_path(id))))
-        }
-    }
-}
-
-/// Find duplicates in the current tree (spec §10 3-pass) with live
-/// progress, cooperative cancellation, and an APP-LIFETIME state
-/// record (page switches can no longer orphan the run: the UI
-/// re-attaches via [`dupes_status`]).
+/// Find duplicates in the current tree with live progress,
+/// cooperative cancellation, and an APP-LIFETIME state record (page
+/// switches can no longer orphan the run: the UI re-attaches via
+/// [`dupes_status`]).
 ///
 /// `node` scopes the scan to a folder's subtree (session 15
 /// "Duplicates here" — the inspector's launchpad): the collect walk
@@ -712,7 +466,7 @@ pub async fn find_duplicates(
 /// Read the app-lifetime duplicates status (the page-switch fix's
 /// query half): a freshly-mounted DuplicatesView adopts the running
 /// pipeline's live progress or the sticky last result instead of
-/// showing "Start scan" over a scan that is still hashing.
+/// showing "Start scan" over a scan that is still verifying.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // State extraction is the tauri command contract
 pub fn dupes_status(state: State<'_, AppState>) -> DupesStatusView {
@@ -750,26 +504,20 @@ pub fn cancel_duplicates(state: State<'_, AppState>) -> u64 {
     state.dupes_cancel.fetch_add(1, Ordering::SeqCst) + 1
 }
 
-/// The full pipeline (spec §10 3-pass + tier-2 screen): collect →
-/// size groups → parallel prefix screens → parallel mid-file screens →
-/// parallel full hashes → hardlink exclusion → wasted-space ranking.
-/// The screens run on the latency-sized [`screen_pool`] and the full
-/// pass on the bandwidth-sized [`full_pool`], both over PATH-SORTED
-/// work — disk-locality ordering (short seeks, warm caches, Defender
-/// scanning neighbours) instead of the global pool's work-stolen
-/// random order; see the pool docs for the throughput story.
+/// The full pipeline: collect the scan tree's candidates → the core
+/// v3 engine (screens + lockstep verify) → hardlink exclusion +
+/// wasted-space ranking.
 ///
-/// `start` scopes the collect walk (session 15 "Duplicates here"):
-/// everything downstream — size buckets, screens, hashes, ranking —
-/// operates on the collected candidate list, so a subtree start scopes
-/// the WHOLE pipeline with no per-pass changes.
+/// The engine owns all file I/O and both worker pools (screen: the
+/// latency pool; verify: the bandwidth pool — see the core module for
+/// the sizing laws). This function owns the tree walk, the platform
+/// hardlink seam, and the DTO assembly.
 ///
 /// # Errors
 /// `Err("cancelled")` when the user cancelled mid-pipeline.
-#[allow(clippy::too_many_lines)] // 3-pass pipeline; the pass structure is the spec
 #[allow(clippy::print_stderr)] // liveness tracing
 fn compute_dupes(tree: &Tree, ctl: &DupesCtl, start: u32) -> Result<DupesResult, String> {
-    // Pass 0: collect live files. Cloud placeholders NEVER open (R7.3)
+    // Collect: live files only. Cloud placeholders NEVER open (R7.3)
     // and Windows-managed (protected) files never hash or stage (§4 —
     // pagefile.sys is not a "duplicate" anyone should reclaim).
     // The walk starts at `start` (the tree root for whole-tree scans,
@@ -777,12 +525,8 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl, start: u32) -> Result<DupesResult,
     // which files are candidates; nothing downstream knows the
     // difference.
     ctl.set_phase(PHASE_COLLECT, 0, 0);
-    // The result's scope framing, resolved once where `start` lives
-    // (both finish_pipeline routes carry it through): None when the
-    // walk covered the whole tree (the tab's default framing), the
-    // folder's path for "Duplicates here".
     let scope_path: Option<String> = (start != tree.root).then(|| tree.node_path(start));
-    let mut candidates: Vec<Candidate> = Vec::new();
+    let mut candidates: Vec<EngineCandidate> = Vec::new();
     tree.walk(start, |id, n| {
         if !n.is_dir()
             && !n.is_removed()
@@ -790,248 +534,47 @@ fn compute_dupes(tree: &Tree, ctl: &DupesCtl, start: u32) -> Result<DupesResult,
             && !n.is_protected()
             && n.logical > 0
         {
-            candidates.push(Candidate {
+            candidates.push(EngineCandidate {
                 path: tree.node_path(id),
                 size: n.logical,
-                id,
+                node_id: id,
             });
         }
     });
-    // Disk-locality order for every subsequent pass: the tree walk
-    // order is traversal-dependent, not on-disk order — one sort here
-    // and each pass's work list starts near where the last one seeks.
-    candidates.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    // Disk-locality order: the tree walk order is
+    // traversal-dependent, not on-disk order — the engine sorts by
+    // path internally (same contract as v2).
     let total_files = candidates.len() as u64;
     eprintln!(
         "[dupes] collected {total_files} candidates at {:?}",
         ctl.started.elapsed()
     );
 
-    // Pass 1: size buckets (candidate level).
-    let mut by_size: HashMap<u64, Vec<usize>> = HashMap::new();
-    for (i, c) in candidates.iter().enumerate() {
-        if c.size == 0 {
-            continue; // Empty files all "match" each other — spec §10 skips them.
-        }
-        by_size.entry(c.size).or_default().push(i);
-    }
-
-    // Pass 2 (parallel): 64 KiB prefix hash per size-bucket candidate.
-    // Single-size buckets cannot contain duplicates — screened out
-    // before a single byte is read. Candidates hash concurrently; the
-    // (size, digest) grouping happens after the join.
-    let prefix_targets: Vec<usize> = by_size
-        .values()
-        .filter(|bucket| bucket.len() >= 2)
-        .flat_map(|bucket| bucket.iter().copied())
-        .collect();
-    let prefix_bytes: u64 = prefix_targets
-        .iter()
-        .map(|&i| candidates[i].size.min(PREFIX))
-        .sum();
-    ctl.set_phase(PHASE_PREFIX, prefix_targets.len() as u64, prefix_bytes);
-    let digests: Vec<Option<[u8; 16]>> = screen_pool().install(|| {
-        prefix_targets
-            .par_iter()
-            .map(|&i| {
-                // Cooperative cancel: fold THIS pass the moment the user
-                // asks (the boundary check below lands the Err). Without
-                // the per-file probe a cancel during a many-minute
-                // prefix sweep (Defender first-opens) did NOTHING until
-                // every target had been read — "the stop button
-                // doesn't stop".
-                if ctl.cancelled() {
-                    return None;
-                }
-                let read = candidates[i].size.min(PREFIX);
-                let d = hash_prefix(std::path::Path::new(&candidates[i].path));
-                // Counted even when unreadable — the attempt is the work
-                // the user waits on.
-                ctl.file_done(read);
-                d
-            })
-            .collect()
-    });
-    if ctl.cancelled() {
-        return Err("cancelled".into());
-    }
-
+    // The v3 engine: screens + lockstep verification (core-side).
+    let verified = engine::run(&candidates, &engine::EngineConfig::default(), ctl)
+        .map_err(|e| e.to_string())?;
     eprintln!(
-        "[dupes] prefix pass done: {} targets at {:?}",
-        prefix_targets.len(),
+        "[dupes] engine finished: {} verified groups at {:?}",
+        verified.len(),
         ctl.started.elapsed()
     );
 
-    // (size, prefix digest) → candidates sharing it.
-    let mut by_prefix: HashMap<(u64, [u8; 16]), Vec<usize>> = HashMap::new();
-    for (slot, &i) in prefix_targets.iter().enumerate() {
-        if let Some(digest) = digests[slot] {
-            by_prefix
-                .entry((candidates[i].size, digest))
-                .or_default()
-                .push(i);
+    // Hardlink identity per verified member (the platform seam needs
+    // an open handle; verified members are the true-duplicate
+    // subset, so this opens a small fraction of the tree).
+    let mut hashed: Vec<HashedFile> = Vec::new();
+    for (class, group) in verified.iter().enumerate() {
+        for f in &group.files {
+            let (vs, fi) =
+                hardlink_identity(std::path::Path::new(&f.path)).unwrap_or((u64::MAX, u64::from(f.node_id)));
+            hashed.push(HashedFile {
+                path: f.path.clone(),
+                size: f.size,
+                volume_serial: vs,
+                file_index: fi,
+                class: class as u64,
+            });
         }
-    }
-
-    // Tier 2 (parallel): mid-file fingerprint for same-prefix buckets
-    // whose files are big enough for the screen to save real reads
-    // (identical headers / zero-padded formats die HERE, at 2 MiB per
-    // file, instead of a full multi-GB read).
-    let mid_candidates: Vec<usize> = by_prefix
-        .iter()
-        .filter(|((size, _), g)| g.len() >= 2 && *size > PREFIX + 2 * SAMPLE)
-        .flat_map(|(_, g)| g.iter().copied())
-        .collect();
-    if mid_candidates.is_empty() {
-        // No screen work: prefix survivors pass straight to full hash.
-        let survivors: Vec<Bucket> = by_prefix
-            .into_iter()
-            .filter(|(_, g)| g.len() >= 2)
-            .collect();
-        return finish_pipeline(tree, ctl, &candidates, total_files, &survivors, scope_path);
-    }
-    let mid_bytes: u64 = mid_candidates.len() as u64 * 2 * SAMPLE;
-    ctl.set_phase(PHASE_SCREEN, mid_candidates.len() as u64, mid_bytes);
-    let mids: Vec<Option<[u8; 16]>> = screen_pool().install(|| {
-        mid_candidates
-            .par_iter()
-            .map(|&i| {
-                // Same cooperative-cancel probe as the prefix pass (the
-                // tier reads 2 MiB/file — minutes across a real disk).
-                if ctl.cancelled() {
-                    return None;
-                }
-                let d = hash_middle(
-                    std::path::Path::new(&candidates[i].path),
-                    candidates[i].size,
-                );
-                ctl.file_done(2 * SAMPLE);
-                d
-            })
-            .collect()
-    });
-    if ctl.cancelled() {
-        return Err("cancelled".into());
-    }
-    // Re-bucket by (size, MID digest); a member whose mid read failed
-    // drops out (unreadable NOW — was readable at prefix time; honest
-    // skip). Survivors = members of ≥2-member mid buckets.
-    let mut by_mid: HashMap<(u64, [u8; 16]), Vec<usize>> = HashMap::new();
-    for (slot, &i) in mid_candidates.iter().enumerate() {
-        if let Some(digest) = mids[slot] {
-            by_mid
-                .entry((candidates[i].size, digest))
-                .or_default()
-                .push(i);
-        }
-    }
-    let screened: std::collections::HashSet<usize> = by_mid
-        .values()
-        .filter(|g| g.len() >= 2)
-        .flat_map(|g| g.iter().copied())
-        .collect();
-    // Per prefix bucket: big files keep only screened members; small
-    // files (never ran the screen) keep all. The full hash remains the
-    // authority — a mid collision across different prefixes just costs
-    // one full read, never a wrong group.
-    let survivors: Vec<Bucket> = by_prefix
-        .into_iter()
-        .filter(|(_, g)| g.len() >= 2)
-        .filter_map(|((size, digest), g)| {
-            let kept: Vec<usize> = if size > PREFIX + 2 * SAMPLE {
-                g.iter().copied().filter(|i| screened.contains(i)).collect()
-            } else {
-                g
-            };
-            (kept.len() >= 2).then_some(((size, digest), kept))
-        })
-        .collect();
-    finish_pipeline(tree, ctl, &candidates, total_files, &survivors, scope_path)
-}
-
-/// Pass 3 + ranking: shared tail for both routes (with/without the
-/// tier-2 screen). Every survivor is SHA-256 full-hashed here — the
-/// screens only bucket, the authority always re-reads (v2: the screen
-/// hash is XXH3-128, so the v1 tiny-file digest reuse is gone).
-///
-/// # Errors
-/// `Err("cancelled")` when the user cancelled mid-hash.
-#[allow(clippy::print_stderr)] // liveness tracing
-fn finish_pipeline(
-    tree: &Tree,
-    ctl: &DupesCtl,
-    candidates: &[Candidate],
-    total_files: u64,
-    survivors: &[Bucket],
-    scope_path: Option<String>,
-) -> Result<DupesResult, String> {
-    // Every survivor full-hashes now (the XXH3 screens decide nothing
-    // on their own — SHA-256 is the authority for every group).
-    let full_files: u64 = survivors.iter().flat_map(|((_, _), g)| g.iter()).count() as u64;
-    let full_bytes: u64 = survivors
-        .iter()
-        .flat_map(|((_, _), g)| g.iter())
-        .map(|&i| candidates[i].size)
-        .sum();
-    ctl.set_phase(PHASE_FULL, full_files, full_bytes);
-    eprintln!(
-        "[dupes] full pass: {} buckets / {} bytes",
-        survivors.len(),
-        full_bytes
-    );
-    // Path-order the full pass too: buckets sorted by first member
-    // path, members sorted within the bucket — four streams walk the
-    // disk in the same forward direction instead of bouncing between
-    // distant extents.
-    let mut ordered: Vec<Bucket> = survivors.to_vec();
-    for ((_, _), g) in &mut ordered {
-        g.sort_unstable_by(|&a, &b| candidates[a].path.cmp(&candidates[b].path));
-    }
-    ordered.sort_unstable_by(|a, b| {
-        candidates[*a.1.first().unwrap_or(&0)]
-            .path
-            .cmp(&candidates[*b.1.first().unwrap_or(&0)].path)
-    });
-    let hashed: Vec<HashedFile> = full_pool().install(|| {
-        ordered
-            .par_iter()
-            .flat_map(|((size, _prefix_screen), group)| {
-                group
-                    .iter()
-                    .filter_map(|&i| {
-                        if ctl.cancelled() {
-                            return None;
-                        }
-                        let c = &candidates[i];
-                        // The XXH3 prefix is ONLY a screen — the SHA-256
-                        // authority always comes from hash_full. (v1
-                        // could reuse the prefix SHA-256 verbatim for
-                        // ≤64 KiB files; the screen hash changed to
-                        // XXH3-128 in v2, so tiny survivors just
-                        // full-hash like everyone else — a ≤64 KiB
-                        // re-read, negligible next to the correctness
-                        // guarantee it buys.)
-                        let (sha256, read) = match hash_full(std::path::Path::new(&c.path), ctl) {
-                            Some(d) => (d, *size),
-                            None => return None,
-                        };
-                        ctl.file_done(read);
-                        let (vs, fi) = hardlink_identity(std::path::Path::new(&c.path))
-                            .unwrap_or((u64::MAX, u64::from(c.id)));
-                        Some(HashedFile {
-                            path: c.path.clone(),
-                            size: *size,
-                            volume_serial: vs,
-                            file_index: fi,
-                            sha256,
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    });
-    if ctl.cancelled() {
-        return Err("cancelled".into());
     }
 
     // Core ranking (hardlink exclusion + wasted-space sort).
@@ -1058,9 +601,6 @@ fn finish_pipeline(
         groups: views,
         wasted_total,
         files: total_files,
-        // The caller-computed scope (compute_dupes resolved it from
-        // `start`: None for whole-tree runs, the folder path for
-        // "Duplicates here").
         scope_path,
     })
 }
@@ -1068,15 +608,6 @@ fn finish_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mid_sample_windows_never_overlap() {
-        // The tier only runs when size > PREFIX + 2*SAMPLE; at the
-        // boundary the windows touch exactly (A ends at PREFIX+SAMPLE,
-        // B starts at size-SAMPLE = PREFIX+SAMPLE).
-        let size = PREFIX + 2 * SAMPLE;
-        assert_eq!(PREFIX + SAMPLE, size - SAMPLE);
-    }
 
     #[test]
     fn result_dto_carries_scope_path() {
@@ -1111,7 +642,7 @@ mod tests {
         // The UI reads phase/filesDone/bytesDone + the session-5
         // cumulative fields — serde must camelCase all of them.
         let p = DupesProgress {
-            phase: "prefix".into(),
+            phase: "verify".into(),
             files_done: 1,
             files_total: 2,
             bytes_done: 3,
@@ -1128,18 +659,19 @@ mod tests {
         assert!(s.contains("\"filesDoneAll\""), "camelCase DTO: {s}");
         assert!(s.contains("\"bytesDoneAll\""), "camelCase DTO: {s}");
         assert!(s.contains("\"overall\""), "camelCase DTO: {s}");
+        assert!(s.contains("\"phase\":\"verify\""), "camelCase DTO: {s}");
     }
 
     #[test]
     fn phase_weights_partition_the_axis() {
-        // The bar must land on exactly 100% at `done` and never exceed 1.
-        // The first FIVE entries form the sequential ramp; the cancelled
-        // entry (index 5) is a reset marker OUTSIDE the ramp — a cancel
-        // clears the bar with the view, it does not continue the ramp
-        // (contiguity through it is meaningless and the ramp must still
-        // sum to exactly 1.0 on its own).
+        // The bar must land on exactly 100% at `done` and never exceed
+        // 1. The first FOUR entries form the sequential ramp; the
+        // cancelled entry (index 4) is a reset marker OUTSIDE the ramp
+        // — a cancel clears the bar with the view, it does not
+        // continue the ramp (contiguity through it is meaningless and
+        // the ramp must still sum to exactly 1.0 on its own).
         let mut acc = 0.0f32;
-        for (start, span) in PHASE_WEIGHTS.iter().take(5) {
+        for (start, span) in PHASE_WEIGHTS.iter().take(4) {
             assert!((0.0..=1.0).contains(start), "weight start in range");
             assert!(*span >= 0.0, "weight span non-negative");
             assert!((start - acc).abs() < 1e-6, "weights are contiguous");
@@ -1174,21 +706,15 @@ mod tests {
             *last = s.overall;
         };
         check(&mut last); // collect (empty)
-        ctl.set_phase(PHASE_PREFIX, 100, 100 * 1024);
+        ctl.set_phase(PHASE_SCREEN, 100, 100 * 1024);
         for i in 1..=100u64 {
             ctl.file_done(1024);
             if i % 25 == 0 {
                 check(&mut last);
             }
         }
-        ctl.set_phase(PHASE_SCREEN, 10, 10 * 2 * SAMPLE);
-        check(&mut last); // boundary: 47% must be >= 47%
-        for _ in 0..10 {
-            ctl.file_done(2 * SAMPLE);
-        }
-        check(&mut last);
-        ctl.set_phase(PHASE_FULL, 4, 4 * 1024 * 1024 * 1024);
-        check(&mut last);
+        ctl.set_phase(PHASE_VERIFY, 4, 4 * 1024 * 1024 * 1024);
+        check(&mut last); // boundary
         for i in 1..=4u64 {
             ctl.file_done(1024 * 1024 * 1024);
             if i % 2 == 0 {
@@ -1198,53 +724,11 @@ mod tests {
         ctl.set_phase(PHASE_DONE, 0, 0);
         check(&mut last);
         assert!((ctl.snapshot().overall - 1.0).abs() < 1e-6, "done = 100%");
-        // Cumulative counters survived every boundary (rate/ETA source).
+        // Cumulative counters survived every boundary (rate/ETA
+        // source).
         let s = ctl.snapshot();
-        assert_eq!(s.files_done_all, 114, "cumulative files");
+        assert_eq!(s.files_done_all, 104, "cumulative files");
         assert!(s.bytes_done_all > 0, "cumulative bytes");
-    }
-
-    /// The stop-button latency contract (session-6): `hash_full` must
-    /// abort at the FIRST chunk probe when the run is already
-    /// cancelled — a multi-GB true-dup bucket may not keep hashing
-    /// after the user pressed Stop. Deterministic (no timing): the
-    /// latch is bumped before the call.
-    #[test]
-    fn hash_full_aborts_immediately_when_cancelled() {
-        let root = scratch_shared("hash-abort");
-        let _keep = TempTree(root.clone());
-        // 5 MiB of readable content — without the chunk probe the whole
-        // file would hash before the boundary check.
-        std::fs::write(root.join("big.bin"), vec![7u8; 5 * 1024 * 1024]).unwrap();
-        let gen = Arc::new(AtomicU64::new(0));
-        let ctl = DupesCtl::quiet(Arc::clone(&gen));
-        gen.fetch_add(1, Ordering::SeqCst); // user pressed Stop
-        assert!(
-            hash_full(&root.join("big.bin"), &ctl).is_none(),
-            "cancelled run must abort the full hash"
-        );
-        // Sanity: the same file with a live latch hashes fine (the
-        // abort is cancel-driven, not a broken reader).
-        let live = DupesCtl::quiet(Arc::new(AtomicU64::new(99)));
-        assert!(hash_full(&root.join("big.bin"), &live).is_some());
-    }
-
-    /// Scratch WITHOUT the cfg(windows) gate — the hash-abort test runs
-    /// everywhere the module tests do (Linux CI included).
-    fn scratch_shared(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("db-dupes-unit-{}-{}", std::process::id(), name));
-        let _ = std::fs::remove_dir_all(&d); // R7.1-allow: test-scratch (own temp dir, test-only)
-        std::fs::create_dir_all(&d).expect("scratch dir");
-        d
-    }
-
-    /// Keeps a scratch dir alive for the test body (module-level: the
-    /// windows E2E suite and the cross-platform unit tests share it).
-    struct TempTree(std::path::PathBuf);
-    impl Drop for TempTree {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0); // R7.1-allow: test-scratch
-        }
     }
 
     #[cfg(windows)]
@@ -1258,15 +742,25 @@ mod tests {
 
         /// Unique scratch dir under %TEMP% (no tempfile dep).
         fn scratch(name: &str) -> PathBuf {
-            let d =
-                std::env::temp_dir().join(format!("db-dupes-e2e-{}-{}", std::process::id(), name));
-            let _ = fs::remove_dir_all(&d); // R7.1-allow: test-scratch (own %TEMP% dir, test-only)
+            let d = std::env::temp_dir().join(format!(
+                "db-dupes-e2e-{}-{name}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&d); // R7.1-allow: test-scratch
             fs::create_dir_all(&d).expect("scratch dir");
             d
         }
 
+        /// Keeps a scratch dir alive for the test body.
+        struct TempTree(PathBuf);
+        impl Drop for TempTree {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0); // R7.1-allow: test-scratch
+            }
+        }
+
         /// Deterministic pseudo-random content (xorshift64) — fast;
-        /// distinct seeds never collide under the screen + full hashes.
+        /// distinct seeds never collide under the screens + chains.
         fn blob(seed: u64, size: usize) -> Vec<u8> {
             let mut s = seed | 1;
             let mut v = Vec::with_capacity(size);
@@ -1283,8 +777,8 @@ mod tests {
         /// Scan a REAL folder with the REAL Windows platform, then run
         /// the exact production pipeline over it. Planted content:
         /// - 3 identical 8 MiB files → one group, 3 copies
-        /// - 2 same-size 8 MiB files with an IDENTICAL 64 KiB prefix but
-        ///   differences inside the mid windows → screened at tier 2
+        /// - 2 same-size 8 MiB files with an IDENTICAL 64 KiB prefix
+        ///   but differences inside the mid windows → screened out
         /// - 2 identical 300 KiB files → small-file path, one group
         /// - 3 zero-byte files → ignored (spec §10)
         /// - 1 file held open with share_mode(0) → unreadable, skipped
@@ -1293,15 +787,16 @@ mod tests {
             let root = scratch("main");
             let _keep = TempTree(root.clone());
             let mib = 1024 * 1024u64;
+            let prefix = engine::DEFAULT_PREFIX;
             let big = blob(0xC0FF_EEEE, 8 * mib as usize);
             // Same 64 KiB prefix, one flipped byte INSIDE window A
             // (+512 KiB) and one INSIDE window B (size - 512 KiB) —
-            // the screen must kill this pair before the full read.
+            // the screens must kill this pair before any verify read.
             let mut fp_a = blob(1, 8 * mib as usize);
             let mut fp_b = blob(1, 8 * mib as usize);
-            fp_a[..PREFIX as usize].copy_from_slice(&big[..PREFIX as usize]);
-            fp_b[..PREFIX as usize].copy_from_slice(&big[..PREFIX as usize]);
-            fp_a[(PREFIX + mib / 2) as usize] ^= 0xFF;
+            fp_a[..prefix as usize].copy_from_slice(&big[..prefix as usize]);
+            fp_b[..prefix as usize].copy_from_slice(&big[..prefix as usize]);
+            fp_a[(prefix + mib / 2) as usize] ^= 0xFF;
             fp_b[(8 * mib - mib / 2) as usize] ^= 0xFF;
             let small = blob(0xABCD_CDEF, 300 * 1024);
 
@@ -1316,7 +811,8 @@ mod tests {
             fs::write(root.join("z2.dat"), b"").unwrap();
             fs::write(root.join("z3.dat"), b"").unwrap();
             // Locked file (same size as the small pair → would group if
-            // readable): hold it open with NO sharing for the whole test.
+            // readable): hold it open with NO sharing for the whole
+            // test.
             fs::write(root.join("small-locked.bin"), &small).unwrap();
             let _locked = std::fs::OpenOptions::new()
                 .read(true)
@@ -1387,17 +883,9 @@ mod tests {
         /// genuine file to the OS cache + Defender) — shared by the
         /// performance corpus below.
         const FORMATS: [(&str, &[u8]); 8] = [
-            (
-                "jpg",
-                &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'],
-            ),
+            ("jpg", &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F']),
             ("png", &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
-            (
-                "mp4",
-                &[
-                    0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm',
-                ],
-            ),
+            ("mp4", &[0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm']),
             ("zip", &[b'P', b'K', 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]),
             ("pdf", b"%PDF-1.7"),
             ("iso", &[0x01, b'C', b'D', 0x00, 0x01]),
@@ -1426,17 +914,14 @@ mod tests {
 
         /// The PERFORMANCE corpus (owner ask: "spawn fake real-size
         /// multi-format files and then test"): ~1.9 GB of realistic
-        /// multi-format content — magic-headed JPG/PNG/MP4/ZIP/PDF/ISO/
-        /// TXT/BIN payloads — with planted exact-duplicate groups,
-        /// same-prefix near-duplicates (must screen out), a hardlink
-        /// pair (must exclude), unicode + deep nesting, and a locked
-        /// file. Asserts CORRECTNESS of every planted group AND an
-        /// effective throughput floor (the "9-10 MB/s" regression
-        /// guard: the v2 pools must sustain ≥ 40 MB/s counting every
-        /// byte the pipeline read, on Defender-active CI hardware).
-        /// One linear scenario, deliberately readable top-to-bottom —
-        /// splitting the staging into helpers would scatter the
-        /// planted-group narrative the assertions pin.
+        /// multi-format content — magic-headed JPG/PNG/MP4/ZIP/PDF/
+        /// ISO/TXT/BIN payloads — with planted exact-duplicate
+        /// groups, same-prefix near-duplicates (must screen out), a
+        /// hardlink pair (must exclude), unicode + deep nesting, and
+        /// a locked file. Asserts CORRECTNESS of every planted group
+        /// AND an effective throughput floor (the v3 engine must
+        /// stay I/O-bound; the floor is generous for Defender-active
+        /// CI hardware).
         #[test]
         #[allow(clippy::too_many_lines)]
         fn throughput_corpus_multi_format_finds_groups_fast() {
@@ -1446,6 +931,7 @@ mod tests {
 
             let kib = 1024u64;
             let mib = 1024 * 1024u64;
+            let prefix = engine::DEFAULT_PREFIX;
             let mut expected_groups: Vec<(u64, u64, Vec<String>)> = Vec::new();
 
             // ── SMALL: 300 files (64–192 KiB) across the 8 formats,
@@ -1462,13 +948,11 @@ mod tests {
                 )
                 .unwrap();
                 if i % 10 == 0 && i > 0 {
-                    // Duplicate of the PREVIOUS file (same content, same
-                    // size) → an exact group of 2. The pair's size is the
-                    // PREVIOUS index's (the copied file), not the current
-                    // one — after the %129 wrap the two differ by 128 KiB,
-                    // and the recorded size picked the wrong group in the
-                    // assertion's (size, count) lookup.
-                    let prev = format!("shot_{:03}.{}", i - 1, FORMATS[((i - 1) % 8) as usize].0);
+                    // Duplicate of the PREVIOUS file (same content,
+                    // same size) → an exact group of 2. The pair's
+                    // size is the PREVIOUS index's (the copied file).
+                    let prev =
+                        format!("shot_{:03}.{}", i - 1, FORMATS[((i - 1) % 8) as usize].0);
                     let pair_size = (64 + (i - 1) % 129) * kib;
                     fs::copy(
                         small_dir.join(&prev),
@@ -1479,15 +963,7 @@ mod tests {
                 }
             }
 
-            // ── Unicode + deep nesting: files the scanner must still
-            //    walk (2 more small groups). LEADING space in the dir
-            //    name is a legal NTFS name and a genuine scanner edge
-            //    case; a TRAILING space is not — Win32 strips it per
-            //    component, so the on-disk name differs from every
-            //    later lookup of the middle component and mkdir
-            //    answers NotFound (Naming Files, Paths, and
-            //    Namespaces). This test has never run green anywhere —
-            //    the CI round surfaced it.
+            // ── Unicode + deep nesting (2 more small groups).
             let deep = root
                 .join("备份")
                 .join(" archival")
@@ -1540,24 +1016,35 @@ mod tests {
             }
 
             // ── NEAR-DUP: 6 pairs, same size + same 64 KiB prefix,
-            //    different mid bytes → the tier-2 screen must kill
-            //    them (no full-hash, never reported). ~96 MB.
+            //    different mid bytes → the screens must kill them.
+            //    ~96 MB.
             let nd_dir = root.join("near-dups");
             fs::create_dir_all(&nd_dir).unwrap();
             for i in 0..6u64 {
                 // Seed stride 2, never consecutive: fmt_blob folds the
-                // seed with `| 1`, so 0x51DE+i for consecutive i
-                // COLLAPSED into one xorshift stream — the CI round
+                // seed with `| 1`, so consecutive seeds COLLAPSED into
+                // one xorshift stream in an earlier round (the CI
                 // found the a-pairs and b-pairs as six REAL duplicate
-                // groups (the pipeline was right; the fixture planted
-                // twins it never meant to). Stride-2 seeds stay
-                // distinct after the fold.
+                // groups — the pipeline was right; the fixture planted
+                // twins it never meant to).
                 let base = fmt_blob(3, 0x51DE + i * 2, 8 * mib as usize);
                 let mut twin = base.clone();
-                twin[(PREFIX + mib / 2) as usize] ^= 0xA5;
+                twin[(prefix + mib / 2) as usize] ^= 0xA5;
                 fs::write(nd_dir.join(format!("nd-a{i}.zip")), &base).unwrap();
                 fs::write(nd_dir.join(format!("nd-b{i}.zip")), &twin).unwrap();
             }
+
+            // ── GAP-DIFF pair: same screens, gap difference — the
+            //    v3 lockstep verify must reject it (v2's SHA pass
+            //    caught it by digest; v3 catches it by chain
+            //    divergence in the first divergent block).
+            let gap_dir = root.join("gap-diffs");
+            fs::create_dir_all(&gap_dir).unwrap();
+            let gap_base = fmt_blob(2, 0x6A7_8B9, 12 * mib as usize);
+            let mut gap_twin = gap_base.clone();
+            gap_twin[(6 * mib) as usize] ^= 0x5A;
+            fs::write(gap_dir.join("gp-a.mp4"), &gap_base).unwrap();
+            fs::write(gap_dir.join("gp-b.mp4"), &gap_twin).unwrap();
 
             // ── HARDLINK pair: same content twice on disk, but one
             //    file identity → NOT a duplicate (spec §10).
@@ -1648,14 +1135,12 @@ mod tests {
             let read_bytes = ctl.bytes_all.load(Ordering::Relaxed);
             let mps = read_bytes as f64 / elapsed.as_secs_f64() / (mib as f64);
             println!(
-                "dupes PERF: {} files → {} groups, {:.0} MiB hashed in {:.2}s = {:.1} MiB/s effective (pool sizes: screen {} / full {})",
+                "dupes PERF (v3): {} files → {} groups, {:.0} MiB read in {:.2}s = {:.1} MiB/s effective",
                 result.files,
                 result.groups.len(),
                 read_bytes / mib,
                 elapsed.as_secs_f32(),
                 mps,
-                std::thread::available_parallelism().map_or(0, std::num::NonZero::get).clamp(SCREEN_POOL_MIN, SCREEN_POOL_MAX),
-                std::thread::available_parallelism().map_or(0, std::num::NonZero::get).clamp(2, FULL_POOL_MAX),
             );
 
             // ── Correctness: every planted group is found, exactly.
@@ -1681,11 +1166,12 @@ mod tests {
                     );
                 }
             }
-            // The near-dups, the hardlink twin, and the locked file
-            // must never appear.
+            // The near-dups, the gap-diff pair, the hardlink twin,
+            // and the locked file must never appear.
             for g in &result.groups {
                 for p in &g.paths {
                     assert!(!p.contains("nd-"), "near-dup leaked: {p}");
+                    assert!(!p.contains("gp-"), "gap-diff leaked: {p}");
                     if hl_ok {
                         assert!(!p.contains("hl-link"), "hardlink pair leaked: {p}");
                     }
@@ -1693,37 +1179,15 @@ mod tests {
                 }
             }
 
-            // ── Throughput floor (the 9-10 MB/s regression guard). CI
-            //    hardware (Defender on, shared NVMe) with the v2
-            //    pools sustains well above this; the OLD 4-worker cap
-            //    measured ~9-10 MB/s on a real disk.
+            // ── Throughput floor (the I/O-bound regression guard).
+            //    v3 reads each byte at most once with memory-speed
+            //    hashing; even Defender-active CI hardware must clear
+            //    this comfortably (v2's floor was 40 MiB/s — v3's
+            //    expected range is hundreds of MiB/s).
             assert!(
-                mps >= 40.0,
-                "effective throughput {mps:.1} MiB/s is below the 40 MiB/s floor — the screen-pool sizing regressed"
+                mps >= 60.0,
+                "effective throughput {mps:.1} MiB/s is below the 60 MiB/s floor — the engine became CPU- or open-bound"
             );
-        }
-
-        /// The screen primitive itself: same 64 KiB prefix + a flipped
-        /// byte inside either mid window must change the fingerprint.
-        #[test]
-        fn mid_fingerprint_detects_window_differences() {
-            let root = scratch("mid");
-            let _keep = TempTree(root.clone());
-            let mib = 1024 * 1024u64;
-            let base = blob(7, 3 * mib as usize);
-            let mut a = base.clone();
-            let mut b = base.clone();
-            a[(PREFIX + mib / 2) as usize] ^= 0xFF; // window A
-            b[(3 * mib - mib / 2) as usize] ^= 0xFF; // window B
-            fs::write(root.join("base.bin"), &base).unwrap();
-            fs::write(root.join("a.bin"), &a).unwrap();
-            fs::write(root.join("b.bin"), &b).unwrap();
-            let p = |n: &str| root.join(n);
-            let h0 = hash_middle(&p("base.bin"), 3 * mib).expect("readable");
-            let ha = hash_middle(&p("a.bin"), 3 * mib).expect("readable");
-            let hb = hash_middle(&p("b.bin"), 3 * mib).expect("readable");
-            assert_ne!(h0, ha, "window A flip must change the mid digest");
-            assert_ne!(h0, hb, "window B flip must change the mid digest");
         }
 
         /// Cancellation: bump the shared generation after the run
@@ -1754,7 +1218,7 @@ mod tests {
             let gen = Arc::new(AtomicU64::new(0));
             let ctl = DupesCtl::quiet(Arc::clone(&gen));
             // Simulate a cancel landing after collect: bump before the
-            // prefix pass checks it.
+            // screen pass checks it.
             gen.fetch_add(1, Ordering::SeqCst);
             let out = compute_dupes(&tree, &ctl, tree.root);
             assert_eq!(out.err(), Some("cancelled".to_string()));

@@ -14,7 +14,7 @@
 //! - [`quickwins`] — junk category resolution against a built tree (spec §6)
 //! - [`age`] — age buckets, month heatmap, Big & Untouched (spec §7)
 //! - [`snapshots`] — snapshot model, atomic write payloads, case-insensitive diff
-//! - [`dupes`] — duplicate grouping + wasted-space ranking (hashing is app-side)
+//! - [`dupes`] — the v3 duplicate engine (screens + lockstep chain-partition verification) + wasted-space ranking
 //! - [`format`] — byte/percent/age/duration formatting (TS twin must agree)
 
 pub mod age;

@@ -47,7 +47,7 @@ export interface DupesResult {
 
 /** The `dupes-progress` event payload (camelCase DTO from Rust). */
 export interface DupesProgress {
-  phase: "collect" | "prefix" | "screen" | "full" | "done" | "cancelled";
+  phase: "collect" | "screen" | "verify" | "done" | "cancelled";
   filesDone: number;
   filesTotal: number;
   bytesDone: number;

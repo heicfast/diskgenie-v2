@@ -1045,11 +1045,10 @@ export const commands: Record<string, Cmd> = {
       const cancelled = () => dupesCancelGen !== latch;
       // Phase weights mirror the Rust PHASE_WEIGHTS (the global bar is
       // monotonic across boundaries — no 100%→0% strobe).
-      const phases: { phase: "collect" | "prefix" | "screen" | "full"; frac: number }[] = [
+      const phases: { phase: "collect" | "screen" | "verify"; frac: number }[] = [
         { phase: "collect", frac: 0.02 },
-        { phase: "prefix", frac: 0.45 },
-        { phase: "screen", frac: 0.13 },
-        { phase: "full", frac: 0.40 },
+        { phase: "screen", frac: 0.33 },
+        { phase: "verify", frac: 0.65 },
       ];
       const duration = 850 + Math.random() * 250;
       const emit = (phase: string, overall: number) => {

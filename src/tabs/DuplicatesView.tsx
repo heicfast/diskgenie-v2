@@ -25,9 +25,8 @@ import { useDupesStore, type DupesProgress, type DupesResult } from "../state/du
 
 const PHASE_LABEL: Record<DupesProgress["phase"], string> = {
   collect: "Collecting candidates",
-  prefix: "Hashing 64 KB prefixes",
-  screen: "Screening same-prefix files",
-  full: "Verifying full contents",
+  screen: "Fingerprinting candidates",
+  verify: "Verifying byte-for-byte",
   done: "Done",
   cancelled: "Cancelled",
 };
@@ -247,7 +246,7 @@ export function DuplicatesView() {
           body={
             scopePath
               ? `Byte-identical files inside ${scopePath} — keep one copy, stage the rest. The button scans your whole tree; select a folder in Explore and press “Duplicates here” to scope it.`
-              : "Three passes — size groups, 64 KB prefix hash, full SHA-256 — group byte-identical files so you can keep one copy and stage the rest. Select a folder in Explore and press “Duplicates here” to scan just that folder."
+              : "Screens every candidate in one pass, then verifies survivors byte-for-byte — grouping only true duplicates so you can keep one copy and stage the rest. Select a folder in Explore and press “Duplicates here” to scan just that folder."
           }
           action={
             <button type="button" className="db-ink-button auto" onClick={scan}>

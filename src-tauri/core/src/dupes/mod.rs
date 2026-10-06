@@ -1,19 +1,26 @@
 //! Duplicate grouping and wasted-space ranking (spec §10; doc 02 §7).
 //!
-//! The three-pass SHA-256 pipeline is app-side (it needs `CreateFileW`,
-//! rayon I/O and hardlink identity from open handles — see
-//! `src-tauri/src/dupes.rs`); THIS module owns the pure data logic every
-//! pass feeds into, so it stays unit-testable on any host:
+//! The v3 engine (`engine` module — screens + lockstep verification)
+//! is core-side so it unit-tests on any host; THIS module owns the
+//! pure data logic downstream of it:
 //!
-//! 1. [`group_by_size`] — pass 1 bucketing by logical size, dropping
+//! 1. [`group_by_size`] — bucketing by logical size, dropping
 //!    zero-length files (spec: "ignoring zero-length files").
-//! 2. [`rank`] — pass 3 assembly: hardlink exclusion by
-//!    (volume serial, file index) identity, grouping by (size, hash),
+//! 2. [`rank`] — hardlink exclusion by (volume serial, file index)
+//!    identity, grouping by (size, verification class),
 //!    wasted-space ranking `size × (count − 1)` largest first.
 //!
 //! The UI consumes [`DupeGroup`]s: "X could be reclaimed across N groups",
 //! each group listing files with "Keep this, stage the rest" (the first
 //! entry of each group is the natural "keep" anchor).
+
+pub mod engine;
+
+pub use engine::{
+    EngineCandidate, EngineConfig, EngineError, ProgressSink, QuietSink, VerifiedFile,
+    VerifiedGroup, DEFAULT_PREFIX, DEFAULT_SAMPLE, DEFAULT_VERIFY_BLOCK, PHASE_SCREEN,
+    PHASE_VERIFY,
+};
 
 use std::collections::HashMap;
 
@@ -21,21 +28,25 @@ use std::collections::HashMap;
 /// zero-length files are ignored — they can never waste space).
 pub const MIN_CANDIDATE_SIZE: u64 = 1;
 
-/// One file as fed back by the app-side hashing pipeline.
+/// One verified file as fed back into the ranking (the engine's
+/// verified groups + the app's hardlink identities).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HashedFile {
     /// Display path (the staged reason text uses it verbatim).
     pub path: String,
-    /// Logical size in bytes (`EndOfFile`).
+    /// Logical size in bytes.
     pub size: u64,
-    /// Volume serial number from `GetFileInformationByHandle`.
+    /// Volume serial number from the platform's file-information
+    /// query.
     pub volume_serial: u64,
-    /// File index from `GetFileInformationByHandle` (with the high part
-    /// on FAT/exFAT already folded in by the caller).
+    /// File index from the platform's file-information query (with
+    /// the high part on FAT/exFAT already folded in by the caller).
     pub file_index: u64,
-    /// Final SHA-256 digest (64 KB-prefix for small files, full contents
-    /// otherwise — decided by the pipeline, opaque here).
-    pub sha256: [u8; 32],
+    /// Verification class (the engine's group id): files share a
+    /// class iff their contents were verified equal. Replaces the
+    /// v2 SHA-256 digest — the engine's chain-equality IS the
+    /// content equality claim; the class id just names it.
+    pub class: u64,
 }
 
 impl HashedFile {
@@ -76,8 +87,8 @@ pub fn group_by_size(files: &[HashedFile]) -> Vec<Vec<&HashedFile>> {
     buckets
 }
 
-/// Pass 3 assembly: hardlink exclusion + (size, hash) grouping +
-/// wasted-space ranking (spec §10).
+/// Hardlink exclusion + (size, class) grouping + wasted-space ranking
+/// (the v3 ranking pass).
 ///
 /// - Hardlinks: within one size bucket, entries whose
 ///   `(volume_serial, file_index)` was already seen are dropped —
@@ -89,7 +100,7 @@ pub fn group_by_size(files: &[HashedFile]) -> Vec<Vec<&HashedFile>> {
 ///   is deterministic for tests and the UI.
 #[must_use]
 pub fn rank(files: &[HashedFile]) -> Vec<DupeGroup> {
-    // Pass-1 size buckets (zero-length already dropped by group_by_size).
+    // Size buckets (zero-length already dropped by group_by_size).
     let mut groups: Vec<DupeGroup> = Vec::new();
     for bucket in group_by_size(files) {
         // Hardlink exclusion inside the bucket.
@@ -103,21 +114,21 @@ pub fn rank(files: &[HashedFile]) -> Vec<DupeGroup> {
         if members.len() < 2 {
             continue;
         }
-        // (size, hash) sub-grouping.
-        let mut by_hash: HashMap<[u8; 32], Vec<&HashedFile>> = HashMap::new();
+        // (size, class) sub-grouping.
+        let mut by_class: HashMap<u64, Vec<&HashedFile>> = HashMap::new();
         for f in members {
-            by_hash.entry(f.sha256).or_default().push(f);
+            by_class.entry(f.class).or_default().push(f);
         }
-        for hash_members in by_hash.into_values() {
-            if hash_members.len() < 2 {
+        for class_members in by_class.into_values() {
+            if class_members.len() < 2 {
                 continue;
             }
-            let size = hash_members[0].size;
-            let count = hash_members.len() as u64;
+            let size = class_members[0].size;
+            let count = class_members.len() as u64;
             groups.push(DupeGroup {
                 size,
                 wasted: size * (count - 1),
-                files: hash_members.iter().map(|f| f.path.clone()).collect(),
+                files: class_members.iter().map(|f| f.path.clone()).collect(),
             });
         }
     }
@@ -141,13 +152,13 @@ pub fn totals(groups: &[DupeGroup]) -> (u64, usize) {
 mod tests {
     use super::*;
 
-    fn f(path: &str, size: u64, serial: u64, index: u64, seed: u8) -> HashedFile {
+    fn f(path: &str, size: u64, serial: u64, index: u64, class: u64) -> HashedFile {
         HashedFile {
             path: path.to_string(),
             size,
             volume_serial: serial,
             file_index: index,
-            sha256: [seed; 32],
+            class,
         }
     }
 
@@ -163,7 +174,7 @@ mod tests {
 
     #[test]
     fn hardlinks_are_not_duplicates() {
-        // Two hardlinks: same (volume serial, file index), same hash.
+        // Two hardlinks: same (volume serial, file index), same class.
         let files = vec![
             f("a/link1.dat", 500, 7, 42, 0xCC),
             f("b/link2.dat", 500, 7, 42, 0xCC),
@@ -173,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn same_size_different_hash_is_not_a_group() {
+    fn same_size_different_class_is_not_a_group() {
         let files = vec![
             f("a/x.dat", 500, 7, 42, 0x01),
             f("b/y.dat", 500, 7, 43, 0x02),
@@ -223,5 +234,18 @@ mod tests {
         let groups = rank(&files);
         // Input order preserved inside the group (a-first was fed second).
         assert_eq!(groups[0].files, vec!["z-last", "a-first"]);
+    }
+
+    #[test]
+    fn hardlinks_across_classes_still_excluded_per_class() {
+        // A hardlink pair inside one size bucket where a THIRD file
+        // (different class) also lives: the hardlink twin drops, and
+        // the different-class member never groups with either.
+        let files = vec![
+            f("one.doc", 50, 2, 10, 0x30),
+            f("two.doc", 50, 2, 10, 0x30), // hardlink of one
+            f("other.doc", 50, 2, 12, 0x31),
+        ];
+        assert_eq!(rank(&files).len(), 0);
     }
 }

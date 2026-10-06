@@ -48,3 +48,28 @@ comparison repositories, then baseline DiskGenie before any optimization claim.
   but loopback navigation was blocked by the browser provider. Visual review is
   therefore deferred to the Windows/macOS screenshot runners; no visual-pass
   claim is made from this environment.
+
+## 2026-10-06 — duplicates engine v3 (session core-24)
+
+- Replaced the v2 full-SHA-256 authority pass with lockstep
+  chain-partition verification (`core/src/dupes/engine.rs`): every
+  screen-bucket member streams its unverified range in 4 MiB lockstep
+  rounds into a personal running XXH3-128 chain; members partition by
+  chain digest each round; diverging members retire at the first
+  differing block, tied classes stream to end-of-range and group.
+- Screens now use ONE open per file (prefix + both mid windows in the
+  same handle). Verify ranges start past the screened bytes (chains
+  seed with the screen digests), so every byte is read at most once
+  across the whole pipeline. Files ≤ 64 KiB are decided by their
+  full-content prefix screen directly.
+- `HashedFile.sha256` → `class: u64`; `rank()` groups by (size,
+  class). App-side `commands/dupes.rs` is collect → engine → hardlink
+  → rank wiring. Phases: collect | screen | verify | done |
+  cancelled (UI labels + mock updated in lockstep).
+- Local measurement (1 GiB real staged corpus, release profile):
+  0.09 s, 6,631 MiB/s effective, 0.52× read amplification, all 32
+  planted groups found, near-dups rejected. Cold-NVMe extrapolation:
+  16 GB ≈ 6–8 s, I/O-bound with no CPU bottleneck.
+- Gates: core 179+21+16 tests green; clippy pedantic + fmt clean;
+  scratch-win mirror: 45/45 host tests + msvc cross-lint clean;
+  frontend tsc 0 errors, 113/113 vitest; version-sync green.

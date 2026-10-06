@@ -4,7 +4,7 @@
 //! with `#[path]`:
 //!
 //! - `state.rs` — the TreeCache + the app state (host-testable).
-//! - `commands/dupes.rs` — the 3-pass engine + the scope support.
+//! - `commands/dupes.rs` — the v3 engine wiring (core screens + lockstep verify) + the scope support.
 //! - `commands/sidebar.rs` — `disk_storage(path)` + the drive chips.
 //! - `commands/snapshots_cmd.rs` — the node-honoring take_snapshot.
 //!
