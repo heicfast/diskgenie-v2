@@ -1411,3 +1411,18 @@ Work Log:
 
 Stage Summary:
 - Session 19 part 2 shipped the Duplicates page redesign: keep rules with one-click apply, evidence columns with reveal, size filters + four sorts, contextual stat strip, and queue-truth staging — every interaction verified live through the mock browser and VLM-audited in light + dark at multiple widths.
+
+---
+Task ID: ci-26 (session 19, part 3)
+Agent: main (Super Z) + general-purpose subagent (license server)
+Task: Owner asks: the 5-workflow release set with two screenshot workflows + improved benchmarking; the licensing architecture improvements (both repos).
+
+Work Log:
+- WORKFLOW SET: 10 → 6 workflows. ci.yml is now THE general validation (Windows gate battery + NSIS bundle; core-mac on BOTH mac images; the live-worker License E2E with the secrets guard; Windows benchmarks + the v3 engine benchmark). Deleted: nsis-bundle.yml (byte-duplicate), test-matrix.yml (merged), license-e2e.yml (merged), macos-license-e2e.yml (the Windows headless test covers the lifecycle; the mac UI-variant cost 10× minutes). macos-build drops its duplicated tests; macos-benchmark gains the engine bench (DB_BENCH_GB=2, weekly).
+- TITLE-SYNCED SCREENSHOTS: the TourDriver stamps `DiskGenie · tNN-name` into document.title per step (+ tour-done marker). The Windows harness polls MainWindowTitle → settles 1.3 s → ONE NAMED FRAME PER STEP (48 anonymous frames → ~35 named); mac-capture.sh gained SYNC_TITLE mode (the Swift CGWindowList probe reads titles; the sed marker extraction verified live). Cadence capture remains as the zero-marker fallback.
+- LICENSE SERVER (subagent, verified on real workerd): batch admin generation is now ONE D1 batch() transaction + Idempotency-Key replay (raw keys only on first response, documented); /v1/verify gained MAX_BODY_BYTES + 400-on-bad-JSON + memoized key derivation; every /v1/admin/* route burns per-route AND per-IP rate buckets BEFORE the bearer check (429 RATE_LIMITED); tokens now carry kid:1 + aud:"diskgenie" with a KID_REGISTRY (legacy tokens verify through the compat window; wrong aud → BAD_AUDIENCE 403, unknown kid → BAD_SIGNATURE). 59 → 72 tests; README + worklog updated.
+- APP CLIENT: TokenClaims gained optional kid/aud (serde-default) with mirrored client-side checks (absent = legacy-valid; present must be kid 1 + aud "diskgenie") + a 4-case claim-matrix test — the server and client now enforce the same claim contract.
+- VERIFIED: all push triggers byte-level `[main]` (the `ain]` read was a display-layer artifact — `[m` eaten as an ANSI reset; od hex 5b6d61696e5d proves it); python yaml.safe_load on all six; mirror host tests 46/46 + msvc cross-lint clean after the client change.
+
+Stage Summary:
+- Session 19 part 3: the release workflow set is the owner's five (+ the weekly benchmark), screenshots are one-named-frame-per-action, and the licensing stack (server + client) carries transactional/idempotent admin minting, rate-limited admin surface, hardened /v1/verify, and kid/aud claim binding with a fleet-safe compat window.

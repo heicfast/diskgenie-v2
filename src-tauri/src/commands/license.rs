@@ -698,6 +698,8 @@ mod tests {
             hw: "h".into(),
             plat: "windows".into(),
             lexp: Some(1_800_000_000),
+            kid: None,
+            aud: None,
         };
         let s = state_from_entitlement(&dto, &claims, "DBK", "hw", 1_790_000_000);
         assert_eq!(s.license_key, "DBK");

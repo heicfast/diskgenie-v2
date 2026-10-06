@@ -340,6 +340,15 @@ pub struct TokenClaims {
     /// License expiry (yearly) — absent for lifetime.
     #[serde(default)]
     pub lexp: Option<i64>,
+    /// Key id (server tokens since the kid/aud change; absent in the
+    /// legacy fleet — the compat window). The client knows ONE key:
+    /// kid 1 = the embedded production public key.
+    #[serde(default)]
+    pub kid: Option<u32>,
+    /// Audience ("diskgenie" — server tokens since the kid/aud
+    /// change; absent in the legacy fleet).
+    #[serde(default)]
+    pub aud: Option<String>,
 }
 
 /// Verify a compact token `b64url(payload).b64url(sig)` end-to-end:
@@ -383,6 +392,11 @@ pub fn verify_token(
         || claims.exp <= now
         || claims.iat > now + CLOCK_SKEW_S
         || matches!(claims.lexp, Some(lexp) if lexp <= now)
+        // kid/aud (the server's claim checks mirrored client-side —
+        // defense in depth: absent claims stay valid through the
+        // fleet compat window, present claims must be OURS).
+        || matches!(claims.kid, Some(k) if k != 1)
+        || matches!(claims.aud.as_deref(), Some(a) if a != "diskgenie")
     {
         return Err(LicenseError::Spoofed);
     }
@@ -990,6 +1004,59 @@ mod tests {
         assert_eq!(claims.tier, "lifetime");
         assert_eq!(claims.name, "Alex Morgan");
         assert!(claims.lexp.is_none());
+    }
+
+    /// The kid/aud claim matrix (the server's post-2026-10 tokens):
+    /// absent claims stay valid (fleet compat window), present claims
+    /// must be OURS — kid 1 + aud "diskgenie".
+    #[test]
+    fn token_kid_aud_claim_matrix() {
+        let key_hash = "a".repeat(64);
+        let hw = "b".repeat(64);
+        let now = 1_790_000_500_i64;
+        let pub_hex = test_public_key_hex();
+        let base = |extra: serde_json::Value| {
+            let mut v = claims_json(&hw, &key_hash, now - 500, now + 86_400, None);
+            for (k, val) in extra.as_object().unwrap() {
+                v[k.as_str()] = val.clone();
+            }
+            sign_fixture(&v, TEST_SEED_HEX)
+        };
+        // No kid/aud (legacy fleet): valid.
+        assert!(
+            verify_token(&base(serde_json::json!({})), &pub_hex, &key_hash, &hw, "windows", now)
+                .is_ok()
+        );
+        // Present + correct: valid.
+        assert!(verify_token(
+            &base(serde_json::json!({"kid": 1, "aud": "diskgenie"})),
+            &pub_hex,
+            &key_hash,
+            &hw,
+            "windows",
+            now
+        )
+        .is_ok());
+        // Wrong audience: spoofed.
+        assert!(verify_token(
+            &base(serde_json::json!({"kid": 1, "aud": "other-product"})),
+            &pub_hex,
+            &key_hash,
+            &hw,
+            "windows",
+            now
+        )
+        .is_err());
+        // Unknown key id: spoofed.
+        assert!(verify_token(
+            &base(serde_json::json!({"kid": 2, "aud": "diskgenie"})),
+            &pub_hex,
+            &key_hash,
+            &hw,
+            "windows",
+            now
+        )
+        .is_err());
     }
 
     #[test]
